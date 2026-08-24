@@ -1,0 +1,30 @@
+# Local development database for Backstage.
+#
+#   docker compose up -d      start
+#   docker compose ps         status
+#   docker compose down       stop (data kept)
+#   docker compose down -v    stop and DELETE all data
+#
+# Credentials here are local-only and intentionally trivial. Production uses
+# managed Postgres configured via app-config.production.yaml.
+services:
+  postgres:
+    image: postgres:16
+    container_name: backstage-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: backstage
+      POSTGRES_PASSWORD: backstage
+      POSTGRES_DB: backstage
+    ports:
+      - '5432:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U backstage']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:

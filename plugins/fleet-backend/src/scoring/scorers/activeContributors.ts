@@ -1,0 +1,35 @@
+import type { Scorer } from '../types';
+
+export interface ActiveContributorsOptions {
+  /** Distinct authors in the window that earn full marks. Defaults to 2. */
+  target?: number;
+}
+
+/**
+ * How many people can safely change this?
+ *
+ * A single-author repository is a bus-factor risk even when it is busy, which
+ * is why the default target is two rather than one.
+ */
+export function activeContributorsScorer(
+  options: ActiveContributorsOptions = {},
+): Scorer {
+  const target = Math.max(1, options.target ?? 2);
+
+  return {
+    id: 'active-contributors',
+    title: 'Active contributors',
+    score({ activity, windowDays }) {
+      const { authors } = activity;
+      return {
+        fraction: Math.min(1, authors / target),
+        detail:
+          authors === 0
+            ? `No contributors in ${windowDays} days`
+            : `${authors} contributor${
+                authors === 1 ? '' : 's'
+              } in ${windowDays} days`,
+      };
+    },
+  };
+}

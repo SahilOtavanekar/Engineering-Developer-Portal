@@ -7,6 +7,7 @@
  */
 
 import { createBackend } from '@backstage/backend-defaults';
+import { catalogModuleBitbucketRepositories } from '@internal/backstage-plugin-fleet-backend';
 
 const backend = createBackend();
 
@@ -28,6 +29,8 @@ backend.add(import('@backstage/plugin-auth-backend'));
 // See https://backstage.io/docs/backend-system/building-backends/migrating#the-auth-plugin
 backend.add(import('@backstage/plugin-auth-backend-module-guest-provider'));
 // See https://backstage.io/docs/auth/guest/provider
+backend.add(import('@backstage/plugin-auth-backend-module-github-provider'));
+// See https://backstage.io/docs/auth/github/provider
 
 // catalog plugin
 backend.add(import('@backstage/plugin-catalog-backend'));
@@ -69,4 +72,9 @@ backend.add(import('@backstage/plugin-signals-backend'));
 // mcp actions plugin
 backend.add(import('@backstage/plugin-mcp-actions-backend'));
 
+// fleet plugin -- repository facts, health scoring
+backend.add(import('@internal/backstage-plugin-fleet-backend'));
+// Named export, so it is added directly rather than as a dynamic import --
+// backend.add() unwraps `.default` from a promise, which a named export lacks.
+backend.add(catalogModuleBitbucketRepositories);
 backend.start();
