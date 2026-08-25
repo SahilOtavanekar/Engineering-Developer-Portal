@@ -5,6 +5,10 @@
 #   docker compose down       stop (data kept)
 #   docker compose down -v    stop and DELETE all data
 #
+# Adminer, a browser UI for the databases, runs at http://localhost:8080.
+# Development only -- it is not authenticated beyond the Postgres credentials
+# and must never be exposed anywhere but a developer's own machine.
+#
 # Credentials here are local-only and intentionally trivial. Production uses
 # managed Postgres configured via app-config.production.yaml.
 services:
@@ -25,6 +29,26 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  # Browser UI for inspecting the plugin databases. Chosen over pgAdmin for
+  # being a single small container with nothing to configure: it reads the
+  # server from the login form rather than from stored connection profiles.
+  adminer:
+    image: adminer:5
+    container_name: backstage-adminer
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Pre-selects the server and driver so the login form only asks for the
+      # username, password and database.
+      ADMINER_DEFAULT_SERVER: postgres
+      ADMINER_DEFAULT_DRIVER: pgsql
+    ports:
+      # Bound to loopback explicitly: an unauthenticated database UI on all
+      # interfaces would be reachable from anything else on the network.
+      - '127.0.0.1:8080:8080'
 
 volumes:
   pgdata:

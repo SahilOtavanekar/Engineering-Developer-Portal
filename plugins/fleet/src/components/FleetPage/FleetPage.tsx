@@ -1,10 +1,12 @@
-import type { CSSProperties } from 'react';
+import { useMemo, useState, type CSSProperties } from 'react';
 import { useApi, fetchApiRef } from '@backstage/frontend-plugin-api';
 import type { FleetOverview } from '@internal/backstage-plugin-fleet-common';
 import { Flex, Link, Skeleton, Text } from '@backstage/ui';
 import useAsync from 'react-use/esm/useAsync';
 import { timeAgo } from '../../format';
-import { BAND_COLOR, BAND_LABEL } from '../../bands';
+import { BAND_LABEL, BAND_TEXT } from '../../bands';
+import { filterRepositories, type FleetFilters } from '../../filter';
+import { FleetFiltersBar } from './FleetFilters';
 
 const cell: CSSProperties = {
   padding: '0.5rem 0.75rem',
@@ -26,47 +28,6 @@ function useFleet() {
   }, [fetch]);
 }
 
-/** Proportional band bar. Widths are shares, so it always fills the row. */
-function BandBar({ counts }: { counts: FleetOverview['counts'] }) {
-  const segments = [
-    { key: 'critical', n: counts.critical },
-    { key: 'needs-attention', n: counts.needsAttention },
-    { key: 'healthy', n: counts.healthy },
-  ].filter(s => s.n > 0);
-
-  const total = segments.reduce((sum, s) => sum + s.n, 0);
-  if (total === 0) return null;
-
-  return (
-    <div
-      style={{
-        display: 'flex',
-        height: '1.75rem',
-        border: '1px solid var(--bui-border, #d2d9e6)',
-        overflow: 'hidden',
-      }}
-    >
-      {segments.map(segment => (
-        <div
-          key={segment.key}
-          title={`${segment.n} ${BAND_LABEL[segment.key]}`}
-          style={{
-            flex: segment.n,
-            background: BAND_COLOR[segment.key],
-            color: '#fff',
-            fontSize: '0.75rem',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-          }}
-        >
-          {segment.n}
-        </div>
-      ))}
-    </div>
-  );
-}
-
 /**
  * The estate, worst first.
  *
@@ -79,6 +40,15 @@ function BandBar({ counts }: { counts: FleetOverview['counts'] }) {
  */
 export function FleetPage() {
   const { value: fleet, loading, error } = useFleet();
+  const [filters, setFilters] = useState<FleetFilters>({});
+
+  // Memoised so the empty-array fallback does not produce a fresh reference
+  // on every render, which would defeat the filter memo below.
+  const repositories = useMemo(() => fleet?.repositories ?? [], [fleet]);
+  const visible = useMemo(
+    () => filterRepositories(repositories, filters),
+    [repositories, filters],
+  );
 
   if (loading) {
     return <Skeleton style={{ height: '20rem' }} />;
@@ -99,114 +69,128 @@ export function FleetPage() {
     );
   }
 
-  const { counts, nominalWeight } = fleet;
+  const { nominalWeight } = fleet;
 
   return (
     <Flex direction="column" gap="5">
-      <Flex direction="column" gap="2">
-        <BandBar counts={counts} />
-        <Text variant="body-x-small" color="secondary">
-          {counts.critical} critical &middot; {counts.needsAttention} needs
-          attention &middot; {counts.healthy} healthy
-          {counts.unscored > 0 ? ` · ${counts.unscored} not yet scored` : ''}
-          {' — '}
-          {fleet.repositories.length} repositories, scored out of{' '}
-          {nominalWeight}
-        </Text>
-      </Flex>
+      <FleetFiltersBar
+        repositories={repositories}
+        visibleCount={visible.length}
+        filters={filters}
+        onChange={setFilters}
+      />
 
-      <div style={{ overflowX: 'auto' }}>
-        <table
-          style={{
-            borderCollapse: 'collapse',
-            width: '100%',
-            minWidth: '44rem',
-          }}
-        >
-          <thead>
-            <tr>
-              {[
-                'Repository',
-                'Score',
-                'Band',
-                'Measured',
-                'Last commit',
-                'Project',
-              ].map(heading => (
-                <th
-                  key={heading}
-                  style={{
-                    textAlign: 'left',
-                    padding: '0.5rem 0.75rem',
-                    borderBottom: '1px solid var(--bui-border, #d2d9e6)',
-                    whiteSpace: 'nowrap',
-                  }}
-                >
-                  <Text variant="body-x-small" color="secondary">
-                    {heading}
-                  </Text>
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {fleet.repositories.map(repository => (
-              <tr key={repository.entityRef}>
-                <td style={cell}>
-                  <Link href={`/catalog/default/component/${repository.slug}`}>
-                    {repository.slug}
-                  </Link>
-                </td>
-                <td style={{ ...cell, fontVariantNumeric: 'tabular-nums' }}>
-                  <Text
-                    style={
-                      repository.score
-                        ? { color: BAND_COLOR[repository.score.band] }
-                        : undefined
-                    }
+      {visible.length === 0 ? (
+        <Text color="secondary">No repositories match these filters.</Text>
+      ) : (
+        <div style={{ overflowX: 'auto' }}>
+          <table
+            style={{
+              borderCollapse: 'collapse',
+              width: '100%',
+              minWidth: '44rem',
+            }}
+          >
+            <thead>
+              <tr>
+                {[
+                  'Repository',
+                  'Score',
+                  'Band',
+                  'Measured',
+                  'Last commit',
+                  'Owner?',
+                  'Stack',
+                ].map(heading => (
+                  <th
+                    key={heading}
+                    style={{
+                      textAlign: 'left',
+                      padding: '0.5rem 0.75rem',
+                      borderBottom: '1px solid var(--bui-border, #d2d9e6)',
+                      whiteSpace: 'nowrap',
+                    }}
                   >
-                    {repository.score ? repository.score.total : '—'}
-                  </Text>
-                </td>
-                <td style={cell}>
-                  <Text
-                    variant="body-small"
-                    style={
-                      repository.score
-                        ? { color: BAND_COLOR[repository.score.band] }
-                        : undefined
-                    }
-                  >
-                    {repository.score
-                      ? BAND_LABEL[repository.score.band] ??
-                        repository.score.band
-                      : 'Not scored'}
-                  </Text>
-                </td>
-                <td style={{ ...cell, fontVariantNumeric: 'tabular-nums' }}>
-                  <Text variant="body-small" color="secondary">
-                    {repository.score
-                      ? `${repository.score.availableWeight} / ${nominalWeight}`
-                      : '—'}
-                  </Text>
-                </td>
-                <td style={cell}>
-                  <Text variant="body-small" color="secondary">
-                    {timeAgo(repository.lastCommitAt) ?? 'Never'}
-                  </Text>
-                </td>
-                <td style={cell}>
-                  <Text variant="body-small" color="secondary">
-                    {repository.techStack && repository.techStack.length > 0
-                      ? repository.techStack.slice(0, 3).join(' · ')
-                      : repository.projectKey ?? '—'}
-                  </Text>
-                </td>
+                    <Text variant="body-x-small" color="secondary">
+                      {heading}
+                    </Text>
+                  </th>
+                ))}
               </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+            </thead>
+            <tbody>
+              {visible.map(repository => (
+                <tr key={repository.entityRef}>
+                  <td style={cell}>
+                    <Link
+                      href={`/catalog/default/component/${repository.slug}`}
+                    >
+                      {repository.slug}
+                    </Link>
+                  </td>
+                  <td style={{ ...cell, fontVariantNumeric: 'tabular-nums' }}>
+                    <Text
+                      style={
+                        repository.score
+                          ? { color: BAND_TEXT[repository.score.band] }
+                          : undefined
+                      }
+                    >
+                      {repository.score ? repository.score.total : '—'}
+                    </Text>
+                  </td>
+                  <td style={cell}>
+                    <Text
+                      variant="body-small"
+                      style={
+                        repository.score
+                          ? { color: BAND_TEXT[repository.score.band] }
+                          : undefined
+                      }
+                    >
+                      {repository.score
+                        ? BAND_LABEL[repository.score.band] ??
+                          repository.score.band
+                        : 'Not scored'}
+                    </Text>
+                  </td>
+                  <td style={{ ...cell, fontVariantNumeric: 'tabular-nums' }}>
+                    <Text variant="body-small" color="secondary">
+                      {repository.score
+                        ? `${repository.score.availableWeight} / ${nominalWeight}`
+                        : '—'}
+                    </Text>
+                  </td>
+                  <td style={cell}>
+                    <Text variant="body-small" color="secondary">
+                      {timeAgo(repository.lastCommitAt) ?? 'Never'}
+                    </Text>
+                  </td>
+                  <td style={cell}>
+                    {/* Deliberately headed "Owner?" -- every name in this
+                        column is a proposal drawn from commit history, and the
+                        catalog still records these repositories as unowned. */}
+                    <Text variant="body-small" color="secondary">
+                      {repository.proposedOwner
+                        ? repository.proposedOwner.name ??
+                          repository.proposedOwner.email ??
+                          '—'
+                        : '—'}
+                    </Text>
+                  </td>
+                  <td style={cell}>
+                    <Text variant="body-small" color="secondary">
+                      {repository.techStack && repository.techStack.length > 0
+                        ? repository.techStack.slice(0, 3).join(' · ')
+                        : repository.projectKey ?? '—'}
+                    </Text>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </Flex>
   );
 }

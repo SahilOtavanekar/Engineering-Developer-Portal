@@ -395,4 +395,154 @@ requires = ["setuptools"]
       expect(calls).toHaveLength(0);
     });
   });
+  describe('listDeployments', () => {
+    /** Shaped like a real record from `demandai/oxp-backend`. */
+    const deploymentPayload = {
+      uuid: '{6b3f1a2c-0000-0000-0000-000000000001}',
+      number: 412,
+      environment: {
+        name: 'production',
+        environment_type: { name: 'Production' },
+      },
+      state: { name: 'COMPLETED' },
+      release: {
+        name: 'Deployment #412',
+        commit: { hash: 'a1b2c3d4e5f6' },
+      },
+      created_on: '2026-08-20T09:00:00+00:00',
+      last_update_time: '2026-08-20T09:04:00+00:00',
+    };
+
+    it('maps a Bitbucket payload onto the domain type', async () => {
+      const { impl } = stubFetch(jsonResponse({ values: [deploymentPayload] }));
+
+      const [deployment] = await client(impl).listDeployments(
+        'demandai',
+        'oxp-backend',
+      );
+
+      expect(deployment).toEqual({
+        uuid: '{6b3f1a2c-0000-0000-0000-000000000001}',
+        number: 412,
+        environmentName: 'production',
+        // Bitbucket's own normalisation. The estate spells environments
+        // inconsistently -- dev, Staging, Test -- but the type is always one
+        // of three values, so nothing downstream has to guess.
+        environmentType: 'Production',
+        state: 'COMPLETED',
+        releaseName: 'Deployment #412',
+        commitHash: 'a1b2c3d4e5f6',
+        createdAt: '2026-08-20T09:00:00+00:00',
+        lastUpdatedAt: '2026-08-20T09:04:00+00:00',
+      });
+    });
+
+    it('returns the newest deployment first whatever order Bitbucket sends', async () => {
+      const { impl } = stubFetch(
+        jsonResponse({
+          values: [
+            {
+              ...deploymentPayload,
+              uuid: '{old}',
+              created_on: '2026-08-01T09:00:00+00:00',
+            },
+            {
+              ...deploymentPayload,
+              uuid: '{new}',
+              created_on: '2026-08-20T09:00:00+00:00',
+            },
+          ],
+        }),
+      );
+
+      const deployments = await client(impl).listDeployments(
+        'demandai',
+        'oxp-backend',
+      );
+
+      expect(deployments.map(d => d.uuid)).toEqual(['{new}', '{old}']);
+    });
+
+    it('honours a limit after ordering, so the newest survive the cut', async () => {
+      const { impl } = stubFetch(
+        jsonResponse({
+          values: [
+            {
+              ...deploymentPayload,
+              uuid: '{old}',
+              created_on: '2026-08-01T09:00:00+00:00',
+            },
+            {
+              ...deploymentPayload,
+              uuid: '{new}',
+              created_on: '2026-08-20T09:00:00+00:00',
+            },
+          ],
+        }),
+      );
+
+      const deployments = await client(impl).listDeployments(
+        'demandai',
+        'oxp-backend',
+        { limit: 1 },
+      );
+
+      expect(deployments.map(d => d.uuid)).toEqual(['{new}']);
+    });
+
+    it('survives a record with no release or environment type', async () => {
+      const { impl } = stubFetch(
+        jsonResponse({
+          values: [
+            {
+              uuid: '{bare}',
+              environment: { name: 'sandbox' },
+              state: { name: 'IN_PROGRESS' },
+              created_on: '2026-08-20T09:00:00+00:00',
+            },
+          ],
+        }),
+      );
+
+      const [deployment] = await client(impl).listDeployments(
+        'demandai',
+        'oxp-backend',
+      );
+
+      expect(deployment).toMatchObject({
+        environmentName: 'sandbox',
+        environmentType: undefined,
+        state: 'IN_PROGRESS',
+        releaseName: undefined,
+        commitHash: undefined,
+      });
+    });
+
+    it('treats a repository with deployments disabled as having none', async () => {
+      // 404 here means the feature was never turned on, not that the request
+      // was wrong. One such repository must not fail the whole sync pass.
+      const { impl } = stubFetch(jsonResponse({ type: 'error' }, 404));
+
+      await expect(
+        client(impl).listDeployments('demandai', 'oxp-backend'),
+      ).resolves.toEqual([]);
+    });
+
+    it('still raises anything that is not a 404', async () => {
+      const { impl } = stubFetch(jsonResponse({ type: 'error' }, 403));
+
+      await expect(
+        client(impl).listDeployments('demandai', 'oxp-backend'),
+      ).rejects.toThrow(BitbucketApiError);
+    });
+
+    it('refuses a blank slug without spending a request', async () => {
+      const { impl, calls } = stubFetch();
+
+      await expect(
+        client(impl).listDeployments('demandai', ''),
+      ).rejects.toThrow('repository slug are required');
+      expect(calls).toHaveLength(0);
+    });
+  });
 });

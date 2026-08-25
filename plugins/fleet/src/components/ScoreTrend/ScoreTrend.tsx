@@ -1,15 +1,15 @@
 import type { ScoreHistoryPoint } from '@internal/backstage-plugin-fleet-common';
 import { Flex, Text } from '@backstage/ui';
 
-import { BAND_COLOR } from '../../bands';
+import { BAND_TEXT } from '../../bands';
 
 const WIDTH = 96;
 const HEIGHT = 24;
 const PADDING = 2;
 
 /** Rising and falling reuse the band intents; flat stays neutral. */
-const RISING = BAND_COLOR.healthy;
-const FALLING = BAND_COLOR.critical;
+const RISING = BAND_TEXT.healthy;
+const FALLING = BAND_TEXT.critical;
 const FLAT = 'var(--bui-fg-secondary)';
 
 /** Extracted because a nested ternary reads badly and lint rejects it. */

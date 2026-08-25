@@ -36,6 +36,13 @@ export interface RepositoryRecord {
    * `language` so a derived guess never overwrites source data.
    */
   derived_language: string | null;
+  /**
+   * Component type and lifecycle inferred from the stack and from what
+   * actually deploys. Null until the detail pass has classified the
+   * repository, which the entity provider reads as "keep the placeholders".
+   */
+  derived_type: string | null;
+  derived_lifecycle: string | null;
 }
 
 /** What one synchronisation pass changed. */
@@ -226,6 +233,45 @@ export class RepositoryStore {
         tech_stack: JSON.stringify(stack),
         derived_language: language ?? null,
       });
+  }
+
+  async setClassification(
+    repositoryId: number,
+    classification: { type: string; lifecycle: string },
+  ): Promise<void> {
+    await this.db('repository').where({ id: repositoryId }).update({
+      derived_type: classification.type,
+      derived_lifecycle: classification.lifecycle,
+    });
+  }
+
+  /**
+   * Derived type and lifecycle for a workspace, keyed by slug.
+   *
+   * Keyed by slug because the caller is the catalog entity provider, which
+   * knows repositories by slug and never sees fleet's ids. Rows with no
+   * classification yet are omitted rather than returned as `unknown`, so the
+   * provider can tell "not classified" from "classified as unknown".
+   */
+  async classificationForWorkspace(
+    workspace: string,
+  ): Promise<Map<string, { type: string; lifecycle: string }>> {
+    const rows = (await this.db('repository')
+      .where({ workspace, is_live: true })
+      .whereNotNull('derived_type')
+      .whereNotNull('derived_lifecycle')
+      .select('slug', 'derived_type', 'derived_lifecycle')) as Array<{
+      slug: string;
+      derived_type: string;
+      derived_lifecycle: string;
+    }>;
+
+    return new Map(
+      rows.map(row => [
+        row.slug,
+        { type: row.derived_type, lifecycle: row.derived_lifecycle },
+      ]),
+    );
   }
 
   /** Total rows, live and removed. Used by tests and diagnostics. */

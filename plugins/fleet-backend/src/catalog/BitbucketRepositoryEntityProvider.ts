@@ -19,7 +19,9 @@ import type {
 } from '@backstage/plugin-catalog-node';
 import { BitbucketCloudClient } from '../bitbucket/BitbucketCloudClient';
 import { toEntityName } from './entityName';
+import { toUserEntityRef } from './userEntityName';
 import type { BitbucketClient, BitbucketRepository } from '../bitbucket/types';
+import type { StoredOwnershipCandidate } from '../database/OwnershipStore';
 
 /** Namespace for annotations this provider owns. */
 const ANNOTATION_NS = 'fleet.backstage.io';
@@ -28,6 +30,18 @@ export const ANNOTATION_WORKSPACE = `${ANNOTATION_NS}/bitbucket-workspace`;
 export const ANNOTATION_SLUG = `${ANNOTATION_NS}/bitbucket-slug`;
 export const ANNOTATION_PROJECT_KEY = `${ANNOTATION_NS}/bitbucket-project`;
 export const ANNOTATION_DEFAULT_BRANCH = `${ANNOTATION_NS}/default-branch`;
+export const ANNOTATION_OWNERSHIP_SOURCE = `${ANNOTATION_NS}/ownership-source`;
+export const ANNOTATION_OWNERSHIP_EVIDENCE = `${ANNOTATION_NS}/ownership-evidence`;
+
+/**
+ * Marks an owner the portal inferred rather than one anybody confirmed.
+ *
+ * The catalog's Owner column cannot carry a caveat -- it renders a name and
+ * nothing else -- so the caveat goes here, where it is filterable. "Show me
+ * everything whose owner is still a guess" is one click, and the scorecard
+ * reads this tag to refuse to award the ownership metric.
+ */
+export const TAG_UNCONFIRMED_OWNER = 'unconfirmed-owner';
 
 /**
  * Owner assigned to every repository until real ownership data exists.
@@ -54,11 +68,42 @@ function toTag(value: string): string | undefined {
   return tag || undefined;
 }
 
+/**
+ * Supplies proposed owners keyed by repository slug.
+ *
+ * An interface rather than the store itself so the provider keeps working when
+ * ownership is unavailable -- on a first boot the fleet migrations may not have
+ * run yet, and a catalog that refuses to register 95 repositories because it
+ * could not read a derived hint would be a poor trade.
+ */
+export interface ProposedOwnerSource {
+  proposedForWorkspace(
+    workspace: string,
+  ): Promise<Map<string, StoredOwnershipCandidate>>;
+}
+
+/**
+ * Supplies derived component type and lifecycle keyed by repository slug.
+ *
+ * A slug absent from the map means "not classified yet", which keeps the
+ * placeholders. A slug present with `unknown` means the classifier looked and
+ * found no evidence -- a different thing, and worth telling apart.
+ */
+export interface ClassificationSource {
+  classificationForWorkspace(
+    workspace: string,
+  ): Promise<Map<string, { type: string; lifecycle: string }>>;
+}
+
 export interface BitbucketRepositoryEntityProviderOptions {
   workspace: string;
   client: BitbucketClient;
   taskRunner: SchedulerServiceTaskRunner;
   logger: LoggerService;
+  /** Absent means every repository keeps the placeholder owner. */
+  owners?: ProposedOwnerSource;
+  /** Absent means every repository keeps `service` / `unknown`. */
+  classifications?: ClassificationSource;
 }
 
 /**
@@ -79,6 +124,8 @@ export class BitbucketRepositoryEntityProvider implements EntityProvider {
   private readonly client: BitbucketClient;
   private readonly taskRunner: SchedulerServiceTaskRunner;
   private readonly logger: LoggerService;
+  private readonly owners?: ProposedOwnerSource;
+  private readonly classifications?: ClassificationSource;
   private connection?: EntityProviderConnection;
 
   constructor(options: BitbucketRepositoryEntityProviderOptions) {
@@ -86,6 +133,8 @@ export class BitbucketRepositoryEntityProvider implements EntityProvider {
     this.client = options.client;
     this.taskRunner = options.taskRunner;
     this.logger = options.logger;
+    this.owners = options.owners;
+    this.classifications = options.classifications;
   }
 
   /**
@@ -96,7 +145,12 @@ export class BitbucketRepositoryEntityProvider implements EntityProvider {
    */
   static fromConfig(
     config: Config,
-    options: { logger: LoggerService; scheduler: SchedulerService },
+    options: {
+      logger: LoggerService;
+      scheduler: SchedulerService;
+      owners?: ProposedOwnerSource;
+      classifications?: ClassificationSource;
+    },
   ): BitbucketRepositoryEntityProvider[] {
     const root = config.getOptionalConfig('fleet.bitbucket');
     const workspaces = root?.getOptionalStringArray('workspaces') ?? [];
@@ -127,6 +181,8 @@ export class BitbucketRepositoryEntityProvider implements EntityProvider {
         new BitbucketRepositoryEntityProvider({
           workspace,
           logger: options.logger,
+          owners: options.owners,
+          classifications: options.classifications,
           client: BitbucketCloudClient.fromIntegration(integration.config, {
             logger: options.logger,
           }),
@@ -165,7 +221,17 @@ export class BitbucketRepositoryEntityProvider implements EntityProvider {
     }
 
     const repositories = await this.client.listRepositories(this.workspace);
-    const entities = repositories.map(repository => this.toEntity(repository));
+    const [proposed, classified] = await Promise.all([
+      this.readProposedOwners(),
+      this.readClassifications(),
+    ]);
+    const entities = repositories.map(repository =>
+      this.toEntity(
+        repository,
+        proposed.get(repository.slug),
+        classified.get(repository.slug),
+      ),
+    );
 
     await this.connection.applyMutation({
       type: 'full',
@@ -175,12 +241,65 @@ export class BitbucketRepositoryEntityProvider implements EntityProvider {
       })),
     });
 
+    const withOwner = entities.filter(entity =>
+      entity.metadata.tags?.includes(TAG_UNCONFIRMED_OWNER),
+    ).length;
     this.logger.info(
-      `Registered ${entities.length} repositories from Bitbucket workspace '${this.workspace}'`,
+      `Registered ${entities.length} repositories from Bitbucket workspace ` +
+        `'${this.workspace}' (${withOwner} with a proposed owner, ` +
+        `${entities.length - withOwner} still unowned)`,
     );
   }
 
-  private toEntity(repository: BitbucketRepository): ComponentEntity {
+  /**
+   * Proposed owners, or none if they cannot be read.
+   *
+   * Ownership is a derived hint. Losing it should degrade the catalog to
+   * placeholder owners, not prevent the estate being registered at all.
+   */
+  private async readProposedOwners(): Promise<
+    Map<string, StoredOwnershipCandidate>
+  > {
+    if (!this.owners) return new Map();
+    try {
+      return await this.owners.proposedForWorkspace(this.workspace);
+    } catch (error) {
+      this.logger.warn(
+        `Could not read proposed owners for '${this.workspace}', ` +
+          `falling back to ${DEFAULT_OWNER}: ${(error as Error).message}`,
+      );
+      return new Map();
+    }
+  }
+
+  /**
+   * Derived classifications, or none if they cannot be read.
+   *
+   * Same reasoning as ownership: a derived hint that fails to load should cost
+   * the reader precision, not cost them the estate.
+   */
+  private async readClassifications(): Promise<
+    Map<string, { type: string; lifecycle: string }>
+  > {
+    if (!this.classifications) return new Map();
+    try {
+      return await this.classifications.classificationForWorkspace(
+        this.workspace,
+      );
+    } catch (error) {
+      this.logger.warn(
+        `Could not read classifications for '${this.workspace}', keeping ` +
+          `placeholders: ${(error as Error).message}`,
+      );
+      return new Map();
+    }
+  }
+
+  private toEntity(
+    repository: BitbucketRepository,
+    proposed?: StoredOwnershipCandidate,
+    classification?: { type: string; lifecycle: string },
+  ): ComponentEntity {
     const location = `url:${repository.url}`;
     const tag = repository.language ? toTag(repository.language) : undefined;
 
@@ -201,6 +320,23 @@ export class BitbucketRepositoryEntityProvider implements EntityProvider {
       annotations[ANNOTATION_PROJECT_KEY] = repository.projectKey;
     }
 
+    // A proposal only becomes the owner if it can be addressed as an entity.
+    // Without a resolvable ref the catalog renders a broken link, which reads
+    // as a defect rather than as a gap.
+    const proposedRef = proposed?.email
+      ? toUserEntityRef(proposed.email)
+      : undefined;
+    const tags = [tag, proposedRef ? TAG_UNCONFIRMED_OWNER : undefined].filter(
+      (value): value is string => Boolean(value),
+    );
+
+    if (proposedRef && proposed) {
+      annotations[ANNOTATION_OWNERSHIP_SOURCE] = proposed.source;
+      annotations[ANNOTATION_OWNERSHIP_EVIDENCE] =
+        `${proposed.commits} of ${proposed.windowCommits} commits in ` +
+        `${proposed.windowDays} days`;
+    }
+
     return {
       apiVersion: 'backstage.io/v1alpha1',
       kind: 'Component',
@@ -211,14 +347,15 @@ export class BitbucketRepositoryEntityProvider implements EntityProvider {
           ? { description: repository.description }
           : {}),
         annotations,
-        ...(tag ? { tags: [tag] } : {}),
+        ...(tags.length > 0 ? { tags } : {}),
       },
       spec: {
-        // Bitbucket tells us nothing about either of these. Honest placeholders
-        // beat invented precision; both get refined once manifests are parsed.
-        type: 'service',
-        lifecycle: 'unknown',
-        owner: DEFAULT_OWNER,
+        // Derived from the technology stack and from what actually deploys.
+        // Falls back to the original placeholders when the classifier has not
+        // reached this repository yet.
+        type: classification?.type ?? 'service',
+        lifecycle: classification?.lifecycle ?? 'unknown',
+        owner: proposedRef ?? DEFAULT_OWNER,
       },
     };
   }

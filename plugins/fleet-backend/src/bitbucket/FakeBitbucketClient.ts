@@ -2,6 +2,7 @@ import type {
   BitbucketBranch,
   BitbucketClient,
   BitbucketCommit,
+  BitbucketDeployment,
   BitbucketPipelineRun,
   BitbucketPullRequest,
   BitbucketRepository,
@@ -23,6 +24,7 @@ export class FakeBitbucketClient implements BitbucketClient {
   private readonly commitsByRepo = new Map<string, BitbucketCommit[]>();
   private readonly branchesByRepo = new Map<string, BitbucketBranch[]>();
   private readonly runsByRepo = new Map<string, BitbucketPipelineRun[]>();
+  private readonly deploymentsByRepo = new Map<string, BitbucketDeployment[]>();
   private readonly filesByRepo = new Map<string, string[]>();
   private readonly fileContentByRepo = new Map<
     string,
@@ -33,6 +35,7 @@ export class FakeBitbucketClient implements BitbucketClient {
     BitbucketPullRequest[]
   >();
   private requests = 0;
+  private readonly callsByMethod = new Map<string, number>();
 
   constructor(repositories: BitbucketRepository[] = []) {
     for (const repository of repositories) {
@@ -132,6 +135,37 @@ export class FakeBitbucketClient implements BitbucketClient {
   ): this {
     this.branchesByRepo.set(`${workspace}/${slug}`, branches);
     return this;
+  }
+
+  withDeployments(
+    workspace: string,
+    slug: string,
+    deployments: BitbucketDeployment[],
+  ): this {
+    const sorted = [...deployments].sort(
+      (a, b) =>
+        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+    );
+    this.deploymentsByRepo.set(`${workspace}/${slug}`, sorted);
+    return this;
+  }
+
+  /** One completed deployment per named environment, newest first. */
+  static generateDeployments(
+    environments: Array<[name: string, type: string]>,
+    latest: Date,
+  ): BitbucketDeployment[] {
+    return environments.map(([name, type], i) => ({
+      uuid: `{deploy-${name}-${i}}`,
+      number: i + 1,
+      environmentName: name,
+      environmentType: type,
+      state: 'COMPLETED',
+      releaseName: `#${100 + i}`,
+      commitHash: `commit${i}`,
+      createdAt: new Date(latest.getTime() - i * 3_600_000).toISOString(),
+      lastUpdatedAt: new Date(latest.getTime() - i * 3_600_000).toISOString(),
+    }));
   }
 
   withPipelineRuns(
@@ -249,11 +283,26 @@ export class FakeBitbucketClient implements BitbucketClient {
     return this.requests;
   }
 
+  /**
+   * How many times one method was called.
+   *
+   * Total request count cannot show that a call was skipped, only that fewer
+   * happened -- which any other change also produces.
+   */
+  requestsFor(method: string): number {
+    return this.callsByMethod.get(method) ?? 0;
+  }
+
+  private record(method: string): void {
+    this.requests++;
+    this.callsByMethod.set(method, (this.callsByMethod.get(method) ?? 0) + 1);
+  }
+
   async listRepositories(workspace: string): Promise<BitbucketRepository[]> {
     if (!workspace) {
       throw new Error('a workspace slug is required');
     }
-    this.requests++;
+    this.record('listRepositories');
     return [...(this.byWorkspace.get(workspace) ?? [])];
   }
 
@@ -265,7 +314,7 @@ export class FakeBitbucketClient implements BitbucketClient {
     if (!workspace || !slug) {
       throw new Error('a workspace slug and repository slug are required');
     }
-    this.requests++;
+    this.record('listCommits');
 
     const all = this.commitsByRepo.get(`${workspace}/${slug}`) ?? [];
     const cutoff = options.since?.getTime();
@@ -281,8 +330,21 @@ export class FakeBitbucketClient implements BitbucketClient {
     if (!workspace || !slug) {
       throw new Error('a workspace slug and repository slug are required');
     }
-    this.requests++;
+    this.record('listBranches');
     return [...(this.branchesByRepo.get(`${workspace}/${slug}`) ?? [])];
+  }
+
+  async listDeployments(
+    workspace: string,
+    slug: string,
+    options: { limit?: number } = {},
+  ): Promise<BitbucketDeployment[]> {
+    if (!workspace || !slug) {
+      throw new Error('a workspace slug and repository slug are required');
+    }
+    this.record('listDeployments');
+    const all = this.deploymentsByRepo.get(`${workspace}/${slug}`) ?? [];
+    return all.slice(0, options.limit ?? all.length);
   }
 
   async listPipelineRuns(
@@ -293,7 +355,7 @@ export class FakeBitbucketClient implements BitbucketClient {
     if (!workspace || !slug) {
       throw new Error('a workspace slug and repository slug are required');
     }
-    this.requests++;
+    this.record('listPipelineRuns');
     const all = this.runsByRepo.get(`${workspace}/${slug}`) ?? [];
     return all.slice(0, options.limit ?? all.length);
   }
@@ -308,7 +370,7 @@ export class FakeBitbucketClient implements BitbucketClient {
         'a workspace slug, repository slug and file path are required',
       );
     }
-    this.requests++;
+    this.record('getFileContent');
     return this.fileContentByRepo.get(`${workspace}/${slug}`)?.[path];
   }
 
@@ -316,7 +378,7 @@ export class FakeBitbucketClient implements BitbucketClient {
     if (!workspace || !slug) {
       throw new Error('a workspace slug and repository slug are required');
     }
-    this.requests++;
+    this.record('listRootFiles');
     return [...(this.filesByRepo.get(`${workspace}/${slug}`) ?? [])];
   }
 
@@ -328,7 +390,7 @@ export class FakeBitbucketClient implements BitbucketClient {
     if (!workspace || !slug) {
       throw new Error('a workspace slug and repository slug are required');
     }
-    this.requests++;
+    this.record('listPullRequests');
 
     const all = this.pullRequestsByRepo.get(`${workspace}/${slug}`) ?? [];
     const byState = options.states

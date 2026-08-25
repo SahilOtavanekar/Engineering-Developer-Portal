@@ -9,6 +9,8 @@ import { ScmIntegrations } from '@backstage/integration';
 import { BitbucketCloudClient } from './bitbucket/BitbucketCloudClient';
 import { BranchStore } from './database/BranchStore';
 import { CommitStore } from './database/CommitStore';
+import { DeploymentStore } from './database/DeploymentStore';
+import { OwnershipStore } from './database/OwnershipStore';
 import { PipelineStore } from './database/PipelineStore';
 import { PullRequestStore } from './database/PullRequestStore';
 import { RepositoryStore } from './database/RepositoryStore';
@@ -17,7 +19,10 @@ import { SyncStateStore } from './database/SyncStateStore';
 import { CommitIngestionService } from './ingestion/CommitIngestionService';
 import { PullRequestIngestionService } from './ingestion/PullRequestIngestionService';
 import { RepositoryDetailIngestionService } from './ingestion/RepositoryDetailIngestionService';
+import { CommitHistoryOwnershipResolver } from './ownership/CommitHistoryOwnershipResolver';
+import { OwnershipService } from './ownership/OwnershipService';
 import { createRouter } from './router';
+import { describeBackoff, shouldSkip } from './sync/backoff';
 import { PROVISIONAL_BANDS, ScoringEngine } from './scoring/ScoringEngine';
 import { ScoringService } from './scoring/ScoringService';
 import { activeCommitsScorer } from './scoring/scorers/activeCommits';
@@ -80,6 +85,8 @@ export const fleetPlugin = createBackendPlugin({
         const commitStore = new CommitStore(client);
         const branchStore = new BranchStore(client);
         const pipelineStore = new PipelineStore(client);
+        const deploymentStore = new DeploymentStore(client);
+        const ownershipStore = new OwnershipStore(client);
         const pullRequestStore = new PullRequestStore(client);
         const scoreStore = new ScoreStore(client);
 
@@ -153,6 +160,10 @@ export const fleetPlugin = createBackendPlugin({
           await createRouter({
             repositories: repositoryStore,
             commits: commitStore,
+            branches: branchStore,
+            pullRequests: pullRequestStore,
+            deployments: deploymentStore,
+            ownership: ownershipStore,
             scores: scoreStore,
             nominalWeight: engine.nominalWeight,
             httpAuth,
@@ -216,7 +227,21 @@ export const fleetPlugin = createBackendPlugin({
           // are already recorded in sync_state, so we log and wait for the
           // next tick instead.
           const guard =
-            (label: string, run: () => Promise<unknown>) => async () => {
+            (label: string, resource: string, run: () => Promise<unknown>) =>
+            async () => {
+              // Backoff lives here rather than in each service so every
+              // scheduled task gets it: a resource that keeps failing should
+              // stop spending quota on something that is not going to work.
+              const state = await syncState.get(resource);
+              if (shouldSkip(state, new Date())) {
+                logger.info(
+                  `${label} skipped for '${workspace}': ${describeBackoff(
+                    state!,
+                  )}`,
+                );
+                return;
+              }
+
               try {
                 await run();
               } catch (error) {
@@ -230,8 +255,10 @@ export const fleetPlugin = createBackendPlugin({
           await scheduler.scheduleTask({
             id: RepositoryIngestionService.resourceKey(workspace),
             ...schedule,
-            fn: guard('Repository ingestion', () =>
-              repositoryIngestion.ingest(workspace),
+            fn: guard(
+              'Repository ingestion',
+              RepositoryIngestionService.resourceKey(workspace),
+              () => repositoryIngestion.ingest(workspace),
             ),
           });
 
@@ -241,8 +268,10 @@ export const fleetPlugin = createBackendPlugin({
             // Offset so commit ingestion reads a repository list that the
             // repository sync has already refreshed.
             initialDelay: { seconds: 90 },
-            fn: guard('Commit ingestion', () =>
-              commitIngestion.ingest(workspace),
+            fn: guard(
+              'Commit ingestion',
+              CommitIngestionService.resourceKey(workspace),
+              () => commitIngestion.ingest(workspace),
             ),
           });
 
@@ -251,6 +280,7 @@ export const fleetPlugin = createBackendPlugin({
             repositories,
             branches: branchStore,
             pipelines: pipelineStore,
+            deployments: deploymentStore,
             syncState,
             logger,
           });
@@ -259,8 +289,10 @@ export const fleetPlugin = createBackendPlugin({
             id: RepositoryDetailIngestionService.resourceKey(workspace),
             ...schedule,
             initialDelay: { seconds: 120 },
-            fn: guard('Detail ingestion', () =>
-              detailIngestion.ingest(workspace),
+            fn: guard(
+              'Detail ingestion',
+              RepositoryDetailIngestionService.resourceKey(workspace),
+              () => detailIngestion.ingest(workspace),
             ),
           });
 
@@ -277,8 +309,43 @@ export const fleetPlugin = createBackendPlugin({
             id: PullRequestIngestionService.resourceKey(workspace),
             ...schedule,
             initialDelay: { seconds: 135 },
-            fn: guard('Pull request ingestion', () =>
-              pullRequestIngestion.ingest(workspace),
+            fn: guard(
+              'Pull request ingestion',
+              PullRequestIngestionService.resourceKey(workspace),
+              () => pullRequestIngestion.ingest(workspace),
+            ),
+          });
+
+          // Reads only commits already stored, so it costs no Bitbucket
+          // requests and can run alongside the ingestion passes rather than
+          // after them.
+          const ownershipConfig = config.getOptionalConfig('fleet.ownership');
+          const ownership = new OwnershipService({
+            resolver: new CommitHistoryOwnershipResolver({
+              commits,
+              candidateLimit:
+                ownershipConfig?.getOptionalNumber('candidates') ?? undefined,
+              minimumShare:
+                ownershipConfig?.getOptionalNumber('minimumShare') ?? undefined,
+              minimumCommits:
+                ownershipConfig?.getOptionalNumber('minimumCommits') ??
+                undefined,
+            }),
+            repositories,
+            ownership: ownershipStore,
+            syncState,
+            logger,
+            windowDays: scoringWindowDays,
+          });
+
+          await scheduler.scheduleTask({
+            id: OwnershipService.resourceKey(workspace),
+            ...schedule,
+            initialDelay: { seconds: 145 },
+            fn: guard(
+              'Ownership resolution',
+              OwnershipService.resourceKey(workspace),
+              () => ownership.resolveAll(workspace),
             ),
           });
 
@@ -301,7 +368,9 @@ export const fleetPlugin = createBackendPlugin({
             // Last in the chain: scores are only as good as the facts beneath
             // them, so this runs after both ingestion passes have had a turn.
             initialDelay: { seconds: 150 },
-            fn: guard('Scoring', () => scoring.scoreAll(workspace)),
+            fn: guard('Scoring', ScoringService.resourceKey(workspace), () =>
+              scoring.scoreAll(workspace),
+            ),
           });
         }
       },

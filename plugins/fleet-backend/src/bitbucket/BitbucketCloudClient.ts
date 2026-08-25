@@ -5,6 +5,7 @@ import type {
   BitbucketBranch,
   BitbucketClient,
   BitbucketCommit,
+  BitbucketDeployment,
   BitbucketPipelineRun,
   BitbucketPullRequest,
   BitbucketRepository,
@@ -69,6 +70,24 @@ const PIPELINE_FIELDS = [
 
 /** Enough runs to judge a success rate without paging a busy repository. */
 const DEFAULT_PIPELINE_LIMIT = 20;
+
+const DEPLOYMENT_FIELDS = [
+  'values.uuid',
+  'values.number',
+  'values.environment.name',
+  'values.environment.environment_type.name',
+  'values.state.name',
+  'values.release.name',
+  'values.release.commit.hash',
+  'values.created_on',
+  'values.last_update_time',
+].join(',');
+
+/**
+ * Deployments kept per repository. Enough to cover every environment several
+ * times over, without paging a repository that deploys constantly.
+ */
+const DEFAULT_DEPLOYMENT_LIMIT = 50;
 
 const PULL_REQUEST_FIELDS = [
   'next',
@@ -352,6 +371,56 @@ export class BitbucketCloudClient implements BitbucketClient {
       url = page.next;
     }
     return branches;
+  }
+
+  async listDeployments(
+    workspace: string,
+    slug: string,
+    options: { limit?: number } = {},
+  ): Promise<BitbucketDeployment[]> {
+    if (!workspace || !slug) {
+      throw new Error('a workspace slug and repository slug are required');
+    }
+
+    const limit = Math.max(1, options.limit ?? DEFAULT_DEPLOYMENT_LIMIT);
+    const url =
+      `${this.apiBaseUrl}/repositories/${encodeURIComponent(workspace)}/` +
+      `${encodeURIComponent(slug)}/deployments/?pagelen=${Math.min(
+        limit,
+        PAGE_SIZE,
+      )}` +
+      `&fields=${DEPLOYMENT_FIELDS}`;
+
+    let page: PagedResponse;
+    try {
+      page = await this.request(url);
+    } catch (error) {
+      // Deployments were never enabled on this repository.
+      if (error instanceof BitbucketApiError && error.status === 404) {
+        return [];
+      }
+      throw error;
+    }
+
+    const deployments = ((page.values ?? []) as any[]).map(raw => ({
+      uuid: raw.uuid,
+      number: typeof raw.number === 'number' ? raw.number : undefined,
+      environmentName: optional(raw.environment?.name) ?? 'unknown',
+      environmentType: optional(raw.environment?.environment_type?.name),
+      state: optional(raw.state?.name) ?? 'UNKNOWN',
+      releaseName: optional(raw.release?.name),
+      commitHash: optional(raw.release?.commit?.hash),
+      createdAt: raw.created_on,
+      lastUpdatedAt: optional(raw.last_update_time),
+    }));
+
+    // Bitbucket does not guarantee an order here, and "what is live" depends
+    // entirely on which record is newest.
+    deployments.sort(
+      (a, b) =>
+        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+    );
+    return deployments.slice(0, limit);
   }
 
   async listPipelineRuns(

@@ -1,7 +1,7 @@
 import type { CSSProperties } from 'react';
 import type { FleetRepositorySummary } from '@internal/backstage-plugin-fleet-common';
 import { Flex, Text } from '@backstage/ui';
-import { BAND_COLOR, BAND_LABEL } from '../../bands';
+import { BAND_FILL, BAND_LABEL } from '../../bands';
 import { bandCounts, technologyCounts, type FleetFilters } from '../../filter';
 
 /** Technology chips shown before the list is truncated. */
@@ -14,9 +14,7 @@ const chip = (active: boolean): CSSProperties => ({
   fontSize: '0.75rem',
   padding: '0.15rem 0.5rem',
   borderRadius: '2px',
-  border: `1px solid ${
-    active ? 'var(--bui-fg-primary)' : 'var(--bui-border)'
-  }`,
+  border: `1px solid ${active ? 'var(--bui-fg-primary)' : 'var(--bui-border)'}`,
   background: active ? 'var(--bui-bg-surface-2)' : 'transparent',
   color: 'inherit',
 });
@@ -63,8 +61,7 @@ export function FleetFiltersBar({
       [key]: filters[key] === value ? undefined : value,
     });
 
-  const filtered =
-    filters.band || filters.technology || filters.query?.trim();
+  const filtered = filters.band || filters.technology || filters.query?.trim();
 
   return (
     <Flex direction="column" gap="3">
@@ -85,7 +82,10 @@ export function FleetFiltersBar({
                 type="button"
                 onClick={() => toggle('band', segment.band)}
                 aria-pressed={active}
-                title={`${segment.n} ${BAND_LABEL[segment.band]}`}
+                // A screen reader announcing a bare "2" is useless; label it
+                // the same way the other filter chips are labelled.
+                aria-label={`${BAND_LABEL[segment.band]} (${segment.n})`}
+                title={`${BAND_LABEL[segment.band]} (${segment.n})`}
                 style={{
                   flex: segment.n,
                   appearance: 'none',
@@ -93,9 +93,9 @@ export function FleetFiltersBar({
                   border: 'none',
                   font: 'inherit',
                   fontSize: '0.75rem',
-                  background: BAND_COLOR[segment.band],
-                  color: '#fff',
-                  opacity: !filters.band || active ? 1 : 0.4,
+                  fontWeight: 500,
+                  ...BAND_FILL[segment.band],
+                  opacity: !filters.band || active ? 1 : 0.45,
                 }}
               >
                 {segment.n}

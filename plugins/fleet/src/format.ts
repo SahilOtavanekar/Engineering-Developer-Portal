@@ -40,3 +40,26 @@ export function formatBytes(bytes: number | undefined): string | undefined {
   }
   return `${value < 10 ? value.toFixed(1) : Math.round(value)} ${units[unit]}`;
 }
+
+/**
+ * Durations in the units a reader thinks in.
+ *
+ * A PR that took 73 hours to merge is "3 days", not "73 hours" -- the precision
+ * is real but nobody reasons in three-digit hours.
+ */
+export function formatHours(hours: number | undefined): string | undefined {
+  if (hours === undefined || hours < 0) return undefined;
+
+  if (hours < 1) {
+    const minutes = Math.max(1, Math.round(hours * 60));
+    return `${minutes} min`;
+  }
+  if (hours < 48) {
+    const rounded =
+      hours < 10 ? Math.round(hours * 10) / 10 : Math.round(hours);
+    return `${rounded} hour${rounded === 1 ? '' : 's'}`;
+  }
+
+  const days = Math.round(hours / 24);
+  return `${days} day${days === 1 ? '' : 's'}`;
+}

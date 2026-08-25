@@ -45,6 +45,62 @@ export interface RepositoryScoreSummary {
   history?: ScoreHistoryPoint[];
 }
 
+/** Branch health, and the worst offenders by name. */
+export interface BranchSummaryView {
+  total: number;
+  active: number;
+  stale: number;
+  /** Longest-abandoned first. Excludes the default branch. */
+  stalest: Array<{ name: string; lastCommitAt?: string }>;
+}
+
+/** Someone who might own a repository, with the evidence for it. */
+export interface OwnershipCandidateView {
+  name?: string;
+  email?: string;
+  commits: number;
+}
+
+/**
+ * A derived suggestion about who owns a repository. **Not ownership.**
+ *
+ * Confirmed ownership is the catalog's `spec.owner`. This is a proposal drawn
+ * from commit history, kept separate precisely so the two are never confused:
+ * a guess presented as a fact is worse than a visible gap.
+ */
+export interface OwnershipProposalView {
+  /** Where the proposal came from, e.g. `commit-history`. */
+  source: string;
+  /** Absent when no candidate was clearly enough ahead to name. */
+  proposed?: OwnershipCandidateView;
+  /** Strongest first, including the proposed one. */
+  candidates: OwnershipCandidateView[];
+  /** Commits considered, so the share can be shown rather than asserted. */
+  windowCommits: number;
+  windowDays: number;
+  resolvedAt: string;
+}
+
+/** What is currently running in one environment. */
+export interface EnvironmentView {
+  /** The environment name as Bitbucket has it, e.g. `production`. */
+  name: string;
+  /** Bitbucket's own normalisation: Test, Staging or Production. */
+  type?: string;
+  releaseName?: string;
+  commitHash?: string;
+  deployedAt: string;
+}
+
+/** Pull request throughput over the activity window. */
+export interface ReviewSummaryView {
+  merged: number;
+  approved: number;
+  open: number;
+  /** Median hours from opening to merge. Absent when nothing merged. */
+  medianMergeHours?: number;
+}
+
 /**
  * The facts the portal holds about one repository, as served to the frontend.
  *
@@ -71,6 +127,21 @@ export interface RepositoryFacts {
   lastCommitAt?: string;
   lastSyncedAt: string;
   activity: RepositoryActivitySummary;
+  branches?: BranchSummaryView;
+  reviews?: ReviewSummaryView;
+  /**
+   * Who commit history suggests owns this, awaiting confirmation. Absent
+   * until the first ownership pass has covered the repository.
+   */
+  ownershipProposal?: OwnershipProposalView;
+  /**
+   * Latest completed deployment per environment, promotion order first.
+   *
+   * Empty when Bitbucket holds no deployment records for the repository --
+   * which usually means its pipeline's `deployment:` value does not match a
+   * configured environment name, not that nothing was ever deployed.
+   */
+  environments?: EnvironmentView[];
   /** Absent until the first scoring run has covered this repository. */
   score?: RepositoryScoreSummary;
 }
@@ -85,6 +156,11 @@ export interface FleetRepositorySummary {
   derivedLanguage?: string;
   techStack?: string[];
   lastCommitAt?: string;
+  /**
+   * Who commit history suggests owns this. **A proposal, not ownership** --
+   * the catalog still records `group:default/unowned` for everything.
+   */
+  proposedOwner?: OwnershipCandidateView;
   /** Absent until a scoring run has covered this repository. */
   score?: {
     total: number;

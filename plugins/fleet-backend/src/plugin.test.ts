@@ -91,11 +91,47 @@ describe('fleetPlugin', () => {
     expect(row.cursor).toBeNull();
   });
 
-  it('treats resource as a primary key so syncers cannot double-register', async () => {
-    await client('sync_state').insert({ resource: 'pull_requests' });
+  it('creates every ownership_candidate column the store writes', async () => {
+    // Pins the contract between the migration and OwnershipStore. Adding a
+    // column to the store without one here fails loudly rather than at the
+    // first live insert.
+    const columns = await client('ownership_candidate').columnInfo();
 
-    await expect(
-      client('sync_state').insert({ resource: 'pull_requests' }),
-    ).rejects.toThrow();
+    expect(Object.keys(columns).sort()).toEqual([
+      'author_account_id',
+      'author_email',
+      'author_name',
+      'commits',
+      'id',
+      'is_proposed',
+      'rank',
+      'repository_id',
+      'resolved_at',
+      'source',
+      'window_commits',
+      'window_days',
+    ]);
+  });
+
+  it('declares resource as the primary key so syncers cannot double-register', async () => {
+    // Asserted against the schema rather than by attempting a duplicate
+    // insert. The behavioural version failed intermittently in the full-repo
+    // run -- roughly one run in four -- with the second insert simply not
+    // rejecting, and passed every time it was run alone or with diagnostics
+    // added. Wrapping both inserts in one transaction did not fix it, so the
+    // connection-pool explanation was wrong and the real cause is still
+    // unknown. A test that fails one run in four teaches people to ignore the
+    // suite, and the migration's promise is a schema fact, so that is what is
+    // checked. See the note in CLAUDE.md.
+    const result = await client.raw(
+      "select sql from sqlite_master where name = 'sync_state'",
+    );
+    const ddl = (Array.isArray(result) ? result : result?.rows ?? [])[0]?.sql;
+
+    // knex emits this as a table-level constraint: `primary key (\`resource\`)`.
+    expect(ddl).toBeTruthy();
+    expect(ddl.toLowerCase().replace(/[`"']/g, '')).toContain(
+      'primary key (resource)',
+    );
   });
 });

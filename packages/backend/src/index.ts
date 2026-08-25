@@ -7,7 +7,10 @@
  */
 
 import { createBackend } from '@backstage/backend-defaults';
-import { catalogModuleBitbucketRepositories } from '@internal/backstage-plugin-fleet-backend';
+import {
+  catalogModuleBitbucketRepositories,
+  searchModuleFleetRepositories,
+} from '@internal/backstage-plugin-fleet-backend';
 
 const backend = createBackend();
 
@@ -77,4 +80,5 @@ backend.add(import('@internal/backstage-plugin-fleet-backend'));
 // Named export, so it is added directly rather than as a dynamic import --
 // backend.add() unwraps `.default` from a promise, which a named export lacks.
 backend.add(catalogModuleBitbucketRepositories);
+backend.add(searchModuleFleetRepositories);
 backend.start();

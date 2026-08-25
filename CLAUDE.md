@@ -25,7 +25,7 @@ Target is the organization's **real Bitbucket estate**, not a sandbox.
 | Permissions     | `allow-all-policy` — nothing is enforced yet                 |
 | Custom plugins  | `fleet-common`, `fleet-backend`, `fleet` (frontend)          |
 | Scorecard       | 6 of 9 metrics live — 85 of 100 weight measurable            |
-| Progress        | 13 steps done, 266 tests, 20 suites                          |
+| Progress        | 22 steps done, 496 tests, 30 suites, 3 e2e                   |
 
 ## Measured facts about the estate
 
@@ -46,19 +46,43 @@ Other findings:
   `BitbucketCloudEntityProvider` would register nothing at all. The custom
   enumerating provider is mandatory, not a preference.
 - **40% have `bitbucket-pipelines.yml`**; 35% declare deployment environments.
-- **Environment names are inconsistent** across repos: `dev`, `development`,
-  `staging`, `Staging`, `production`, `Production`, `Test`. No repo uses `QA`.
-  The document's Development/QA/Staging/Production list does not match reality
-  and a normalization layer is required.
-- **The Deployments API returns 0 records** even for a repo that declares three
-  environments and has them configured. Environment status has no working data
-  source today.
+- **Environment names are inconsistent** across repos: `dev`, `Dev`,
+  `development`, `staging`, `Staging`, `production`, `Production`, `Test`. No
+  repo uses `QA`. The document's Development/QA/Staging/Production list does not
+  match reality. **No custom normalization layer is needed**: every deployment
+  record carries `environment.environment_type.name`, which Bitbucket itself
+  constrains to **Test / Staging / Production**.
+- **The Deployments API works.** An earlier note here said it returned nothing;
+  that was one unrepresentative repository generalised into a claim, and it was
+  wrong. Measured 2026-08-24: **1,328 records across 27 of 47 repositories**
+  sampled; the portal stores the 50 most recent per repository, **541 rows
+  across 27 repositories**, ingested and verified 2026-08-24. Bitbucket creates
+  a record only when the `deployment:` value in
+  `bitbucket-pipelines.yml` **exactly matches** a configured environment name,
+  case included -- `oxp-backend` declares `dev`/`staging`/`production` against
+  environments `Test`/`dev`/`Staging`/`Production` and so records only `dev`.
+  A repository with no records almost always has a naming mismatch, not an
+  absence of deployments. States seen: `COMPLETED`, `UNDEPLOYED`.
 - **Bitbucket returns no `X-RateLimit-*` headers**, so quota consumption cannot
   be observed from responses. The client must count its own requests.
 - **No repository had an open PR** at time of sampling (1 across 20). Historical
   merged PRs exist in volume, so PR metrics have signal -- but "PR backlog" and
   "pending approvals" will not discriminate between repos.
 - A full estate sweep costs roughly **500 requests**, not 60,000.
+- **Commit email is not a person.** 18 derived Users came out of 22 candidate
+  authors, and two of them -- `prashant.chaudhari` and `prashantchaudhari` --
+  are the same human committing under two addresses. Only a real directory can
+  merge them; `examples/org.yaml` already declares `sahilotavanekar`, which a
+  commit from `sahil.otavanekar@` would duplicate the same way.
+- **Ownership is derivable for a quarter of the estate.** Measured 2026-08-24
+  from stored commits, no API cost: **22 of 95** repositories have a committer
+  holding an outright majority of the last 90 days' attributable commits, **19**
+  have contributors but no clear leader, and **54** have no commits in the
+  window at all. Only **10 distinct people** are proposed across those 22 --
+  ownership is concentrated far more tightly than 95 repositories suggests.
+  Bitbucket pipeline bots (`@bots.bitbucket.org`, 22 commits, all in
+  `oxp-backend`) are excluded; no repository is currently bot-led, but one
+  could be.
 - **89 of 95 repositories (94%) have no language detected by Bitbucket.** The
   "Programming Language" field required by section 3 will be blank for almost
   the whole estate unless it is derived some other way.
@@ -142,6 +166,32 @@ override.
 - **Do not delete `routes.ts` when stripping scaffolder demo code.** The
   generated `routeRef` and the plugin's `routes:` block are load-bearing, not
   part of the demo.
+- **Unexplained flake, now worked around:** `plugin.test.ts` used to assert the
+  `sync_state` primary key _behaviourally_, by inserting a duplicate and
+  expecting a rejection. In the full-repo run that failed roughly one run in
+  four with "Received function did not throw", and passed every time it was run
+  alone, with diagnostics added, or wrapped in a single transaction -- so the
+  connection-pool theory was wrong and the cause is still unknown. The DDL does
+  contain `primary key (resource)`. The test now asserts that DDL instead, which
+  is deterministic. If the behavioural form is ever reinstated, expect the
+  flake back.
+- **Never edit a migration that has already run.** Knex records migrations by
+  filename, so an edit is silently a no-op against any database that already
+  applied it -- the unit tests still pass, because they migrate a fresh
+  database every time, and only the live run fails. This cost a debugging cycle
+  on `20260824b_ownership.js`, where two columns added after the first run left
+  41 repositories failing with `column "is_proposed" does not exist`. Add a new
+  migration instead; the only exception is one that has never left this
+  machine, which can be dropped from `knex_migrations` and re-applied.
+- **Never assert a wall-clock budget in a test.** The same build and page
+  measured warm medians from 0.9s to 2.8s on this machine depending only on
+  what else was running. `packages/app/e2e-tests/performance.test.ts` prints
+  timings and asserts **request counts** instead, which do not move with load
+  and are what actually break at scale.
+- **Deployments are only fetched for repositories that have pipeline runs.**
+  Bitbucket cannot record a deployment without one, so asking would spend a
+  request per repository to learn nothing. `RepositoryDetailIngestionService`
+  guards on `runs.length > 0`; a test pins it.
 - **Never send `Accept: application/json` when fetching raw file content.**
   Bitbucket then labels the response JSON and the reader parses plain text,
   which broke 13 repositories on `requirements.txt` and `pyproject.toml`.
@@ -154,13 +204,68 @@ override.
   permissions across every route later is significantly harder.
 - **Score history is written from the first scorer onward** — one row per repo
   per run, never a single mutable row. History cannot be backfilled.
-- Ownership resolution sits behind its own interface so the eventual switch from
-  synthetic org data to Entra/msgraph is a swap, not a rewrite.
+- **Ownership resolution sits behind `OwnershipResolver`** so the eventual
+  switch to Entra/msgraph is a second implementation, not a rewrite.
+  `CommitHistoryOwnershipResolver` is the only one today.
+- **Derived owners DO reach `spec.owner`, tagged `unconfirmed-owner`.**
+  Reversed in step 20 at the product owner's direction, because every stock
+  catalog surface -- Owner column, Owner filter, Owned tab, entity header,
+  search facets -- reads `relations.ownedBy` and nothing else, and the catalog
+  table's columns are not configurable in the new frontend system. The guards
+  that make it honest: the `unconfirmed-owner` tag (so "still a guess" is one
+  filter), `fleet.backstage.io/ownership-source` and `-evidence` annotations,
+  and **the ownership scorer still refuses to award points for a proposal**.
+  73 of 95 remain `group:default/unowned`.
+- **Cross-plugin database reads go through `fleetDatabaseClient`.**
+  `coreServices.database` is scoped to the asking plugin, so a module
+  registered under `catalog` or `search` gets that plugin's database, not
+  fleet's. The helper wraps `DatabaseManager.forPlugin('fleet')` -- the same
+  connection the fleet plugin uses -- and is **read-only by contract**: fleet
+  owns those migrations, and every consumer must tolerate the tables not
+  existing yet.
+- **The classifier claims only what the evidence carries.** `spec.type` and
+  `spec.lifecycle` were hardcoded `service` / `unknown` on all 95 repositories
+  until step 22. Now derived: a front-end framework wins over Docker (most
+  front ends here are containerised too, so letting Docker decide would call
+  every one of them a service); a deployment record proves a deployed thing
+  whatever the manifests say. **Never `library`** -- nothing distinguishes a
+  library from an abandoned service, and 48 repositories have no CI at all.
+  **Never `deprecated`** -- a quiet repository is not a retired one. Both fall
+  back to `unknown`, and `unknown` in the map is distinguishable from absent
+  (not yet classified), which keeps the placeholders.
+- **A collator must batch.** `FleetRepositoryCollatorFactory` issues four
+  queries for the whole estate; a test asserts the query count and fails on an
+  N+1 (verified: an accidental per-repository call took it from 4 to 34). This
+  is invisible at 95 repositories and ruinous at the 10,000 the document
+  imagines.
+- **A proposal only becomes the owner if it resolves to a real entity.**
+  `CommitAuthorEntityProvider` emits a `User` per ownership candidate, tagged
+  `derived-identity`; without one the Owner column renders a broken link, which
+  reads as a defect rather than the gap it is.
+- **A proposal records whether it was confident, rather than letting readers
+  re-derive it.** The thresholds are configurable, so anything re-deriving the
+  decision disagrees with the pass that made it the moment they are tuned.
+  `ownership_candidate.is_proposed` is that record.
+- **A tie is never an owner.** Two people on half the commits each clear a 50%
+  share threshold; the resolver additionally requires the leader to be strictly
+  ahead of the runner-up. Three tests fail if that rule is removed.
 
 ## Commands
 
+Measure the page-load requirement (needs a production build; the backend
+serves it once `packages/app/dist` exists):
+
 ```bash
-docker compose up -d          # start Postgres
+yarn build:all
+PLAYWRIGHT_URL=http://localhost:7007 yarn test:e2e performance
+```
+
+Browse the databases in a UI at **http://localhost:8080** (Adminer; server
+`postgres`, user/password `backstage`). Development only -- it is bound to
+loopback and authenticated by nothing but the Postgres credentials.
+
+```bash
+docker compose up -d          # start Postgres and Adminer
 yarn install                  # install deps
 yarn start                    # app :3000, backend :7007
 yarn tsc                      # typecheck
@@ -186,6 +291,7 @@ docker exec -it backstage-postgres psql -U backstage -c "\l"
 | —   | Dev database      | Postgres 16 in Docker; managed Postgres for production                         |
 | —   | Auth sequencing   | Entra ID deferred to the **end** of the build                                  |
 | —   | Config placement  | Postgres in `app-config.yaml` with `${...}`; values in `app-config.local.yaml` |
+| 9   | §9 numbering gap  | **Not a requirement** — confirmed by the product owner; do not track it        |
 
 ### Open
 
@@ -196,7 +302,6 @@ docker exec -it backstage-postgres psql -U backstage -c "\l"
 | 5   | Keep or drop lines added/deleted                                  | Productivity dashboards           |
 | 6   | Who may see whose productivity data                               | Productivity dashboards           |
 | 7   | Business Owner / Business Unit source of record; retention period | Ownership fields                  |
-| 9   | §9 is missing from the document — numbering jumps 8 → 10          | Unknown scope                     |
 
 ### Deferred as later add-ons
 
@@ -205,16 +310,18 @@ README scorers, Entra ID + RBAC.
 
 ## Known risks
 
-- **Deployment status has no working source.** Environments are configured and
-  `deployment:` keywords exist in pipeline files, but the Deployments API
-  returns no records. Until that is understood, the environment view in section
-  6 cannot be populated from Bitbucket alone. Fallback: have pipelines POST
-  deployment events to the portal.
-- **Environment naming is inconsistent** across repositories and needs
-  normalization before it can drive any UI.
+- **Deployment coverage is partial and not in the portal's control.** Roughly
+  half the repositories with pipelines record no deployments because their
+  `deployment:` values do not match their configured environment names. The card
+  says so explicitly rather than showing a blank, but closing the gap needs a
+  one-line change in each affected repository, by its own team.
 - Bitbucket returns no rate-limit headers, so the client must track its own
   request count. Quota is not the dominant constraint at 95 repositories, but
   the accounting should exist before the estate grows.
+- **The 2-second page-load requirement is not signed off.** Server timings are
+  stable and far inside budget (p95 <= 147ms on every endpoint). Browser
+  timings on a developer machine swing too far to certify either way. One run
+  against a deployed instance is still owed; the harness exists for it.
 - Test coverage in this repo is currently near zero. New modules ship with tests.
 - The Bitbucket credential in use belongs to an individual, not a service
   account. Synchronization will break if that person's access changes.

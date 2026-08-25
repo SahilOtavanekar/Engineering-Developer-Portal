@@ -16,6 +16,22 @@ export interface CommitRecord {
   parent_count: number;
 }
 
+/**
+ * Bitbucket's own address for pipeline and app commits, e.g.
+ * `7gxtj5eq...@bots.bitbucket.org`. A bot writes code but does not own it, and
+ * on a repository where automation is the busiest committer it would otherwise
+ * be proposed as the owner.
+ */
+const BOT_EMAIL_PATTERN = '%@bots.bitbucket.org';
+
+/** One author's contribution to a repository over a window. */
+export interface AuthorContribution {
+  name?: string;
+  email?: string;
+  accountId?: string;
+  commits: number;
+}
+
 export interface RepositoryActivity {
   /** Commits in the window, merges excluded. */
   commits: number;
@@ -122,5 +138,100 @@ export class CommitStore {
       authors: authors.size,
       lastCommitAt: await this.latestCommitAt(repositoryId),
     };
+  }
+
+  /**
+   * Who committed most within a window, busiest first.
+   *
+   * Grouped by email rather than by name: the same person commits as "Ada
+   * Lovelace" and "ada" and "Ada L" depending on which machine they were on,
+   * and splitting one author into three would hide the very concentration this
+   * is looking for. Commits with no email at all are dropped -- they cannot be
+   * attributed to anyone, and guessing from the display name would merge
+   * distinct people who happen to share a first name.
+   *
+   * Merge commits are excluded, for the same reason as everywhere else here: a
+   * merge is not authorship, and whoever presses the button on a busy
+   * repository would otherwise look like its owner. Bot accounts are excluded
+   * too -- see {@link BOT_EMAIL_PATTERN}.
+   */
+  async topAuthorsSince(
+    repositoryId: number,
+    since: Date,
+    limit = 5,
+  ): Promise<AuthorContribution[]> {
+    const rows = (await this.db('commit')
+      .where({ repository_id: repositoryId })
+      .where('committed_at', '>=', since)
+      .where('parent_count', '<', 2)
+      .whereNotNull('author_email')
+      .whereNot('author_email', 'like', BOT_EMAIL_PATTERN)
+      .groupBy('author_email')
+      .select('author_email')
+      .count({ commits: '*' })
+      .orderBy('commits', 'desc')
+      .orderBy('author_email', 'asc')
+      .limit(limit)) as Array<{
+      author_email: string;
+      commits: number | string;
+    }>;
+
+    // A display name and account id are wanted alongside the count, but they
+    // are per-commit and grouping cannot carry them. One extra query for the
+    // handful of emails that survived the limit is cheaper than joining.
+    const emails = rows.map(row => row.author_email);
+    const identities = new Map<string, { name?: string; accountId?: string }>();
+    if (emails.length > 0) {
+      const detail = (await this.db<CommitRecord>('commit')
+        .where({ repository_id: repositoryId })
+        .whereIn('author_email', emails)
+        .orderBy('committed_at', 'desc')
+        .select(
+          'author_email',
+          'author_name',
+          'author_account_id',
+        )) as CommitRecord[];
+
+      // Newest first, so the identity kept is the one they used most recently.
+      for (const row of detail) {
+        const email = row.author_email;
+        if (!email || identities.has(email)) continue;
+        identities.set(email, {
+          name: row.author_name ?? undefined,
+          accountId: row.author_account_id ?? undefined,
+        });
+      }
+    }
+
+    return rows.map(row => ({
+      email: row.author_email,
+      commits: Number(row.commits),
+      name: identities.get(row.author_email)?.name,
+      accountId: identities.get(row.author_email)?.accountId,
+    }));
+  }
+
+  /**
+   * Commits in the window that could be attributed to a person.
+   *
+   * The denominator for an authorship share, and deliberately not
+   * {@link activitySince}'s count: that one counts everything, because
+   * "how busy is this repository" includes bot and unattributed commits. A
+   * share of ownership measured against those would understate whoever
+   * actually wrote the code.
+   */
+  async attributedCommitsSince(
+    repositoryId: number,
+    since: Date,
+  ): Promise<number> {
+    const row = await this.db('commit')
+      .where({ repository_id: repositoryId })
+      .where('committed_at', '>=', since)
+      .where('parent_count', '<', 2)
+      .whereNotNull('author_email')
+      .whereNot('author_email', 'like', BOT_EMAIL_PATTERN)
+      .count({ n: '*' })
+      .first();
+    return Number((row as any)?.n ?? 0);
   }
 }

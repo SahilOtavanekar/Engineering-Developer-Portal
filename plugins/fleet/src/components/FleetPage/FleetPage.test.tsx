@@ -5,6 +5,7 @@ import {
 } from '@backstage/frontend-test-utils';
 import { screen } from '@testing-library/react';
 import type { FleetOverview } from '@internal/backstage-plugin-fleet-common';
+import userEvent from '@testing-library/user-event';
 import { FleetPage } from './FleetPage';
 
 const overview: FleetOverview = {
@@ -19,6 +20,18 @@ const overview: FleetOverview = {
       projectKey: 'DDS',
       score: {
         total: 4,
+        band: 'critical',
+        availableWeight: 45,
+        computedAt: '2026-08-21T11:00:00.000Z',
+      },
+    },
+    {
+      entityRef: 'component:default/idle-service',
+      slug: 'idle-service',
+      name: 'idle-service',
+      projectKey: 'DDS',
+      score: {
+        total: 6,
         band: 'critical',
         availableWeight: 45,
         computedAt: '2026-08-21T11:00:00.000Z',
@@ -42,6 +55,11 @@ const overview: FleetOverview = {
       slug: 'oxp-backend',
       name: 'oxp-backend',
       projectKey: 'DDS',
+      proposedOwner: {
+        name: 'Brijesh Gupta',
+        email: 'brijesh.gupta@demandai.co',
+        commits: 187,
+      },
       lastCommitAt: new Date(Date.now() - 86_400_000).toISOString(),
       score: {
         total: 88,
@@ -81,6 +99,7 @@ describe('FleetPage', () => {
     await render(ok(overview));
 
     expect(await screen.findByText('dead-repo')).toBeInTheDocument();
+    expect(screen.getByText('idle-service')).toBeInTheDocument();
     expect(screen.getByText('shaky')).toBeInTheDocument();
     expect(screen.getByText('oxp-backend')).toBeInTheDocument();
     expect(screen.getByText('brand-new')).toBeInTheDocument();
@@ -91,7 +110,13 @@ describe('FleetPage', () => {
     await screen.findByText('dead-repo');
 
     const links = screen.getAllByRole('link').map(a => a.textContent);
-    expect(links).toEqual(['dead-repo', 'shaky', 'oxp-backend', 'brand-new']);
+    expect(links).toEqual([
+      'dead-repo',
+      'idle-service',
+      'shaky',
+      'oxp-backend',
+      'brand-new',
+    ]);
   });
 
   it('links each repository to its catalog entity', async () => {
@@ -104,19 +129,25 @@ describe('FleetPage', () => {
     );
   });
 
-  it('shows the band summary including the unscored', async () => {
+  it('offers a band filter for each populated band', async () => {
     await render(ok(overview));
 
+    // The bar segments carry the counts and double as the band filter.
     expect(
-      await screen.findByText(/2 critical .* 1 needs\s*attention .* 1 healthy/),
+      await screen.findByRole('button', {
+        name: 'Critical (2)',
+        pressed: false,
+      }),
     ).toBeInTheDocument();
-    expect(screen.getByText(/1 not yet scored/)).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /Not scored \(1\)/ }),
+    ).toBeInTheDocument();
   });
 
   it('shows how much weight each score was measured over', async () => {
     await render(ok(overview));
 
-    expect(await screen.findByText('45 / 100')).toBeInTheDocument();
+    expect(await screen.findAllByText('45 / 100')).toHaveLength(2);
     expect(screen.getAllByText('85 / 100')).toHaveLength(2);
   });
 
@@ -129,7 +160,7 @@ describe('FleetPage', () => {
   it('says when a repository has never been committed to', async () => {
     await render(ok(overview));
 
-    expect(await screen.findAllByText('Never')).toHaveLength(2);
+    expect(await screen.findAllByText('Never')).toHaveLength(3);
   });
 
   it('handles an estate with nothing in it', async () => {
@@ -156,5 +187,131 @@ describe('FleetPage', () => {
     expect(
       await screen.findByText(/Could not load the fleet/),
     ).toBeInTheDocument();
+  });
+
+  describe('filtering', () => {
+    it('reports the total when nothing is filtered', async () => {
+      await render(ok(overview));
+
+      expect(await screen.findByText('5 repositories')).toBeInTheDocument();
+    });
+
+    it('narrows to a band when its segment is clicked', async () => {
+      await render(ok(overview));
+      const critical = await screen.findByRole('button', {
+        name: 'Critical (2)',
+      });
+
+      await userEvent.click(critical);
+
+      expect(
+        screen.getByText('Showing 2 of 5 repositories'),
+      ).toBeInTheDocument();
+      expect(screen.queryByRole('link', { name: 'oxp-backend' })).toBeNull();
+      expect(
+        screen.getByRole('link', { name: 'dead-repo' }),
+      ).toBeInTheDocument();
+    });
+
+    it('clears a band filter when its segment is clicked again', async () => {
+      await render(ok(overview));
+      const critical = await screen.findByRole('button', {
+        name: 'Critical (2)',
+      });
+
+      await userEvent.click(critical);
+      await userEvent.click(critical);
+
+      expect(screen.getByText('5 repositories')).toBeInTheDocument();
+    });
+
+    it('narrows to the unscored', async () => {
+      await render(ok(overview));
+
+      await userEvent.click(
+        await screen.findByRole('button', { name: /Not scored/ }),
+      );
+
+      expect(
+        screen.getByRole('link', { name: 'brand-new' }),
+      ).toBeInTheDocument();
+      expect(screen.queryByRole('link', { name: 'dead-repo' })).toBeNull();
+    });
+
+    it('filters by name as you type', async () => {
+      await render(ok(overview));
+      const box = await screen.findByLabelText('Filter repositories by name');
+
+      await userEvent.type(box, 'oxp');
+
+      expect(
+        screen.getByRole('link', { name: 'oxp-backend' }),
+      ).toBeInTheDocument();
+      expect(screen.queryByRole('link', { name: 'shaky' })).toBeNull();
+    });
+
+    it('says so plainly when nothing matches', async () => {
+      await render(ok(overview));
+      const box = await screen.findByLabelText('Filter repositories by name');
+
+      await userEvent.type(box, 'nothing-matches-this');
+
+      expect(
+        screen.getByText('No repositories match these filters.'),
+      ).toBeInTheDocument();
+    });
+
+    it('restores everything with Clear filters', async () => {
+      await render(ok(overview));
+      const box = await screen.findByLabelText('Filter repositories by name');
+      await userEvent.type(box, 'oxp');
+
+      await userEvent.click(
+        screen.getByRole('button', { name: 'Clear filters' }),
+      );
+
+      expect(screen.getByText('5 repositories')).toBeInTheDocument();
+    });
+  });
+});
+
+describe('proposed owner column', () => {
+  it('shows the suggested owner for a repository that has one', async () => {
+    await render(ok(overview));
+
+    expect(await screen.findByText('Brijesh Gupta')).toBeInTheDocument();
+  });
+
+  it('heads the column with a question mark, because none of it is confirmed', async () => {
+    // The catalog still records every one of these as unowned. A column headed
+    // "Owner" would read as settled fact.
+    await render(ok(overview));
+
+    expect(await screen.findByText('Owner?')).toBeInTheDocument();
+  });
+
+  it('dashes a repository nobody clearly owns rather than guessing', async () => {
+    await render(ok(overview));
+    await screen.findByText('Brijesh Gupta');
+
+    // Four of the five rows have no proposal.
+    const row = screen.getByRole('link', { name: 'dead-repo' }).closest('tr');
+    expect(row?.textContent).not.toMatch(/Gupta/);
+  });
+
+  it('falls back to the address when there is no display name', async () => {
+    await render(
+      ok({
+        ...overview,
+        repositories: [
+          {
+            ...overview.repositories[3],
+            proposedOwner: { email: 'ada@demandai.co', commits: 12 },
+          },
+        ],
+      }),
+    );
+
+    expect(await screen.findByText('ada@demandai.co')).toBeInTheDocument();
   });
 });

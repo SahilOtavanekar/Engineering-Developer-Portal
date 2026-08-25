@@ -58,9 +58,9 @@ describe('filterRepositories', () => {
 
     it('never lets an unscored repository match a real band', () => {
       for (const band of ['healthy', 'needs-attention', 'critical']) {
-        expect(
-          filterRepositories(estate, { band }).some(r => !r.score),
-        ).toBe(false);
+        expect(filterRepositories(estate, { band }).some(r => !r.score)).toBe(
+          false,
+        );
       }
     });
   });

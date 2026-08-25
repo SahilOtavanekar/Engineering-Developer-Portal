@@ -2,6 +2,7 @@ import { mockServices } from '@backstage/backend-test-utils';
 import { FakeBitbucketClient } from '../bitbucket/FakeBitbucketClient';
 import type { BitbucketClient, BitbucketRepository } from '../bitbucket/types';
 import { BranchStore } from '../database/BranchStore';
+import { DeploymentStore } from '../database/DeploymentStore';
 import { PipelineStore } from '../database/PipelineStore';
 import { RepositoryStore } from '../database/RepositoryStore';
 import { SyncStateStore } from '../database/SyncStateStore';
@@ -33,6 +34,7 @@ describe('RepositoryDetailIngestionService', () => {
   let repositories: RepositoryStore;
   let branches: BranchStore;
   let pipelines: PipelineStore;
+  let deployments: DeploymentStore;
   let syncState: SyncStateStore;
 
   const build = (client: BitbucketClient) =>
@@ -41,6 +43,7 @@ describe('RepositoryDetailIngestionService', () => {
       repositories,
       branches,
       pipelines,
+      deployments,
       syncState,
       logger: mockServices.logger.mock(),
     });
@@ -50,6 +53,7 @@ describe('RepositoryDetailIngestionService', () => {
     repositories = new RepositoryStore(db.client);
     branches = new BranchStore(db.client);
     pipelines = new PipelineStore(db.client);
+    deployments = new DeploymentStore(db.client);
     syncState = new SyncStateStore(db.client);
   });
 
@@ -60,6 +64,7 @@ describe('RepositoryDetailIngestionService', () => {
   beforeEach(async () => {
     await db.client('branch').delete();
     await db.client('pipeline_run').delete();
+    await db.client('deployment').delete();
     await db.client('repository').delete();
     await db.client('sync_state').delete();
   });
@@ -319,6 +324,259 @@ describe('RepositoryDetailIngestionService', () => {
       // branches + pipelines + root listing, and no manifest fetch: none of
       // those three files would tell us anything more than their name already does.
       expect(client.requestCount - before).toBe(3);
+    });
+  });
+
+  describe('stale branch detail', () => {
+    it('names the longest-abandoned branches, oldest first', async () => {
+      const id = await seed('alpha');
+
+      await build(clientFor('alpha')).ingest('demandai', NOW);
+      const stalest = await branches.stalest(id, WINDOW_START);
+
+      expect(stalest).toHaveLength(5);
+      // The generator ages stale branches progressively; the oldest leads.
+      const times = stalest.map(b => b.lastCommitAt!.getTime());
+      expect([...times].sort((a, b) => a - b)).toEqual(times);
+    });
+
+    it('never reports the default branch as abandoned', async () => {
+      const id = await seed('alpha');
+
+      await build(clientFor('alpha')).ingest('demandai', NOW);
+      const stalest = await branches.stalest(id, WINDOW_START);
+
+      expect(stalest.map(b => b.name)).not.toContain('main');
+    });
+
+    it('returns nothing when every branch is active', async () => {
+      const id = await seed('fresh');
+      const client = new FakeBitbucketClient([
+        repository('fresh'),
+      ]).withBranches(
+        'demandai',
+        'fresh',
+        FakeBitbucketClient.generateBranches(3, 0, NOW),
+      );
+
+      await build(client).ingest('demandai', NOW);
+
+      await expect(branches.stalest(id, WINDOW_START)).resolves.toEqual([]);
+    });
+
+    it('honours the limit', async () => {
+      const id = await seed('alpha');
+
+      await build(clientFor('alpha')).ingest('demandai', NOW);
+
+      await expect(branches.stalest(id, WINDOW_START, 2)).resolves.toHaveLength(
+        2,
+      );
+    });
+  });
+  describe('classification', () => {
+    const environments: Array<[string, string]> = [
+      ['dev', 'Test'],
+      ['production', 'Production'],
+    ];
+
+    async function classify(slug: string, client: FakeBitbucketClient) {
+      const id = await seed(slug);
+      await build(client).ingest('demandai', NOW);
+      const stored = await repositories.findByEntityRef(
+        `component:default/${slug}`,
+      );
+      return {
+        id,
+        type: stored!.derived_type,
+        lifecycle: stored!.derived_lifecycle,
+      };
+    }
+
+    it('calls a React repository a website that is live', async () => {
+      const client = new FakeBitbucketClient([repository('front')])
+        .withRootFiles('demandai', 'front', ['package.json'])
+        .withFileContent('demandai', 'front', {
+          'package.json': JSON.stringify({
+            dependencies: { react: '^18.0.0' },
+          }),
+        })
+        .withPipelineRuns(
+          'demandai',
+          'front',
+          FakeBitbucketClient.generatePipelineRuns(4, 0, NOW),
+        )
+        .withDeployments(
+          'demandai',
+          'front',
+          FakeBitbucketClient.generateDeployments(environments, NOW),
+        );
+
+      await expect(classify('front', client)).resolves.toMatchObject({
+        type: 'website',
+        lifecycle: 'production',
+      });
+    });
+
+    it('calls a containerised backend a service that is live', async () => {
+      const client = new FakeBitbucketClient([repository('api')])
+        .withRootFiles('demandai', 'api', ['Dockerfile', 'requirements.txt'])
+        .withPipelineRuns(
+          'demandai',
+          'api',
+          FakeBitbucketClient.generatePipelineRuns(4, 0, NOW),
+        )
+        .withDeployments(
+          'demandai',
+          'api',
+          FakeBitbucketClient.generateDeployments(environments, NOW),
+        );
+
+      await expect(classify('api', client)).resolves.toMatchObject({
+        type: 'service',
+        lifecycle: 'production',
+      });
+    });
+
+    it('calls a built but never-deployed repository experimental', async () => {
+      const client = new FakeBitbucketClient([repository('built')])
+        .withRootFiles('demandai', 'built', ['Dockerfile'])
+        .withPipelineRuns(
+          'demandai',
+          'built',
+          FakeBitbucketClient.generatePipelineRuns(4, 0, NOW),
+        );
+
+      await expect(classify('built', client)).resolves.toMatchObject({
+        type: 'service',
+        lifecycle: 'experimental',
+      });
+    });
+
+    it('claims nothing about a dormant repository', async () => {
+      const client = new FakeBitbucketClient([repository('quiet')]);
+
+      await expect(classify('quiet', client)).resolves.toMatchObject({
+        type: 'unknown',
+        lifecycle: 'unknown',
+      });
+    });
+
+    it('counts only the repositories it could say something about', async () => {
+      await seed('quiet');
+      const summary = await build(
+        new FakeBitbucketClient([repository('quiet')]),
+      ).ingest('demandai', NOW);
+
+      expect(summary.classified).toBe(0);
+    });
+
+    it('ignores a deployment that never completed when deciding lifecycle', async () => {
+      const client = new FakeBitbucketClient([repository('rolled-back')])
+        .withRootFiles('demandai', 'rolled-back', ['Dockerfile'])
+        .withPipelineRuns(
+          'demandai',
+          'rolled-back',
+          FakeBitbucketClient.generatePipelineRuns(4, 0, NOW),
+        )
+        .withDeployments('demandai', 'rolled-back', [
+          {
+            uuid: '{undeployed}',
+            environmentName: 'production',
+            environmentType: 'Production',
+            state: 'UNDEPLOYED',
+            createdAt: NOW.toISOString(),
+          },
+        ]);
+
+      await expect(classify('rolled-back', client)).resolves.toMatchObject({
+        lifecycle: 'experimental',
+      });
+    });
+  });
+
+  describe('deployments', () => {
+    const environments: Array<[string, string]> = [
+      ['dev', 'Test'],
+      ['staging', 'Staging'],
+      ['production', 'Production'],
+    ];
+
+    it('records what is live in each environment', async () => {
+      const id = await seed('alpha');
+      const client = clientFor('alpha').withDeployments(
+        'demandai',
+        'alpha',
+        FakeBitbucketClient.generateDeployments(environments, NOW),
+      );
+
+      const summary = await build(client).ingest('demandai', NOW);
+
+      expect(summary).toMatchObject({ deployments: 3, failures: 0 });
+      await expect(deployments.currentEnvironments(id)).resolves.toMatchObject([
+        { environmentName: 'dev' },
+        { environmentName: 'staging' },
+        { environmentName: 'production' },
+      ]);
+    });
+
+    it('does not ask a repository with no pipeline runs for deployments', async () => {
+      // Bitbucket only records a deployment when a pipeline declares one, so
+      // asking here would spend a request per repository to learn nothing.
+      await seed('quiet');
+      const client = new FakeBitbucketClient([repository('quiet')]);
+
+      const summary = await build(client).ingest('demandai', NOW);
+
+      expect(summary.deployments).toBe(0);
+      expect(client.requestsFor('listDeployments')).toBe(0);
+    });
+
+    it('clears the snapshot when a repository loses its pipelines', async () => {
+      // Without this the card would keep showing a release that no longer has
+      // any pipeline behind it -- worse than showing nothing.
+      const id = await seed('alpha');
+      await build(
+        clientFor('alpha').withDeployments(
+          'demandai',
+          'alpha',
+          FakeBitbucketClient.generateDeployments(environments, NOW),
+        ),
+      ).ingest('demandai', NOW);
+      expect(await deployments.count(id)).toBe(3);
+
+      const withoutPipelines = new FakeBitbucketClient([repository('alpha')]);
+      await build(withoutPipelines).ingest('demandai', NOW);
+
+      expect(await deployments.count(id)).toBe(0);
+      expect(withoutPipelines.requestsFor('listDeployments')).toBe(0);
+    });
+
+    it('reports no environments for a repository whose names do not match', async () => {
+      // The common real case: bitbucket-pipelines.yml says `production` but
+      // the configured environment is `Production`, so Bitbucket records
+      // nothing. That is honest emptiness, not a failure.
+      const id = await seed('mismatched');
+      const client = clientFor('mismatched');
+
+      const summary = await build(client).ingest('demandai', NOW);
+
+      expect(summary).toMatchObject({ deployments: 0, failures: 0 });
+      await expect(deployments.currentEnvironments(id)).resolves.toEqual([]);
+    });
+
+    it('replaces the snapshot rather than accumulating it', async () => {
+      const id = await seed('alpha');
+      const client = clientFor('alpha').withDeployments(
+        'demandai',
+        'alpha',
+        FakeBitbucketClient.generateDeployments(environments, NOW),
+      );
+
+      await build(client).ingest('demandai', NOW);
+      await build(client).ingest('demandai', NOW);
+
+      await expect(deployments.count(id)).resolves.toBe(3);
     });
   });
 });

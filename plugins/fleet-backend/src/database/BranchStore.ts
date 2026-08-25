@@ -3,6 +3,11 @@ import type { BitbucketBranch } from '../bitbucket/types';
 
 type DatabaseClient = Awaited<ReturnType<DatabaseService['getClient']>>;
 
+export interface StaleBranch {
+  name: string;
+  lastCommitAt: Date | null;
+}
+
 export interface BranchSummary {
   total: number;
   /** Branches with a commit inside the staleness window. */
@@ -58,5 +63,36 @@ export class BranchStore {
     }
 
     return { total: rows.length, active, stale: rows.length - active };
+  }
+
+  /**
+   * The branches abandoned longest ago, oldest first.
+   *
+   * Section 6 asks for long-running branches by name, not just a count: a
+   * number tells someone there is a problem, the names tell them what to delete.
+   */
+  async stalest(
+    repositoryId: number,
+    staleBefore: Date,
+    limit = 5,
+  ): Promise<StaleBranch[]> {
+    const rows = (await this.db('branch')
+      .where({ repository_id: repositoryId, is_default: false })
+      .where(builder =>
+        builder
+          .where('last_commit_at', '<', staleBefore)
+          .orWhereNull('last_commit_at'),
+      )
+      .orderBy('last_commit_at', 'asc')
+      .limit(limit)
+      .select('name', 'last_commit_at')) as Array<{
+      name: string;
+      last_commit_at: Date | null;
+    }>;
+
+    return rows.map(row => ({
+      name: row.name,
+      lastCommitAt: row.last_commit_at ? new Date(row.last_commit_at) : null,
+    }));
   }
 }

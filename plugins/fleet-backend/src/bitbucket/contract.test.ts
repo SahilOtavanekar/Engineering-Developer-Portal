@@ -19,9 +19,11 @@ const fakeClient: ClientFactory = slugs =>
 
 const cloudClient: ClientFactory = slugs => {
   const fetchImpl = jest.fn(async (url: any) => {
-    // The stub must distinguish endpoints, or listCommits would be handed
-    // repository payloads and map them into nonsense commits.
-    const values = String(url).includes('/commits')
+    // Only the workspace listing gets repository payloads. Anything else --
+    // commits, deployments, whatever is added next -- gets nothing, or it
+    // would be handed repository payloads and map them into nonsense.
+    const isWorkspaceListing = /\/repositories\/[^/]+\?/.test(String(url));
+    const values = !isWorkspaceListing
       ? []
       : slugs.map(slug => ({
           slug,
@@ -97,6 +99,22 @@ describe.each(implementations)('%s contract', (_name, build) => {
     const client = build(['alpha']);
 
     await expect(client.listCommits('demandai', '')).rejects.toThrow(
+      'repository slug are required',
+    );
+  });
+
+  it('returns no deployments for a repository that has none', async () => {
+    const client = build(['alpha']);
+
+    await expect(client.listDeployments('demandai', 'alpha')).resolves.toEqual(
+      [],
+    );
+  });
+
+  it('rejects an empty repository slug when listing deployments', async () => {
+    const client = build(['alpha']);
+
+    await expect(client.listDeployments('demandai', '')).rejects.toThrow(
       'repository slug are required',
     );
   });

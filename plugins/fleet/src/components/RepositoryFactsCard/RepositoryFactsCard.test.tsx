@@ -205,4 +205,146 @@ describe('RepositoryFactsCard', () => {
 
     expect(await screen.findAllByText('—')).toHaveLength(3);
   });
+  describe('environments', () => {
+    const environments = [
+      {
+        name: 'dev',
+        type: 'Test',
+        releaseName: '#410',
+        commitHash: 'aaaaaaaabbbbbbbb',
+        deployedAt: new Date(Date.now() - 3_600_000).toISOString(),
+      },
+      {
+        name: 'production',
+        type: 'Production',
+        releaseName: '#412',
+        commitHash: 'ccccccccdddddddd',
+        deployedAt: new Date(Date.now() - 2 * 86_400_000).toISOString(),
+      },
+    ];
+
+    it('shows what is live in each environment, with its release', async () => {
+      await render(ok({ ...facts, environments }));
+
+      expect(await screen.findByText('dev · Test')).toBeInTheDocument();
+      expect(screen.getByText('production · Production')).toBeInTheDocument();
+      expect(screen.getByText('1 hour ago')).toBeInTheDocument();
+      expect(screen.getByText('2 days ago')).toBeInTheDocument();
+    });
+
+    it('abbreviates the commit hash rather than wrapping it', async () => {
+      await render(ok({ ...facts, environments }));
+
+      expect(await screen.findByText('#412 · ccccccc')).toBeInTheDocument();
+      expect(screen.queryByText(/ccccccccdddddddd/)).not.toBeInTheDocument();
+    });
+
+    it('says how to fix a repository that records no deployments', async () => {
+      // The common cause is a name mismatch, and the team cannot act on
+      // "no data" -- only on which name to change.
+      await render(ok({ ...facts, environments: [] }));
+
+      expect(
+        await screen.findByText(/exactly matches a configured environment/),
+      ).toBeInTheDocument();
+    });
+
+    it('omits the section entirely when the backend served no such field', async () => {
+      await render(ok({ ...facts, environments: undefined }));
+
+      expect(await screen.findByText('261')).toBeInTheDocument();
+      expect(screen.queryByText('Environments')).not.toBeInTheDocument();
+    });
+  });
+  describe('ownership proposal', () => {
+    const proposal = {
+      source: 'commit-history',
+      proposed: {
+        name: 'Ada Lovelace',
+        email: 'ada@demandai.co',
+        commits: 34,
+      },
+      candidates: [
+        { name: 'Ada Lovelace', email: 'ada@demandai.co', commits: 34 },
+        { name: 'Alan Turing', email: 'alan@demandai.co', commits: 7 },
+      ],
+      windowCommits: 41,
+      windowDays: 90,
+      resolvedAt: new Date().toISOString(),
+    };
+
+    it('names the suggested owner with the share behind it', async () => {
+      await render(ok({ ...facts, ownershipProposal: proposal }));
+
+      expect(await screen.findByText('Ada Lovelace')).toBeInTheDocument();
+      expect(screen.getByText(/34 of 41 commits \(83%\)/)).toBeInTheDocument();
+    });
+
+    it('says plainly that it is a guess and not the catalog owner', async () => {
+      // Someone reading this must not come away thinking ownership is set.
+      await render(ok({ ...facts, ownershipProposal: proposal }));
+
+      expect(
+        await screen.findByText('Suggested owner — not confirmed'),
+      ).toBeInTheDocument();
+      expect(screen.getByText(/still owned by/)).toBeInTheDocument();
+      expect(screen.getByText('group:default/unowned')).toBeInTheDocument();
+    });
+
+    it('lists the runners-up so the suggestion can be judged', async () => {
+      await render(ok({ ...facts, ownershipProposal: proposal }));
+
+      expect(
+        await screen.findByText(/Ada Lovelace \(34\) · Alan Turing \(7\)/),
+      ).toBeInTheDocument();
+    });
+
+    it('names nobody when commits are spread too evenly', async () => {
+      await render(
+        ok({
+          ...facts,
+          ownershipProposal: {
+            ...proposal,
+            proposed: undefined,
+            candidates: [
+              { name: 'Ada Lovelace', commits: 20 },
+              { name: 'Alan Turing', commits: 20 },
+            ],
+          },
+        }),
+      );
+
+      expect(
+        await screen.findByText(/commits are spread too evenly/),
+      ).toBeInTheDocument();
+      expect(screen.queryByText('Ada Lovelace')).not.toBeInTheDocument();
+    });
+
+    it('says there is no history to work from when there are no candidates', async () => {
+      await render(
+        ok({
+          ...facts,
+          ownershipProposal: {
+            ...proposal,
+            proposed: undefined,
+            candidates: [],
+            windowCommits: 0,
+          },
+        }),
+      );
+
+      expect(
+        await screen.findByText(/No commits in the last 90 days/),
+      ).toBeInTheDocument();
+    });
+
+    it('omits the section before the first ownership pass', async () => {
+      await render(ok({ ...facts, ownershipProposal: undefined }));
+
+      expect(await screen.findByText('261')).toBeInTheDocument();
+      expect(
+        screen.queryByText('Suggested owner — not confirmed'),
+      ).not.toBeInTheDocument();
+    });
+  });
 });

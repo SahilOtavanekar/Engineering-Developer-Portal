@@ -12,7 +12,11 @@ import {
 import { AuthorizeResult } from '@backstage/plugin-permission-common';
 import express from 'express';
 import Router from 'express-promise-router';
+import type { BranchStore } from './database/BranchStore';
 import type { CommitStore } from './database/CommitStore';
+import type { DeploymentStore } from './database/DeploymentStore';
+import type { OwnershipStore } from './database/OwnershipStore';
+import type { PullRequestStore } from './database/PullRequestStore';
 import type { ScoreStore } from './database/ScoreStore';
 import type {
   RepositoryRecord,
@@ -22,6 +26,10 @@ import type {
 export interface RouterOptions {
   repositories: RepositoryStore;
   commits: CommitStore;
+  branches: BranchStore;
+  pullRequests: PullRequestStore;
+  deployments: DeploymentStore;
+  ownership: OwnershipStore;
   scores: ScoreStore;
   /** Nominal total across every registered metric, measurable or not. */
   nominalWeight: number;
@@ -53,6 +61,10 @@ export async function createRouter(
   const {
     repositories,
     commits,
+    branches,
+    pullRequests,
+    deployments,
+    ownership,
     scores,
     nominalWeight,
     httpAuth,
@@ -85,10 +97,15 @@ export async function createRouter(
       typeof req.query.workspace === 'string' ? req.query.workspace : undefined;
 
     const records = await repositories.listLive(workspace);
-    const latest = await scores.latestForRepositories(records.map(r => r.id));
+    const ids = records.map(r => r.id);
+    const [latest, proposedOwners] = await Promise.all([
+      scores.latestForRepositories(ids),
+      ownership.proposedForRepositories(ids),
+    ]);
 
     const summaries: FleetRepositorySummary[] = records.map(record => {
       const score = latest.get(record.id);
+      const owner = proposedOwners.get(record.id);
       return {
         entityRef: record.entity_ref,
         slug: record.slug,
@@ -98,6 +115,13 @@ export async function createRouter(
         derivedLanguage: optional(record.derived_language),
         techStack: record.tech_stack ?? undefined,
         lastCommitAt: iso(record.last_commit_at),
+        proposedOwner: owner
+          ? {
+              name: owner.name,
+              email: owner.email,
+              commits: owner.commits,
+            }
+          : undefined,
         score: score
           ? {
               total: score.total,
@@ -171,10 +195,29 @@ export async function createRouter(
         Date.now() - activityWindowDays * 24 * 60 * 60 * 1000,
       );
       const activity = await commits.activitySince(record.id, since);
-      const [latestScore, scoreHistory] = await Promise.all([
+      const [
+        latestScore,
+        scoreHistory,
+        branchSummary,
+        stalest,
+        reviews,
+        environments,
+        ownershipCandidates,
+      ] = await Promise.all([
         scores.latest(record.id),
         scores.history(record.id, HISTORY_POINTS),
+        branches.summary(record.id, since),
+        branches.stalest(record.id, since),
+        pullRequests.reviewSummary(record.id, since),
+        deployments.currentEnvironments(record.id),
+        ownership.forRepository(record.id),
       ]);
+
+      // Whether a candidate was confident enough to name was decided by the
+      // resolver and recorded on the row. Re-deriving it here would duplicate
+      // a configurable policy in a place that cannot see the config.
+      const leader = ownershipCandidates[0];
+      const proposedOwner = ownershipCandidates.find(c => c.isProposed);
 
       const facts: RepositoryFacts = {
         entityRef: record.entity_ref,
@@ -198,6 +241,41 @@ export async function createRouter(
           commits: activity.commits,
           authors: activity.authors,
         },
+        branches: {
+          ...branchSummary,
+          stalest: stalest.map(branch => ({
+            name: branch.name,
+            lastCommitAt: iso(branch.lastCommitAt),
+          })),
+        },
+        reviews,
+        ownershipProposal: leader
+          ? {
+              source: leader.source,
+              proposed: proposedOwner
+                ? {
+                    name: proposedOwner.name,
+                    email: proposedOwner.email,
+                    commits: proposedOwner.commits,
+                  }
+                : undefined,
+              candidates: ownershipCandidates.map(candidate => ({
+                name: candidate.name,
+                email: candidate.email,
+                commits: candidate.commits,
+              })),
+              windowCommits: leader.windowCommits,
+              windowDays: leader.windowDays,
+              resolvedAt: leader.resolvedAt.toISOString(),
+            }
+          : undefined,
+        environments: environments.map(environment => ({
+          name: environment.environmentName,
+          type: environment.environmentType,
+          releaseName: environment.releaseName,
+          commitHash: environment.commitHash,
+          deployedAt: environment.deployedAt.toISOString(),
+        })),
         score: latestScore
           ? {
               total: latestScore.total,

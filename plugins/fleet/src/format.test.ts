@@ -1,4 +1,4 @@
-import { formatBytes, timeAgo } from './format';
+import { formatBytes, formatHours, timeAgo } from './format';
 
 describe('timeAgo', () => {
   const now = new Date('2026-08-21T12:00:00.000Z');
@@ -56,5 +56,34 @@ describe('formatBytes', () => {
 
   it('refuses a negative size rather than inventing one', () => {
     expect(formatBytes(-1)).toBeUndefined();
+  });
+});
+
+describe('formatHours', () => {
+  it('returns undefined when the duration is unknown', () => {
+    expect(formatHours(undefined)).toBeUndefined();
+  });
+
+  it('reports sub-hour durations in minutes', () => {
+    expect(formatHours(0.5)).toBe('30 min');
+    expect(formatHours(0.01)).toBe('1 min');
+  });
+
+  it('keeps one decimal for short durations', () => {
+    expect(formatHours(2.5)).toBe('2.5 hours');
+    expect(formatHours(1)).toBe('1 hour');
+  });
+
+  it('drops the decimal once the number is larger', () => {
+    expect(formatHours(26.4)).toBe('26 hours');
+  });
+
+  it('switches to days past two, because nobody reasons in 73 hours', () => {
+    expect(formatHours(73)).toBe('3 days');
+    expect(formatHours(48)).toBe('2 days');
+  });
+
+  it('refuses a negative duration rather than inventing one', () => {
+    expect(formatHours(-1)).toBeUndefined();
   });
 });

@@ -98,6 +98,25 @@ export interface ListPullRequestsOptions {
   maxPages?: number;
 }
 
+/**
+ * One deployment of a release to an environment.
+ *
+ * `environmentType` is Bitbucket's normalised bucket -- Test, Staging or
+ * Production -- and is what to group by. `environmentName` is whatever the
+ * team called it, and varies in case and wording across the estate.
+ */
+export interface BitbucketDeployment {
+  uuid: string;
+  number?: number;
+  environmentName: string;
+  environmentType?: string;
+  state: string;
+  releaseName?: string;
+  commitHash?: string;
+  createdAt: string;
+  lastUpdatedAt?: string;
+}
+
 export interface ListCommitsOptions {
   /**
    * Stop paging once commits older than this are reached. Bitbucket has no
@@ -141,6 +160,18 @@ export interface BitbucketClient {
 
   /** Every branch in the repository, with its most recent commit. */
   listBranches(workspace: string, slug: string): Promise<BitbucketBranch[]>;
+
+  /**
+   * Recent deployments, newest first.
+   *
+   * Empty for a repository whose pipeline declares no deployment step, or
+   * whose declared environment name does not match a configured one.
+   */
+  listDeployments(
+    workspace: string,
+    slug: string,
+    options?: { limit?: number },
+  ): Promise<BitbucketDeployment[]>;
 
   /** Recent pipeline runs, newest first. */
   listPipelineRuns(

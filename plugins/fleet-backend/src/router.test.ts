@@ -4,6 +4,10 @@ import express from 'express';
 import request from 'supertest';
 import type { BitbucketCommit, BitbucketRepository } from './bitbucket/types';
 import { CommitStore } from './database/CommitStore';
+import { BranchStore } from './database/BranchStore';
+import { DeploymentStore } from './database/DeploymentStore';
+import { OwnershipStore } from './database/OwnershipStore';
+import { PullRequestStore } from './database/PullRequestStore';
 import { RepositoryStore } from './database/RepositoryStore';
 import { ScoreStore } from './database/ScoreStore';
 import {
@@ -47,6 +51,10 @@ describe('createRouter', () => {
   let db: FleetTestDatabase;
   let repositories: RepositoryStore;
   let commits: CommitStore;
+  let branches: BranchStore;
+  let pullRequests: PullRequestStore;
+  let deployments: DeploymentStore;
+  let ownership: OwnershipStore;
   let scores: ScoreStore;
 
   async function app(
@@ -57,6 +65,10 @@ describe('createRouter', () => {
     const router = await createRouter({
       repositories,
       commits,
+      branches,
+      pullRequests,
+      deployments,
+      ownership,
       scores,
       nominalWeight: 30,
       httpAuth: mockServices.httpAuth(),
@@ -72,6 +84,10 @@ describe('createRouter', () => {
     db = await startFleetTestDatabase();
     repositories = new RepositoryStore(db.client);
     commits = new CommitStore(db.client);
+    branches = new BranchStore(db.client);
+    pullRequests = new PullRequestStore(db.client);
+    deployments = new DeploymentStore(db.client);
+    ownership = new OwnershipStore(db.client);
     scores = new ScoreStore(db.client);
   });
 
@@ -81,6 +97,10 @@ describe('createRouter', () => {
 
   beforeEach(async () => {
     await db.client('repo_score').delete();
+    await db.client('branch').delete();
+    await db.client('pull_request').delete();
+    await db.client('deployment').delete();
+    await db.client('ownership_candidate').delete();
     await db.client('commit').delete();
     await db.client('repository').delete();
   });
@@ -292,6 +312,268 @@ describe('createRouter', () => {
     ]);
   });
 
+  it('serves pull request throughput alongside the facts', async () => {
+    await repositories.syncWorkspace('demandai', [repository()], NOW);
+    const stored = await repositories.findByEntityRef(
+      'component:default/oxp-backend',
+    );
+    await pullRequests.upsertMany(stored!.id, [
+      {
+        id: 1,
+        state: 'MERGED',
+        createdAt: '2026-08-19T12:00:00.000Z',
+        updatedAt: '2026-08-20T12:00:00.000Z',
+        commentCount: 2,
+        approvalCount: 1,
+        participantCount: 1,
+      },
+      {
+        id: 2,
+        state: 'MERGED',
+        createdAt: '2026-08-19T12:00:00.000Z',
+        updatedAt: '2026-08-20T12:00:00.000Z',
+        commentCount: 0,
+        approvalCount: 0,
+        participantCount: 0,
+      },
+    ]);
+
+    const res = await request(await app())
+      .get(url)
+      .expect(200);
+
+    expect(res.body.reviews).toMatchObject({ merged: 2, approved: 1, open: 0 });
+    // 24 hours between opening and merging, which is what section 6 calls
+    // average merge duration.
+    expect(res.body.reviews.medianMergeHours).toBe(24);
+  });
+
+  it('serves branch health and names the abandoned branches', async () => {
+    await repositories.syncWorkspace('demandai', [repository()], NOW);
+    const stored = await repositories.findByEntityRef(
+      'component:default/oxp-backend',
+    );
+    await branches.replaceForRepository(
+      stored!.id,
+      [
+        { name: 'main', lastCommitAt: '2026-08-20T12:00:00.000Z' },
+        { name: 'feature/old', lastCommitAt: '2025-01-01T00:00:00.000Z' },
+        { name: 'feature/older', lastCommitAt: '2024-01-01T00:00:00.000Z' },
+      ],
+      'main',
+    );
+
+    const res = await request(await app())
+      .get(url)
+      .expect(200);
+
+    expect(res.body.branches).toMatchObject({ total: 3, active: 1, stale: 2 });
+    expect(res.body.branches.stalest.map((b: any) => b.name)).toEqual([
+      'feature/older',
+      'feature/old',
+    ]);
+  });
+
+  it('reports empty branch and review data rather than omitting them', async () => {
+    await repositories.syncWorkspace('demandai', [repository()], NOW);
+
+    const res = await request(await app())
+      .get(url)
+      .expect(200);
+
+    expect(res.body.branches).toEqual({
+      total: 0,
+      active: 0,
+      stale: 0,
+      stalest: [],
+    });
+    expect(res.body.reviews).toMatchObject({ merged: 0, approved: 0, open: 0 });
+  });
+
+  it('serves what is live in each environment, promotion order first', async () => {
+    await repositories.syncWorkspace('demandai', [repository()], NOW);
+    const stored = await repositories.findByEntityRef(
+      'component:default/oxp-backend',
+    );
+    await deployments.replaceForRepository(stored!.id, [
+      {
+        uuid: '{p}',
+        environmentName: 'production',
+        environmentType: 'Production',
+        state: 'COMPLETED',
+        releaseName: '#412',
+        commitHash: 'abc123',
+        createdAt: '2026-08-20T09:00:00.000Z',
+      },
+      {
+        uuid: '{s}',
+        environmentName: 'staging',
+        environmentType: 'Staging',
+        state: 'COMPLETED',
+        releaseName: '#413',
+        commitHash: 'def456',
+        createdAt: '2026-08-21T09:00:00.000Z',
+      },
+    ]);
+
+    const res = await request(await app())
+      .get(url)
+      .expect(200);
+
+    expect(res.body.environments).toEqual([
+      {
+        name: 'staging',
+        type: 'Staging',
+        releaseName: '#413',
+        commitHash: 'def456',
+        deployedAt: '2026-08-21T09:00:00.000Z',
+      },
+      {
+        name: 'production',
+        type: 'Production',
+        releaseName: '#412',
+        commitHash: 'abc123',
+        deployedAt: '2026-08-20T09:00:00.000Z',
+      },
+    ]);
+  });
+
+  it('reports an empty environment list rather than omitting it', async () => {
+    // A repository whose pipeline names do not match its configured
+    // environments has no records. The field must still be present, or the
+    // frontend cannot tell "nothing deployed" from "not loaded".
+    await repositories.syncWorkspace('demandai', [repository()], NOW);
+
+    const res = await request(await app())
+      .get(url)
+      .expect(200);
+
+    expect(res.body.environments).toEqual([]);
+  });
+
+  describe('ownership proposal', () => {
+    async function storeCandidates(
+      candidates: Array<{
+        rank: number;
+        is_proposed: boolean;
+        author_name: string;
+        author_email: string;
+        commits: number;
+      }>,
+    ) {
+      await repositories.syncWorkspace('demandai', [repository()], NOW);
+      const stored = await repositories.findByEntityRef(
+        'component:default/oxp-backend',
+      );
+      await db.client('ownership_candidate').insert(
+        candidates.map(candidate => ({
+          repository_id: stored!.id,
+          ...candidate,
+          window_commits: 40,
+          window_days: 90,
+          source: 'commit-history',
+          resolved_at: NOW,
+        })),
+      );
+    }
+
+    it('serves the proposed owner with the evidence behind it', async () => {
+      await storeCandidates([
+        {
+          rank: 1,
+          is_proposed: true,
+          author_name: 'Ada Lovelace',
+          author_email: 'ada@demandai.co',
+          commits: 34,
+        },
+        {
+          rank: 2,
+          is_proposed: false,
+          author_name: 'Alan Turing',
+          author_email: 'alan@demandai.co',
+          commits: 6,
+        },
+      ]);
+
+      const res = await request(await app())
+        .get(url)
+        .expect(200);
+
+      expect(res.body.ownershipProposal).toEqual({
+        source: 'commit-history',
+        proposed: {
+          name: 'Ada Lovelace',
+          email: 'ada@demandai.co',
+          commits: 34,
+        },
+        candidates: [
+          { name: 'Ada Lovelace', email: 'ada@demandai.co', commits: 34 },
+          { name: 'Alan Turing', email: 'alan@demandai.co', commits: 6 },
+        ],
+        windowCommits: 40,
+        windowDays: 90,
+        resolvedAt: NOW.toISOString(),
+      });
+    });
+
+    it('serves the candidates but no proposal when none was confident', async () => {
+      await storeCandidates([
+        {
+          rank: 1,
+          is_proposed: false,
+          author_name: 'Ada Lovelace',
+          author_email: 'ada@demandai.co',
+          commits: 20,
+        },
+        {
+          rank: 2,
+          is_proposed: false,
+          author_name: 'Alan Turing',
+          author_email: 'alan@demandai.co',
+          commits: 20,
+        },
+      ]);
+
+      const res = await request(await app())
+        .get(url)
+        .expect(200);
+
+      expect(res.body.ownershipProposal.proposed).toBeUndefined();
+      expect(res.body.ownershipProposal.candidates).toHaveLength(2);
+    });
+
+    it('omits the proposal entirely before the first ownership pass', async () => {
+      await repositories.syncWorkspace('demandai', [repository()], NOW);
+
+      const res = await request(await app())
+        .get(url)
+        .expect(200);
+
+      expect(res.body.ownershipProposal).toBeUndefined();
+    });
+
+    it('never claims the catalog owner has changed', async () => {
+      // The proposal is advisory. Nothing here may write spec.owner, and the
+      // payload must not carry anything that looks like it did.
+      await storeCandidates([
+        {
+          rank: 1,
+          is_proposed: true,
+          author_name: 'Ada Lovelace',
+          author_email: 'ada@demandai.co',
+          commits: 34,
+        },
+      ]);
+
+      const res = await request(await app())
+        .get(url)
+        .expect(200);
+
+      expect(res.body).not.toHaveProperty('owner');
+      expect(res.body.ownershipProposal.source).toBe('commit-history');
+    });
+  });
+
   it('authenticates the caller', async () => {
     await repositories.syncWorkspace('demandai', [repository()], NOW);
 
@@ -435,6 +717,61 @@ describe('createRouter', () => {
 
       expect(res.body.repositories[0].score.total).toBe(90);
       expect(res.body.counts.healthy).toBe(1);
+    });
+
+    it('carries the proposed owner so the estate can be read at a glance', async () => {
+      await repositories.syncWorkspace('demandai', [repository()], NOW);
+      const stored = await repositories.findByEntityRef(
+        'component:default/oxp-backend',
+      );
+      await db.client('ownership_candidate').insert({
+        repository_id: stored!.id,
+        rank: 1,
+        is_proposed: true,
+        author_name: 'Brijesh Gupta',
+        author_email: 'brijesh.gupta@demandai.co',
+        commits: 187,
+        window_commits: 214,
+        window_days: 90,
+        source: 'commit-history',
+        resolved_at: NOW,
+      });
+
+      const res = await request(await app())
+        .get('/repositories')
+        .expect(200);
+
+      expect(res.body.repositories[0].proposedOwner).toEqual({
+        name: 'Brijesh Gupta',
+        email: 'brijesh.gupta@demandai.co',
+        commits: 187,
+      });
+    });
+
+    it('omits the proposed owner for a repository nobody clearly owns', async () => {
+      await repositories.syncWorkspace('demandai', [repository()], NOW);
+      const stored = await repositories.findByEntityRef(
+        'component:default/oxp-backend',
+      );
+      // A candidate exists, but the resolver was not confident.
+      await db.client('ownership_candidate').insert({
+        repository_id: stored!.id,
+        rank: 1,
+        is_proposed: false,
+        author_name: 'Ada Lovelace',
+        author_email: 'ada@demandai.co',
+        commits: 10,
+        window_commits: 40,
+        window_days: 90,
+        source: 'commit-history',
+        resolved_at: NOW,
+      });
+
+      const res = await request(await app())
+        .get('/repositories')
+        .expect(200);
+
+      expect(res.body.repositories[0].proposedOwner).toBeUndefined();
     });
 
     it('reports the nominal weight so a partial score cannot be misread', async () => {

@@ -8,10 +8,15 @@ import { FakeBitbucketClient } from '../bitbucket/FakeBitbucketClient';
 import type { BitbucketRepository } from '../bitbucket/types';
 import {
   ANNOTATION_DEFAULT_BRANCH,
+  ANNOTATION_OWNERSHIP_EVIDENCE,
+  ANNOTATION_OWNERSHIP_SOURCE,
   ANNOTATION_PROJECT_KEY,
   ANNOTATION_SLUG,
   ANNOTATION_WORKSPACE,
   BitbucketRepositoryEntityProvider,
+  TAG_UNCONFIRMED_OWNER,
+  type ClassificationSource,
+  type ProposedOwnerSource,
 } from './BitbucketRepositoryEntityProvider';
 import { toEntityName } from './entityName';
 import { stubBitbucketClient } from '../__testUtils__/bitbucket';
@@ -31,8 +36,51 @@ function repository(
   };
 }
 
+/** A proposed owner for one slug, shaped like the store returns it. */
+function ownerSource(
+  bySlug: Record<
+    string,
+    { name?: string; email?: string; commits?: number } | undefined
+  >,
+): ProposedOwnerSource {
+  return {
+    proposedForWorkspace: async () =>
+      new Map(
+        Object.entries(bySlug)
+          .filter(([, value]) => value !== undefined)
+          .map(([slug, value]) => [
+            slug,
+            {
+              rank: 1,
+              isProposed: true,
+              name: value!.name,
+              email: value!.email,
+              accountId: undefined,
+              commits: value!.commits ?? 34,
+              windowCommits: 41,
+              windowDays: 90,
+              source: 'commit-history',
+              resolvedAt: new Date('2026-08-24T12:00:00.000Z'),
+            },
+          ]),
+      ),
+  };
+}
+
+function classificationSource(
+  bySlug: Record<string, { type: string; lifecycle: string }>,
+): ClassificationSource {
+  return {
+    classificationForWorkspace: async () => new Map(Object.entries(bySlug)),
+  };
+}
+
 /** Captures whatever the provider applies, and runs scheduled work inline. */
-function harness(repositories: BitbucketRepository[]) {
+function harness(
+  repositories: BitbucketRepository[],
+  owners?: ProposedOwnerSource,
+  classifications?: ClassificationSource,
+) {
   const mutations: EntityProviderMutation[] = [];
   const connection: EntityProviderConnection = {
     applyMutation: async mutation => {
@@ -44,6 +92,8 @@ function harness(repositories: BitbucketRepository[]) {
   const provider = new BitbucketRepositoryEntityProvider({
     workspace: 'demandai',
     client: new FakeBitbucketClient(repositories),
+    owners,
+    classifications,
     logger: mockServices.logger.mock(),
     taskRunner: {
       run: async task => {
@@ -267,5 +317,224 @@ describe('BitbucketRepositoryEntityProvider.fromConfig', () => {
     expect(() =>
       BitbucketRepositoryEntityProvider.fromConfig(config, deps()),
     ).toThrow(/no usable credentials/);
+  });
+});
+
+describe('proposed owners on the entity', () => {
+  async function entityWithOwner(
+    owner: { name?: string; email?: string; commits?: number } | undefined,
+  ) {
+    const { provider, connection, mutations } = harness(
+      [repository()],
+      ownerSource({ 'oxp-backend': owner }),
+    );
+    await provider.connect(connection);
+    return (mutations[0] as any).entities[0].entity;
+  }
+
+  it('owns the component with the proposed person', async () => {
+    const entity = await entityWithOwner({
+      name: 'Brijesh Gupta',
+      email: 'brijesh.gupta@demandai.co',
+    });
+
+    expect(entity.spec.owner).toBe('user:default/brijesh.gupta');
+  });
+
+  it('tags the owner as unconfirmed, because the column cannot say so', async () => {
+    const entity = await entityWithOwner({
+      name: 'Brijesh Gupta',
+      email: 'brijesh.gupta@demandai.co',
+    });
+
+    expect(entity.metadata.tags).toContain(TAG_UNCONFIRMED_OWNER);
+  });
+
+  it('records the evidence alongside the name', async () => {
+    const entity = await entityWithOwner({
+      name: 'Brijesh Gupta',
+      email: 'brijesh.gupta@demandai.co',
+      commits: 34,
+    });
+
+    expect(entity.metadata.annotations[ANNOTATION_OWNERSHIP_SOURCE]).toBe(
+      'commit-history',
+    );
+    expect(entity.metadata.annotations[ANNOTATION_OWNERSHIP_EVIDENCE]).toBe(
+      '34 of 41 commits in 90 days',
+    );
+  });
+
+  it('keeps the placeholder owner when nobody was proposed', async () => {
+    const entity = await entityWithOwner(undefined);
+
+    expect(entity.spec.owner).toBe('group:default/unowned');
+    expect(entity.metadata.tags ?? []).not.toContain(TAG_UNCONFIRMED_OWNER);
+    expect(
+      entity.metadata.annotations[ANNOTATION_OWNERSHIP_SOURCE],
+    ).toBeUndefined();
+  });
+
+  it('keeps the placeholder when the address cannot become an entity name', async () => {
+    // A ref that does not resolve renders as a broken link, which reads as a
+    // defect rather than as the gap it actually is.
+    const entity = await entityWithOwner({ name: 'Nobody', email: '@@@' });
+
+    expect(entity.spec.owner).toBe('group:default/unowned');
+  });
+
+  it('keeps the placeholder when a candidate has no address at all', async () => {
+    const entity = await entityWithOwner({ name: 'Anonymous' });
+
+    expect(entity.spec.owner).toBe('group:default/unowned');
+  });
+
+  it('keeps the language tag alongside the ownership tag', async () => {
+    const { provider, connection, mutations } = harness(
+      [repository({ language: 'TypeScript' })],
+      ownerSource({ 'oxp-backend': { email: 'ada@demandai.co' } }),
+    );
+    await provider.connect(connection);
+    const entity = (mutations[0] as any).entities[0].entity;
+
+    expect(entity.metadata.tags).toEqual(['typescript', TAG_UNCONFIRMED_OWNER]);
+  });
+
+  it('registers the estate anyway when ownership cannot be read', async () => {
+    // Ownership is a derived hint. Losing it must degrade the catalog to
+    // placeholder owners, not stop 95 repositories being registered.
+    const broken: ProposedOwnerSource = {
+      proposedForWorkspace: async () => {
+        throw new Error('relation "ownership_candidate" does not exist');
+      },
+    };
+    const { provider, connection, mutations } = harness([repository()], broken);
+
+    await provider.connect(connection);
+
+    const entity = (mutations[0] as any).entities[0].entity;
+    expect(entity.spec.owner).toBe('group:default/unowned');
+  });
+
+  it('leaves every other repository unowned when only one has a proposal', async () => {
+    const { provider, connection, mutations } = harness(
+      [repository(), repository({ slug: 'crm', name: 'CRM' })],
+      ownerSource({ 'oxp-backend': { email: 'ada@demandai.co' } }),
+    );
+    await provider.connect(connection);
+
+    const owners = (mutations[0] as any).entities.map(
+      (e: any) => e.entity.spec.owner,
+    );
+    expect(owners).toEqual(['user:default/ada', 'group:default/unowned']);
+  });
+});
+
+describe('derived type and lifecycle', () => {
+  async function entityWith(classification?: {
+    type: string;
+    lifecycle: string;
+  }) {
+    const { provider, connection, mutations } = harness(
+      [repository()],
+      undefined,
+      classification
+        ? classificationSource({ 'oxp-backend': classification })
+        : undefined,
+    );
+    await provider.connect(connection);
+    return (mutations[0] as any).entities[0].entity;
+  }
+
+  it('uses the derived type and lifecycle', async () => {
+    const entity = await entityWith({
+      type: 'website',
+      lifecycle: 'production',
+    });
+
+    expect(entity.spec.type).toBe('website');
+    expect(entity.spec.lifecycle).toBe('production');
+  });
+
+  it('passes through an unknown classification rather than overriding it', async () => {
+    // "Looked and found no evidence" is a real answer, not a missing one.
+    const entity = await entityWith({ type: 'unknown', lifecycle: 'unknown' });
+
+    expect(entity.spec.type).toBe('unknown');
+    expect(entity.spec.lifecycle).toBe('unknown');
+  });
+
+  it('keeps the original placeholders when nothing has classified it yet', async () => {
+    const entity = await entityWith(undefined);
+
+    expect(entity.spec.type).toBe('service');
+    expect(entity.spec.lifecycle).toBe('unknown');
+  });
+
+  it('keeps the placeholders for a repository missing from the map', async () => {
+    const { provider, connection, mutations } = harness(
+      [repository(), repository({ slug: 'crm', name: 'CRM' })],
+      undefined,
+      classificationSource({
+        'oxp-backend': { type: 'service', lifecycle: 'production' },
+      }),
+    );
+    await provider.connect(connection);
+
+    // Keyed by name rather than by index: nothing guarantees the provider
+    // preserves the order repositories were listed in.
+    const byName = new Map<string, any>(
+      (mutations[0] as any).entities.map((e: any) => [
+        e.entity.metadata.name,
+        e.entity.spec,
+      ]),
+    );
+    expect(byName.get('oxp-backend')).toMatchObject({
+      type: 'service',
+      lifecycle: 'production',
+    });
+    expect(byName.get('crm')).toMatchObject({
+      type: 'service',
+      lifecycle: 'unknown',
+    });
+  });
+
+  it('registers the estate anyway when classifications cannot be read', async () => {
+    const broken: ClassificationSource = {
+      classificationForWorkspace: async () => {
+        throw new Error('column "derived_type" does not exist');
+      },
+    };
+    const { provider, connection, mutations } = harness(
+      [repository()],
+      undefined,
+      broken,
+    );
+
+    await provider.connect(connection);
+
+    const entity = (mutations[0] as any).entities[0].entity;
+    expect(entity.spec).toMatchObject({
+      type: 'service',
+      lifecycle: 'unknown',
+    });
+  });
+
+  it('carries an owner and a classification together', async () => {
+    const { provider, connection, mutations } = harness(
+      [repository()],
+      ownerSource({ 'oxp-backend': { email: 'ada@demandai.co' } }),
+      classificationSource({
+        'oxp-backend': { type: 'website', lifecycle: 'production' },
+      }),
+    );
+    await provider.connect(connection);
+
+    const entity = (mutations[0] as any).entities[0].entity;
+    expect(entity.spec).toEqual({
+      type: 'website',
+      lifecycle: 'production',
+      owner: 'user:default/ada',
+    });
   });
 });
