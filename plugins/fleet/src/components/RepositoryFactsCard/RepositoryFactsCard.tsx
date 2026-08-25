@@ -153,6 +153,30 @@ export function RepositoryFactsCard({ entity }: { entity: Entity }) {
           </Field>
         </Flex>
 
+        {facts.lifetime && facts.lifetime.commits > 0 && (
+          <Flex gap="6" style={{ flexWrap: 'wrap' }}>
+            <Field label="Commits (all time)">
+              {/* The window above answers "is this maintained now". This
+                  answers "what is this" -- two commits ever and five hundred
+                  look identical through a 90-day window once work stops. */}
+              <Text variant="title-medium">{facts.lifetime.commits}</Text>
+            </Field>
+            <Field label="Contributors (all time)">
+              <Text variant="title-medium">{facts.lifetime.authors}</Text>
+            </Field>
+            <Field label="First commit">
+              <Text variant="title-medium">
+                {timeAgo(facts.lifetime.firstCommitAt) ?? EMPTY}
+              </Text>
+            </Field>
+            <Field label="Newest commit">
+              <Text variant="title-medium">
+                {timeAgo(facts.lifetime.lastCommitAt) ?? EMPTY}
+              </Text>
+            </Field>
+          </Flex>
+        )}
+
         <Flex gap="6" style={{ flexWrap: 'wrap' }}>
           <Field label="Project">
             <Text>{facts.projectKey ?? EMPTY}</Text>
@@ -181,6 +205,14 @@ export function RepositoryFactsCard({ entity }: { entity: Entity }) {
               <Text>
                 {facts.reviews.approved} of {facts.reviews.merged} merged PRs
               </Text>
+            </Field>
+          )}
+          {facts.reviews?.medianReviewHours !== undefined && (
+            <Field label="Median review time">
+              {/* Opening to first approval: how long the author waited to be
+                  unblocked, which is not the same as how long the change took
+                  to land. */}
+              <Text>{formatHours(facts.reviews.medianReviewHours)}</Text>
             </Field>
           )}
           {facts.reviews?.medianMergeHours !== undefined && (
@@ -216,6 +248,54 @@ export function RepositoryFactsCard({ entity }: { entity: Entity }) {
             </Text>
           </Field>
         )}
+
+        {facts.pipelines &&
+          (facts.pipelines.successful > 0 ||
+            facts.pipelines.failed > 0 ||
+            facts.pipelines.cancelled > 0 ||
+            facts.pipelines.running > 0) && (
+            <Flex direction="column" gap="2">
+              <Text variant="body-x-small" color="secondary">
+                Recent pipeline runs
+              </Text>
+              <Flex gap="6" style={{ flexWrap: 'wrap' }}>
+                <Field label="Passed">
+                  <Text variant="title-medium">
+                    {facts.pipelines.successful}
+                  </Text>
+                </Field>
+                <Field label="Failed">
+                  <Text variant="title-medium">{facts.pipelines.failed}</Text>
+                </Field>
+                {/* Shown separately from failures on purpose: a build somebody
+                    stopped is not evidence the code is broken, and it is left
+                    out of the success rate for the same reason. */}
+                <Field label="Cancelled">
+                  <Text variant="title-medium">
+                    {facts.pipelines.cancelled}
+                  </Text>
+                </Field>
+                <Field label="Running">
+                  <Text variant="title-medium">{facts.pipelines.running}</Text>
+                </Field>
+                {facts.pipelines.successRate !== undefined && (
+                  <Field label="Success rate">
+                    <Text variant="title-medium">
+                      {Math.round(facts.pipelines.successRate * 100)}%
+                    </Text>
+                  </Field>
+                )}
+              </Flex>
+              {facts.pipelines.lastRunAt && (
+                <Text variant="body-x-small" color="secondary">
+                  Last run {timeAgo(facts.pipelines.lastRunAt)}
+                  {facts.pipelines.lastResult
+                    ? ` — ${facts.pipelines.lastResult.toLowerCase()}`
+                    : ''}
+                </Text>
+              )}
+            </Flex>
+          )}
 
         {facts.ownershipProposal && (
           <Flex direction="column" gap="2">

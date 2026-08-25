@@ -81,6 +81,22 @@ export interface BitbucketPullRequest {
   state: string;
   createdAt: string;
   updatedAt: string;
+  /**
+   * When the pull request was merged or declined.
+   *
+   * The real end of its life, unlike `updatedAt`, which moves on any later
+   * edit -- a comment, a title change -- and so overstates how long a merge
+   * took. Verified populated on every merged pull request sampled.
+   */
+  closedAt?: string;
+  /**
+   * When the first reviewer approved.
+   *
+   * Absent when nobody approved. Measured from Bitbucket's
+   * `participants.participated_on`, which was present on all 122 of the 177
+   * sampled merged pull requests that carried an approval.
+   */
+  firstApprovalAt?: string;
   commentCount: number;
   approvalCount: number;
   participantCount: number;
@@ -88,6 +104,27 @@ export interface BitbucketPullRequest {
   authorName?: string;
   sourceBranch?: string;
   destinationBranch?: string;
+}
+
+/**
+ * One person's explicit permission on a repository.
+ *
+ * Bitbucket's own answer to "who is accountable for this", and a far better
+ * one than commit counts: measured across the estate, the busiest committer
+ * and the admin disagree in 18 of the 26 repositories where both are known.
+ *
+ * Carries no email. `GET /2.0/users/{account_id}` would supply one but returns
+ * 403 without the `read:user` scope, so identity has to be joined on the
+ * display name until Entra ID supplies a directory.
+ */
+export interface BitbucketRepositoryPermission {
+  /** `admin`, `write` or `read`. */
+  permission: string;
+  displayName?: string;
+  /** Stable across renames, unlike the display name. */
+  accountId?: string;
+  uuid?: string;
+  nickname?: string;
 }
 
 export interface ListPullRequestsOptions {
@@ -186,6 +223,18 @@ export interface BitbucketClient {
     slug: string,
     options?: ListPullRequestsOptions,
   ): Promise<BitbucketPullRequest[]>;
+
+  /**
+   * Who has explicit permission on a repository, and at what level.
+   *
+   * One request per repository -- the workspace-wide equivalent
+   * (`/2.0/workspaces/{ws}/permissions/repositories`) would answer for the
+   * whole estate at once but returns 403 for this credential.
+   */
+  listRepositoryPermissions(
+    workspace: string,
+    slug: string,
+  ): Promise<BitbucketRepositoryPermission[]>;
 
   /**
    * One file's contents, or undefined when it does not exist.

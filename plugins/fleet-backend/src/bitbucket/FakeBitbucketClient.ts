@@ -3,6 +3,7 @@ import type {
   BitbucketClient,
   BitbucketCommit,
   BitbucketDeployment,
+  BitbucketRepositoryPermission,
   BitbucketPipelineRun,
   BitbucketPullRequest,
   BitbucketRepository,
@@ -25,6 +26,10 @@ export class FakeBitbucketClient implements BitbucketClient {
   private readonly branchesByRepo = new Map<string, BitbucketBranch[]>();
   private readonly runsByRepo = new Map<string, BitbucketPipelineRun[]>();
   private readonly deploymentsByRepo = new Map<string, BitbucketDeployment[]>();
+  private readonly permissionsByRepo = new Map<
+    string,
+    BitbucketRepositoryPermission[]
+  >();
   private readonly filesByRepo = new Map<string, string[]>();
   private readonly fileContentByRepo = new Map<
     string,
@@ -134,6 +139,15 @@ export class FakeBitbucketClient implements BitbucketClient {
     branches: BitbucketBranch[],
   ): this {
     this.branchesByRepo.set(`${workspace}/${slug}`, branches);
+    return this;
+  }
+
+  withPermissions(
+    workspace: string,
+    slug: string,
+    permissions: BitbucketRepositoryPermission[],
+  ): this {
+    this.permissionsByRepo.set(`${workspace}/${slug}`, permissions);
     return this;
   }
 
@@ -332,6 +346,17 @@ export class FakeBitbucketClient implements BitbucketClient {
     }
     this.record('listBranches');
     return [...(this.branchesByRepo.get(`${workspace}/${slug}`) ?? [])];
+  }
+
+  async listRepositoryPermissions(
+    workspace: string,
+    slug: string,
+  ): Promise<BitbucketRepositoryPermission[]> {
+    if (!workspace || !slug) {
+      throw new Error('a workspace slug and repository slug are required');
+    }
+    this.record('listRepositoryPermissions');
+    return [...(this.permissionsByRepo.get(`${workspace}/${slug}`) ?? [])];
   }
 
   async listDeployments(

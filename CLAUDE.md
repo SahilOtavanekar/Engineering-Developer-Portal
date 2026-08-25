@@ -25,7 +25,7 @@ Target is the organization's **real Bitbucket estate**, not a sandbox.
 | Permissions     | `allow-all-policy` — nothing is enforced yet                 |
 | Custom plugins  | `fleet-common`, `fleet-backend`, `fleet` (frontend)          |
 | Scorecard       | 6 of 9 metrics live — 85 of 100 weight measurable            |
-| Progress        | 22 steps done, 496 tests, 30 suites, 3 e2e                   |
+| Progress        | 26 steps done, 588 tests, 34 suites, 3 e2e                   |
 
 ## Measured facts about the estate
 
@@ -204,9 +204,63 @@ override.
   permissions across every route later is significantly harder.
 - **Score history is written from the first scorer onward** — one row per repo
   per run, never a single mutable row. History cannot be backfilled.
-- **Ownership resolution sits behind `OwnershipResolver`** so the eventual
-  switch to Entra/msgraph is a second implementation, not a rewrite.
-  `CommitHistoryOwnershipResolver` is the only one today.
+- **Ownership resolution sits behind `OwnershipResolver`**, and there are now
+  three: `PermissionOwnershipResolver` (repository admin), then
+  `CommitHistoryOwnershipResolver`, chained by
+  `CompositeOwnershipResolver`. Entra becomes a fourth at the front of the list.
+- **Commit history is ingested in full, not windowed.** Changed in step 26: the
+  first pass reaches back through everything. **Actual measured cost: 3,654
+  commits in 115 requests** for the whole estate, paid once -- the incremental
+  watermark keeps every later pass at 95 requests. (My pre-build estimate of
+  ~18,700 commits / ~344 requests was 5x too high: it extrapolated from a
+  sample weighted towards the busiest repositories. The real mean is 38 commits
+  per repository, not 197.) History reaches back to **2024-11-29** and reveals
+  **30 lifetime authors** against 22 in the 90-day window. The original 90-day bound was a guess
+  about quota that measurement disproved, and it cost the portal the ability to
+  tell an abandoned service from a two-commit scaffold (`chat-widget` has two
+  commits in its whole life, `common-ui` seven).
+  **Deeper history changes no score** -- verified, not assumed: all 95 scores
+  were snapshotted, the estate re-scored after the backfill, and **not one of
+  the 95 moved**. Every metric windows explicitly through `activitySince` and
+  friends, and `CommitStore.count` is used nowhere in production. `lifetime()`
+  exposes the all-time facts separately.
+- **A backfill only reaches repositories with nothing stored.** `since = known
+?? windowStart`, so a repository already holding commits resumes from its
+  watermark and never acquires older history. Deepening the window therefore
+  needs `DELETE FROM commit` before the pass, or 47 of 95 keep only what they
+  had -- which is exactly what happened on the first attempt.
+- **Commit figures describe the default branch only.**
+  `CommitIngestionService` passes `branch: repository.default_branch`, so every
+  commit count, contributor count and last-commit date excludes unmerged
+  feature branches. Verifying against the repository-wide `/commits` list
+  therefore reports a false difference for any repository with an active side
+  branch -- that produced 21 phantom failures once. Compare against
+  `/commits/{default_branch}`.
+- **Verified 2026-08-25 against the live API, all 95 repositories** (190
+  requests): newest commit hash and date matched on 47 of 47 where both sides
+  hold commits, branch counts matched 95 of 95, and all 48 repositories shown as
+  dormant genuinely have no default-branch commit inside the window. Eight
+  internal consistency checks clean. The API serves complete facts for 95 of 95.
+- **Admin permission beats commit history, and it is not close.** Measured
+  2026-08-25: where both sources have an answer they **disagree in 18 of 26**
+  repositories. `oxp-backend` -- Brijesh Gupta wrote 187 of 214 commits; the
+  admins are Sreenivas Dasam and Avinash More. Coverage went from **22 to 75 of
+  95** proposed owners. `GET /repositories/{ws}/{slug}/permissions-config/users`
+  **works with the current token**; 68 repositories have exactly one admin, 10
+  have several, 17 have none.
+- **Permissions carry no email.** `GET /2.0/users/{account_id}` is **403**
+  without `read:user`, so `AuthorIndex` joins a display name to a commit
+  author's address on a normalised name. 14 of 16 admins match; all 75 live
+  proposals ended up with an address. It is string matching, not identity --
+  Entra is what makes it real.
+- **Evidence must match its source.** The annotation said "9 of 208 commits" for
+  an owner chosen by admin permission, which reads as an absurd justification
+  for a claim that does not rest on commits. `describeEvidence` now phrases it
+  per source.
+- **Three ownership endpoints are closed to this token:** workspace-wide
+  permissions (would be 1 request instead of 95), `branch-restrictions`, and
+  `/2.0/users/{id}`. Also checked and useless here: `default-reviewers` is empty
+  on every repository, and no repository ships a `CODEOWNERS` file.
 - **Derived owners DO reach `spec.owner`, tagged `unconfirmed-owner`.**
   Reversed in step 20 at the product owner's direction, because every stock
   catalog surface -- Owner column, Owner filter, Owned tab, entity header,
@@ -216,6 +270,17 @@ override.
   filter), `fleet.backstage.io/ownership-source` and `-evidence` annotations,
   and **the ownership scorer still refuses to award points for a proposal**.
   73 of 95 remain `group:default/unowned`.
+- **`fleetDatabaseClient` must open exactly one pool per process.** It is
+  memoised for that reason. Before it was, every call built its own
+  `DatabaseManager`, so the catalog module and the search module each opened a
+  pool on top of the fleet plugin's own -- three pools to one database where
+  every other plugin has one. Backstage initialises fifteen plugins
+  concurrently, and that was enough to starve the **catalog** plugin's
+  `core.auth` service: it failed with `KnexTimeoutError: Timeout acquiring a
+connection`, which took `/api/catalog` down to 404 and left every page in the
+  portal unable to load an entity, while `/api/fleet` and `/api/search` kept
+  answering 200 and hid the problem. Symptom to recognise: readiness returns
+  503 "Backend has not started yet" while some plugin APIs still work.
 - **Cross-plugin database reads go through `fleetDatabaseClient`.**
   `coreServices.database` is scoped to the asking plugin, so a module
   registered under `catalog` or `search` gets that plugin's database, not
@@ -223,6 +288,29 @@ override.
   connection the fleet plugin uses -- and is **read-only by contract**: fleet
   owns those migrations, and every consumer must tolerate the tables not
   existing yet.
+- **Approval is not review, in this estate.** Measured 2026-08-25 from 243
+  approved merged PRs: median time from opening to first approval is **12
+  seconds**, and **169 of 243 (70%) are approved within five minutes**. p90 is
+  3.8 hours and the tail reaches 10 days, so real review does happen on a
+  minority. Treat "approved" as a weak signal; the `codeReviewCompleted` scorer
+  counts approvals and therefore measures ceremony as much as scrutiny.
+- **`updated_on` is not a merge time.** It moves on any later edit.
+  `oxp-backend#98` merged 38 seconds after opening but was last updated four
+  minutes after -- a sevenfold overstatement. `closed_on` is the real thing and
+  is populated on every merged PR sampled; `first_approval_at` comes from
+  `participants.participated_on`, present on all 122 of 177 sampled PRs that
+  carried an approval.
+- **A cancelled pipeline run is not a failed one.** `STOPPED` and `EXPIRED`
+  runs are counted separately and excluded from the success-rate denominator.
+  Until step 23 they were lumped into `failed` and scored as failures, which
+  penalised the 16 repositories that cancel superseded builds -- 27 of the
+  estate's 637 finished runs. `PipelineSummary.judged` is the honest
+  denominator; `completed` includes cancellations.
+- **Never derive a measurement window from `Date.now()`.** The ownership
+  resolver did, so the window it _reported_ drifted from the window it
+  _queried_ whenever the caller's `now` was not that instant. It passed for a
+  day and broke when the date rolled over. `windowDays` is a parameter now, and
+  a test pins it.
 - **The classifier claims only what the evidence carries.** `spec.type` and
   `spec.lifecycle` were hardcoded `service` / `unknown` on all 95 repositories
   until step 22. Now derived: a front-end framework wins over Docker (most

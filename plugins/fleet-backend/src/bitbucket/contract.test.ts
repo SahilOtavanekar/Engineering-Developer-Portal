@@ -119,6 +119,22 @@ describe.each(implementations)('%s contract', (_name, build) => {
     );
   });
 
+  it('returns no permissions for a repository with none configured', async () => {
+    const client = build(['alpha']);
+
+    await expect(
+      client.listRepositoryPermissions('demandai', 'alpha'),
+    ).resolves.toEqual([]);
+  });
+
+  it('rejects an empty repository slug when listing permissions', async () => {
+    const client = build(['alpha']);
+
+    await expect(
+      client.listRepositoryPermissions('demandai', ''),
+    ).rejects.toThrow('repository slug are required');
+  });
+
   it('counts requests', async () => {
     const client = build(['alpha']);
 

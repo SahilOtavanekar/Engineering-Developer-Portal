@@ -95,6 +95,27 @@ export interface ClassificationSource {
   ): Promise<Map<string, { type: string; lifecycle: string }>>;
 }
 
+/**
+ * The grounds for a proposal, phrased to match where it came from.
+ *
+ * A commit share is the whole argument for a commit-history proposal and a
+ * footnote for a permission-based one. Reporting "9 of 208 commits" as the
+ * evidence for someone Bitbucket names as admin would read as an absurdly weak
+ * justification for a claim that does not rest on commits at all.
+ */
+function describeEvidence(proposed: StoredOwnershipCandidate): string {
+  const share =
+    `${proposed.commits} of ${proposed.windowCommits} commits in ` +
+    `${proposed.windowDays} days`;
+
+  if (proposed.source === 'repository-admin') {
+    return proposed.commits > 0
+      ? `Repository admin in Bitbucket, and ${share}`
+      : 'Repository admin in Bitbucket; no commits in the window';
+  }
+  return share;
+}
+
 export interface BitbucketRepositoryEntityProviderOptions {
   workspace: string;
   client: BitbucketClient;
@@ -332,9 +353,7 @@ export class BitbucketRepositoryEntityProvider implements EntityProvider {
 
     if (proposedRef && proposed) {
       annotations[ANNOTATION_OWNERSHIP_SOURCE] = proposed.source;
-      annotations[ANNOTATION_OWNERSHIP_EVIDENCE] =
-        `${proposed.commits} of ${proposed.windowCommits} commits in ` +
-        `${proposed.windowDays} days`;
+      annotations[ANNOTATION_OWNERSHIP_EVIDENCE] = describeEvidence(proposed);
     }
 
     return {

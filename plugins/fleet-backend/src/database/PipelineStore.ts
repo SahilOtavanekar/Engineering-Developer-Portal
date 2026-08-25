@@ -3,18 +3,47 @@ import type { BitbucketPipelineRun } from '../bitbucket/types';
 
 type DatabaseClient = Awaited<ReturnType<DatabaseService['getClient']>>;
 
+/**
+ * The four states section 6 asks to see, plus the totals behind them.
+ *
+ * Bitbucket's vocabulary maps onto the document's like this:
+ *
+ * | Document  | Bitbucket            |
+ * | --------- | -------------------- |
+ * | Success   | `SUCCESSFUL`         |
+ * | Failed    | `FAILED`, `ERROR`    |
+ * | Running   | no result yet        |
+ * | Cancelled | `STOPPED`, `EXPIRED` |
+ */
 export interface PipelineSummary {
-  /** Runs that finished, so have a result worth judging. */
+  /** Runs that finished, whatever the outcome. */
   completed: number;
   successful: number;
   failed: number;
+  /**
+   * Runs somebody stopped, or that expired waiting.
+   *
+   * Kept apart from `failed` and excluded from the success rate: a build a
+   * human cancelled says nothing about whether the code builds, and counting
+   * it as a failure understates the health of every repository that cancels
+   * superseded builds. 27 of this estate's 637 finished runs are in this state.
+   */
+  cancelled: number;
   /** Runs still going, excluded from the rate rather than counted as failures. */
   inProgress: number;
+  /**
+   * Runs the success rate is actually computed over: successful plus failed.
+   * Reported so the denominator is never a mystery.
+   */
+  judged: number;
   lastResult?: string;
   lastRunAt?: Date;
 }
 
 const SUCCESS = 'SUCCESSFUL';
+
+/** Neither a pass nor a failure -- nobody let the build finish. */
+const CANCELLED = new Set(['STOPPED', 'EXPIRED']);
 
 /** Snapshot of recent runs, replaced per repository on each pass. */
 export class PipelineStore {
@@ -58,12 +87,21 @@ export class PipelineStore {
 
     const completed = rows.filter(r => r.result);
     const successful = completed.filter(r => r.result === SUCCESS).length;
+    const cancelled = completed.filter(
+      r => r.result && CANCELLED.has(r.result),
+    ).length;
 
     return {
       completed: completed.length,
       successful,
-      failed: completed.length - successful,
+      // Everything that finished and was neither a pass nor a cancellation.
+      // Derived by subtraction rather than by listing failure results, so a
+      // result Bitbucket adds later is treated as a failure and investigated
+      // rather than silently ignored.
+      failed: completed.length - successful - cancelled,
+      cancelled,
       inProgress: rows.length - completed.length,
+      judged: completed.length - cancelled,
       lastResult: completed[0]?.result ?? undefined,
       lastRunAt: rows[0] ? new Date(rows[0].created_at) : undefined,
     };

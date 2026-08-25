@@ -1,5 +1,5 @@
 app:
-  title: Scaffolded Backstage App
+  title: Demand AI Engineering Portal
   baseUrl: http://localhost:3000
 
   # Enable all packages by default, this will discover packages from packages/app/package.json
@@ -12,7 +12,7 @@ app:
           path: /
 
 organization:
-  name: My Company
+  name: Demand AI
 
 backend:
   # Used for enabling authentication, secret is shared by all backend plugins
@@ -156,7 +156,7 @@ permission:
 
 # see https://backstage.io/docs/ai/mcp-actions for more details
 mcpActions:
-  name: 'My Company Backstage' # defaults to "backstage"
+  name: 'Demand AI Engineering Portal' # defaults to "backstage"
   description: 'Tools for managing your software catalog, creating new services from templates, and exploring your developer portal' # optional
 
 # Engineering portal -- repository fleet ingestion.

@@ -17,6 +17,7 @@ export function stubBitbucketClient(
     listCommits: async () => [],
     listBranches: async () => [],
     listDeployments: async () => [],
+    listRepositoryPermissions: async () => [],
     listPipelineRuns: async () => [],
     listPullRequests: async () => [],
     listRootFiles: async () => [],

@@ -6,6 +6,7 @@ import type { BitbucketCommit, BitbucketRepository } from './bitbucket/types';
 import { CommitStore } from './database/CommitStore';
 import { BranchStore } from './database/BranchStore';
 import { DeploymentStore } from './database/DeploymentStore';
+import { PipelineStore } from './database/PipelineStore';
 import { OwnershipStore } from './database/OwnershipStore';
 import { PullRequestStore } from './database/PullRequestStore';
 import { RepositoryStore } from './database/RepositoryStore';
@@ -54,6 +55,7 @@ describe('createRouter', () => {
   let branches: BranchStore;
   let pullRequests: PullRequestStore;
   let deployments: DeploymentStore;
+  let pipelines: PipelineStore;
   let ownership: OwnershipStore;
   let scores: ScoreStore;
 
@@ -68,6 +70,7 @@ describe('createRouter', () => {
       branches,
       pullRequests,
       deployments,
+      pipelines,
       ownership,
       scores,
       nominalWeight: 30,
@@ -87,6 +90,7 @@ describe('createRouter', () => {
     branches = new BranchStore(db.client);
     pullRequests = new PullRequestStore(db.client);
     deployments = new DeploymentStore(db.client);
+    pipelines = new PipelineStore(db.client);
     ownership = new OwnershipStore(db.client);
     scores = new ScoreStore(db.client);
   });
@@ -572,6 +576,134 @@ describe('createRouter', () => {
       expect(res.body).not.toHaveProperty('owner');
       expect(res.body.ownershipProposal.source).toBe('commit-history');
     });
+  });
+
+  it('serves review time and merge duration as separate numbers', async () => {
+    await repositories.syncWorkspace('demandai', [repository()], NOW);
+    const stored = await repositories.findByEntityRef(
+      'component:default/oxp-backend',
+    );
+    const created = new Date(NOW.getTime() - 48 * 3_600_000);
+    await pullRequests.upsertMany(stored!.id, [
+      {
+        id: 1,
+        state: 'MERGED',
+        createdAt: created.toISOString(),
+        updatedAt: NOW.toISOString(),
+        firstApprovalAt: new Date(
+          created.getTime() + 2 * 3_600_000,
+        ).toISOString(),
+        closedAt: new Date(created.getTime() + 9 * 3_600_000).toISOString(),
+        commentCount: 1,
+        approvalCount: 1,
+        participantCount: 2,
+      },
+    ]);
+
+    const res = await request(await app())
+      .get(url)
+      .expect(200);
+
+    expect(res.body.reviews).toMatchObject({
+      merged: 1,
+      approved: 1,
+      medianReviewHours: 2,
+      medianMergeHours: 9,
+    });
+  });
+
+  it('serves lifetime facts alongside the activity window', async () => {
+    // A repository whose only commits predate the window still has a life.
+    await repositories.syncWorkspace('demandai', [repository()], NOW);
+    const stored = await repositories.findByEntityRef(
+      'component:default/oxp-backend',
+    );
+    await commits.insertMany(stored!.id, [
+      commit({
+        hash: 'ancient1',
+        committedAt: '2025-08-18T10:00:00.000Z',
+        authorEmail: 'ada@demandai.co',
+      }),
+      commit({
+        hash: 'ancient2',
+        committedAt: '2025-08-18T11:00:00.000Z',
+        authorEmail: 'alan@demandai.co',
+      }),
+    ]);
+
+    const res = await request(await app())
+      .get(url)
+      .expect(200);
+
+    // Nothing inside 90 days...
+    expect(res.body.activity.commits).toBe(0);
+    // ...but the repository is plainly two commits old, not empty.
+    expect(res.body.lifetime).toMatchObject({ commits: 2, authors: 2 });
+    expect(res.body.lifetime.firstCommitAt).toBe('2025-08-18T10:00:00.000Z');
+    expect(res.body.lifetime.lastCommitAt).toBe('2025-08-18T11:00:00.000Z');
+  });
+
+  it('serves the four pipeline states, cancelled kept apart from failed', async () => {
+    await repositories.syncWorkspace('demandai', [repository()], NOW);
+    const stored = await repositories.findByEntityRef(
+      'component:default/oxp-backend',
+    );
+    await pipelines.replaceForRepository(stored!.id, [
+      {
+        uuid: '{a}',
+        state: 'COMPLETED',
+        result: 'SUCCESSFUL',
+        createdAt: NOW.toISOString(),
+      },
+      {
+        uuid: '{b}',
+        state: 'COMPLETED',
+        result: 'SUCCESSFUL',
+        createdAt: NOW.toISOString(),
+      },
+      {
+        uuid: '{c}',
+        state: 'COMPLETED',
+        result: 'FAILED',
+        createdAt: NOW.toISOString(),
+      },
+      {
+        uuid: '{d}',
+        state: 'COMPLETED',
+        result: 'STOPPED',
+        createdAt: NOW.toISOString(),
+      },
+      { uuid: '{e}', state: 'IN_PROGRESS', createdAt: NOW.toISOString() },
+    ]);
+
+    const res = await request(await app())
+      .get(url)
+      .expect(200);
+
+    expect(res.body.pipelines).toMatchObject({
+      successful: 2,
+      failed: 1,
+      cancelled: 1,
+      running: 1,
+    });
+    // 2 of 3 judged, not 2 of 4 completed.
+    expect(res.body.pipelines.successRate).toBeCloseTo(2 / 3);
+  });
+
+  it('omits the success rate when there is nothing to judge', async () => {
+    await repositories.syncWorkspace('demandai', [repository()], NOW);
+
+    const res = await request(await app())
+      .get(url)
+      .expect(200);
+
+    expect(res.body.pipelines).toMatchObject({
+      successful: 0,
+      failed: 0,
+      cancelled: 0,
+      running: 0,
+    });
+    expect(res.body.pipelines.successRate).toBeUndefined();
   });
 
   it('authenticates the caller', async () => {

@@ -42,5 +42,25 @@ export interface OwnershipResolver {
   /** A label for logs and for showing people where a proposal came from. */
   readonly source: string;
 
-  resolve(repositoryId: number, since: Date): Promise<OwnershipProposal>;
+  /**
+   * Called once before a pass, for work that would be wasteful per repository.
+   *
+   * The permission resolver builds an estate-wide name-to-email index here:
+   * doing it inside `resolve` would rebuild it 95 times. Optional, because a
+   * resolver that needs nothing shared should not have to say so.
+   */
+  prepare?(workspace: string): Promise<void>;
+
+  /**
+   * `windowDays` describes `since` and is passed in rather than derived from
+   * the clock. A resolver that computed it from `Date.now()` would report a
+   * window that disagreed with the one it queried whenever the caller's `now`
+   * was not this instant -- which is every scheduled pass, every test with a
+   * fixed clock, and any run that straddles midnight.
+   */
+  resolve(
+    repositoryId: number,
+    since: Date,
+    windowDays: number,
+  ): Promise<OwnershipProposal>;
 }

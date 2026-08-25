@@ -242,6 +242,128 @@ describe('BitbucketCloudClient', () => {
       expect(calls[0].url).toContain('state=OPEN');
     });
 
+    it('takes the first approval, not the last', async () => {
+      // Review time is how long the author waited to be unblocked. A second
+      // reviewer arriving twenty minutes later did not prolong that wait.
+      const { impl } = stubFetch(
+        jsonResponse({
+          values: [
+            {
+              id: 95,
+              state: 'MERGED',
+              created_on: '2026-08-18T06:22:40+00:00',
+              updated_on: '2026-08-18T06:30:00+00:00',
+              closed_on: '2026-08-18T06:27:44+00:00',
+              participants: [
+                {
+                  approved: true,
+                  participated_on: '2026-08-18T06:27:27+00:00',
+                },
+                {
+                  approved: true,
+                  participated_on: '2026-08-18T06:26:37+00:00',
+                },
+              ],
+            },
+          ],
+        }),
+      );
+
+      const [pr] = await client(impl).listPullRequests(
+        'demandai',
+        'oxp-backend',
+      );
+
+      expect(pr.firstApprovalAt).toBe('2026-08-18T06:26:37.000Z');
+      expect(pr.closedAt).toBe('2026-08-18T06:27:44+00:00');
+    });
+
+    it('ignores the timestamp of a reviewer who did not approve', async () => {
+      const { impl } = stubFetch(
+        jsonResponse({
+          values: [
+            {
+              id: 96,
+              state: 'MERGED',
+              created_on: '2026-08-18T12:10:21+00:00',
+              updated_on: '2026-08-18T12:10:32+00:00',
+              participants: [
+                {
+                  approved: false,
+                  participated_on: '2026-08-18T12:10:25+00:00',
+                },
+              ],
+            },
+          ],
+        }),
+      );
+
+      const [pr] = await client(impl).listPullRequests(
+        'demandai',
+        'oxp-backend',
+      );
+
+      expect(pr.firstApprovalAt).toBeUndefined();
+    });
+
+    it('survives an approval Bitbucket gave no timestamp for', async () => {
+      // 55 of 177 sampled merged pull requests had no approval at all, and a
+      // null participated_on must not become an Invalid Date.
+      const { impl } = stubFetch(
+        jsonResponse({
+          values: [
+            {
+              id: 97,
+              state: 'MERGED',
+              created_on: '2026-08-18T14:20:03+00:00',
+              updated_on: '2026-08-18T14:22:24+00:00',
+              participants: [{ approved: true, participated_on: null }],
+            },
+          ],
+        }),
+      );
+
+      const [pr] = await client(impl).listPullRequests(
+        'demandai',
+        'oxp-backend',
+      );
+
+      expect(pr.firstApprovalAt).toBeUndefined();
+      expect(pr.approvalCount).toBe(1);
+    });
+
+    it('leaves closedAt unset for a pull request still open', async () => {
+      const { impl } = stubFetch(
+        jsonResponse({
+          values: [
+            {
+              id: 99,
+              state: 'OPEN',
+              created_on: '2026-08-21T06:18:21+00:00',
+              updated_on: '2026-08-21T06:22:37+00:00',
+              participants: [],
+            },
+          ],
+        }),
+      );
+
+      const [pr] = await client(impl).listPullRequests(
+        'demandai',
+        'oxp-backend',
+      );
+
+      expect(pr.closedAt).toBeUndefined();
+    });
+
+    it('asks Bitbucket for both timestamps', async () => {
+      const { impl, calls } = stubFetch(jsonResponse({ values: [] }));
+
+      await client(impl).listPullRequests('demandai', 'oxp-backend');
+
+      expect(calls[0].url).toContain('values.closed_on');
+      expect(calls[0].url).toContain('values.participants.participated_on');
+    });
+
     it('counts only reviewers who actually approved', async () => {
       const { impl } = stubFetch(
         jsonResponse({
@@ -395,6 +517,94 @@ requires = ["setuptools"]
       expect(calls).toHaveLength(0);
     });
   });
+  describe('listRepositoryPermissions', () => {
+    it('maps a permission payload onto the domain type', async () => {
+      const { impl } = stubFetch(
+        jsonResponse({
+          values: [
+            {
+              permission: 'admin',
+              user: {
+                display_name: 'Makarand Prabhu',
+                account_id: '712020:6f38332a',
+                uuid: '{78bd5097}',
+                nickname: 'Mark Praven',
+              },
+            },
+          ],
+        }),
+      );
+
+      const [entry] = await client(impl).listRepositoryPermissions(
+        'demandai',
+        'crm',
+      );
+
+      expect(entry).toEqual({
+        permission: 'admin',
+        displayName: 'Makarand Prabhu',
+        accountId: '712020:6f38332a',
+        uuid: '{78bd5097}',
+        nickname: 'Mark Praven',
+      });
+    });
+
+    it('treats a forbidden response as no permissions rather than failing', async () => {
+      // The workspace-wide equivalent is 403 for this credential, and the
+      // per-repository one could be too. Ownership degrades to commit history;
+      // one repository must not fail the sweep.
+      const { impl } = stubFetch(jsonResponse({ type: 'error' }, 403));
+
+      await expect(
+        client(impl).listRepositoryPermissions('demandai', 'crm'),
+      ).resolves.toEqual([]);
+    });
+
+    it('treats a missing configuration as no permissions', async () => {
+      const { impl } = stubFetch(jsonResponse({ type: 'error' }, 404));
+
+      await expect(
+        client(impl).listRepositoryPermissions('demandai', 'crm'),
+      ).resolves.toEqual([]);
+    });
+
+    it('still raises anything that is not a 403 or 404', async () => {
+      const { impl } = stubFetch(jsonResponse({ type: 'error' }, 500));
+
+      await expect(
+        client(impl).listRepositoryPermissions('demandai', 'crm'),
+      ).rejects.toThrow(BitbucketApiError);
+    });
+
+    it('follows pagination', async () => {
+      const { impl } = stubFetch(
+        jsonResponse({
+          values: [{ permission: 'admin', user: { display_name: 'One' } }],
+          next: 'https://api.bitbucket.org/2.0/next-page',
+        }),
+        jsonResponse({
+          values: [{ permission: 'write', user: { display_name: 'Two' } }],
+        }),
+      );
+
+      const entries = await client(impl).listRepositoryPermissions(
+        'demandai',
+        'crm',
+      );
+
+      expect(entries.map(e => e.displayName)).toEqual(['One', 'Two']);
+    });
+
+    it('refuses a blank slug without spending a request', async () => {
+      const { impl, calls } = stubFetch();
+
+      await expect(
+        client(impl).listRepositoryPermissions('demandai', ''),
+      ).rejects.toThrow('repository slug are required');
+      expect(calls).toHaveLength(0);
+    });
+  });
+
   describe('listDeployments', () => {
     /** Shaped like a real record from `demandai/oxp-backend`. */
     const deploymentPayload = {

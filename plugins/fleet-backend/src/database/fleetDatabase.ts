@@ -22,14 +22,41 @@ type DatabaseClient = Awaited<ReturnType<DatabaseService['getClient']>>;
  * alter a table, and every caller must tolerate the tables not existing yet --
  * on a first boot the fleet plugin may not have migrated when a consumer
  * first asks.
+ *
+ * **One pool per process, shared.** Every call used to build its own
+ * `DatabaseManager`, so the two consumers (the catalog module and the search
+ * module) opened a connection pool each on top of the fleet plugin's own --
+ * three pools to one database where every other plugin has one. Backstage
+ * initialises fifteen plugins concurrently at startup, and the extra pools were
+ * enough to starve the catalog plugin's `core.auth` service of a connection:
+ * it died with `KnexTimeoutError: Timeout acquiring a connection`, took the
+ * catalog's routes down with it, and left every page in the portal unable to
+ * load an entity. Memoised so both consumers share one pool.
  */
+let shared: Promise<DatabaseClient> | undefined;
+
 export async function fleetDatabaseClient(
   config: RootConfigService,
   deps: { logger: LoggerService; lifecycle: LifecycleService },
 ): Promise<DatabaseClient> {
-  const database = DatabaseManager.fromConfig(config).forPlugin('fleet', {
-    logger: deps.logger,
-    lifecycle: deps.lifecycle,
-  });
-  return database.getClient();
+  if (!shared) {
+    shared = DatabaseManager.fromConfig(config)
+      .forPlugin('fleet', {
+        logger: deps.logger,
+        lifecycle: deps.lifecycle,
+      })
+      .getClient()
+      .catch(error => {
+        // Never cache a failure: a consumer initialising before the database
+        // is reachable would otherwise poison every later caller.
+        shared = undefined;
+        throw error;
+      });
+  }
+  return shared;
+}
+
+/** Test-only: drops the memoised client so each test starts clean. */
+export function resetFleetDatabaseClientForTests(): void {
+  shared = undefined;
 }

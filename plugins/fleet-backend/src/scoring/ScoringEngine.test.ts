@@ -215,13 +215,20 @@ describe('activeContributorsScorer', () => {
 
 describe('pipelineHealthScorer', () => {
   const scorer = pipelineHealthScorer();
-  const withRuns = (successful: number, completed: number, inProgress = 0) => ({
+  const withRuns = (
+    successful: number,
+    completed: number,
+    inProgress = 0,
+    cancelled = 0,
+  ) => ({
     ...context(10, 2),
     pipelines: {
       completed,
       successful,
-      failed: completed - successful,
+      failed: completed - successful - cancelled,
+      cancelled,
       inProgress,
+      judged: completed - cancelled,
       lastResult: 'SUCCESSFUL',
     },
   });
@@ -255,6 +262,26 @@ describe('pipelineHealthScorer', () => {
   it('ignores runs still in progress', () => {
     // Three running, two completed and both passed: full marks, not 2/5.
     expect(scorer.score(withRuns(2, 2, 3))?.fraction).toBe(1);
+  });
+  it('does not count a cancelled run as a failure', () => {
+    // A build somebody stopped, usually because a newer commit superseded it,
+    // is not evidence that the code is broken. 27 of this estate's finished
+    // runs are in this state and were being scored as failures.
+    const result = scorer.score(withRuns(8, 10, 0, 2) as any);
+
+    expect(result?.fraction).toBe(1);
+    expect(result?.detail).toBe('8 of 8 recent runs passed, 2 cancelled');
+  });
+
+  it('is unmeasurable when every finished run was cancelled', () => {
+    // Nothing to judge is not the same as everything failing.
+    expect(scorer.score(withRuns(0, 3, 0, 3) as any)).toBeNull();
+  });
+
+  it('says nothing about cancellations when there were none', () => {
+    expect(scorer.score(withRuns(9, 10) as any)?.detail).toBe(
+      '9 of 10 recent runs passed',
+    );
   });
 });
 

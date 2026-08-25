@@ -9,6 +9,7 @@ import { CommitHistoryOwnershipResolver } from './CommitHistoryOwnershipResolver
 
 const NOW = new Date('2026-08-24T12:00:00.000Z');
 const SINCE = new Date('2026-05-26T12:00:00.000Z');
+const WINDOW_DAYS = 90;
 const DAY = 86_400_000;
 
 function repository(slug = 'oxp-backend'): BitbucketRepository {
@@ -85,7 +86,7 @@ describe('CommitHistoryOwnershipResolver', () => {
       ...commitsBy(ALAN, 5, { offset: 40 }),
     ]);
 
-    const proposal = await build().resolve(repositoryId, SINCE);
+    const proposal = await build().resolve(repositoryId, SINCE, WINDOW_DAYS);
 
     expect(proposal.proposed).toMatchObject({
       name: 'Ada Lovelace',
@@ -102,7 +103,7 @@ describe('CommitHistoryOwnershipResolver', () => {
       ...commitsBy(GRACE, 2, { offset: 50 }),
     ]);
 
-    const proposal = await build().resolve(repositoryId, SINCE);
+    const proposal = await build().resolve(repositoryId, SINCE, WINDOW_DAYS);
 
     expect(proposal.candidates.map(c => [c.name, c.commits])).toEqual([
       ['Ada Lovelace', 30],
@@ -120,7 +121,7 @@ describe('CommitHistoryOwnershipResolver', () => {
       ...commitsBy(GRACE, 10, { offset: 40 }),
     ]);
 
-    const proposal = await build().resolve(repositoryId, SINCE);
+    const proposal = await build().resolve(repositoryId, SINCE, WINDOW_DAYS);
 
     expect(proposal.proposed).toBeUndefined();
     expect(proposal.candidates).toHaveLength(3);
@@ -134,7 +135,7 @@ describe('CommitHistoryOwnershipResolver', () => {
       ...commitsBy(ALAN, 12, { offset: 20 }),
     ]);
 
-    const proposal = await build().resolve(repositoryId, SINCE);
+    const proposal = await build().resolve(repositoryId, SINCE, WINDOW_DAYS);
 
     expect(proposal.proposed).toBeUndefined();
     expect(proposal.candidates.map(c => c.commits)).toEqual([12, 12]);
@@ -146,7 +147,7 @@ describe('CommitHistoryOwnershipResolver', () => {
       ...commitsBy(ALAN, 12, { offset: 20 }),
     ]);
 
-    const proposal = await build().resolve(repositoryId, SINCE);
+    const proposal = await build().resolve(repositoryId, SINCE, WINDOW_DAYS);
 
     expect(proposal.proposed?.name).toBe('Ada Lovelace');
   });
@@ -154,7 +155,7 @@ describe('CommitHistoryOwnershipResolver', () => {
   it('refuses to name someone on the strength of a single commit', async () => {
     await commits.insertMany(repositoryId, commitsBy(ADA, 1));
 
-    const proposal = await build().resolve(repositoryId, SINCE);
+    const proposal = await build().resolve(repositoryId, SINCE, WINDOW_DAYS);
 
     // 100% of the window, and still not evidence of ownership.
     expect(proposal.proposed).toBeUndefined();
@@ -162,7 +163,7 @@ describe('CommitHistoryOwnershipResolver', () => {
   });
 
   it('proposes nobody for a repository with no commits in the window', async () => {
-    const proposal = await build().resolve(repositoryId, SINCE);
+    const proposal = await build().resolve(repositoryId, SINCE, WINDOW_DAYS);
 
     expect(proposal).toMatchObject({
       candidates: [],
@@ -178,7 +179,7 @@ describe('CommitHistoryOwnershipResolver', () => {
       ...commitsBy(ALAN, 10),
     ]);
 
-    const proposal = await build().resolve(repositoryId, SINCE);
+    const proposal = await build().resolve(repositoryId, SINCE, WINDOW_DAYS);
 
     expect(proposal.proposed?.name).toBe('Alan Turing');
     expect(proposal.windowCommits).toBe(10);
@@ -191,7 +192,7 @@ describe('CommitHistoryOwnershipResolver', () => {
       ...commitsBy(ALAN, 30, { offset: 20, parentCount: 2 }),
     ]);
 
-    const proposal = await build().resolve(repositoryId, SINCE);
+    const proposal = await build().resolve(repositoryId, SINCE, WINDOW_DAYS);
 
     expect(proposal.proposed?.name).toBe('Ada Lovelace');
     expect(proposal.candidates.map(c => c.name)).toEqual(['Ada Lovelace']);
@@ -206,7 +207,7 @@ describe('CommitHistoryOwnershipResolver', () => {
       ...commitsBy(ALAN, 4, { offset: 30 }),
     ]);
 
-    const proposal = await build().resolve(repositoryId, SINCE);
+    const proposal = await build().resolve(repositoryId, SINCE, WINDOW_DAYS);
 
     expect(proposal.candidates).toHaveLength(2);
     expect(proposal.proposed?.commits).toBe(12);
@@ -226,7 +227,7 @@ describe('CommitHistoryOwnershipResolver', () => {
       ...commitsBy(ADA, 6, { offset: 50 }),
     ]);
 
-    const proposal = await build().resolve(repositoryId, SINCE);
+    const proposal = await build().resolve(repositoryId, SINCE, WINDOW_DAYS);
 
     expect(proposal.candidates.map(c => c.name)).toEqual(['Ada Lovelace']);
     expect(proposal.proposed?.name).toBe('Ada Lovelace');
@@ -241,7 +242,7 @@ describe('CommitHistoryOwnershipResolver', () => {
       ...commitsBy(ADA, 6, { offset: 50 }),
     ]);
 
-    const proposal = await build().resolve(repositoryId, SINCE);
+    const proposal = await build().resolve(repositoryId, SINCE, WINDOW_DAYS);
 
     expect(proposal.windowCommits).toBe(6);
     expect(proposal.proposed?.commits).toBe(6);
@@ -259,7 +260,7 @@ describe('CommitHistoryOwnershipResolver', () => {
       },
     ]);
 
-    const proposal = await build().resolve(repositoryId, SINCE);
+    const proposal = await build().resolve(repositoryId, SINCE, WINDOW_DAYS);
 
     expect(proposal.candidates.map(c => c.email)).toEqual(['ada@demandai.co']);
   });
@@ -278,6 +279,7 @@ describe('CommitHistoryOwnershipResolver', () => {
     const proposal = await build({ candidateLimit: 2 }).resolve(
       repositoryId,
       SINCE,
+      WINDOW_DAYS,
     );
 
     expect(proposal.candidates).toHaveLength(2);
@@ -294,12 +296,12 @@ describe('CommitHistoryOwnershipResolver', () => {
     // Alan holds 20 of 32, a 63% share: enough at the default, not at 70%.
     await expect(
       build()
-        .resolve(repositoryId, SINCE)
+        .resolve(repositoryId, SINCE, WINDOW_DAYS)
         .then(p => p.proposed?.name),
     ).resolves.toBe('Alan Turing');
     await expect(
       build({ minimumShare: 0.7 })
-        .resolve(repositoryId, SINCE)
+        .resolve(repositoryId, SINCE, WINDOW_DAYS)
         .then(p => p.proposed),
     ).resolves.toBeUndefined();
   });
@@ -307,9 +309,21 @@ describe('CommitHistoryOwnershipResolver', () => {
   it('reports the window it measured, so a share can be read honestly', async () => {
     await commits.insertMany(repositoryId, commitsBy(ADA, 5));
 
-    const proposal = await build().resolve(repositoryId, SINCE);
+    const proposal = await build().resolve(repositoryId, SINCE, WINDOW_DAYS);
 
     expect(proposal.windowDays).toBe(90);
+  });
+
+  it('reports the window it was given, not one read off the clock', () => {
+    // Regression: this was derived from Date.now(), so the reported window
+    // drifted from the window actually queried as soon as the caller's `now`
+    // was not this instant -- which is every scheduled pass and every test
+    // with a fixed clock.
+    return expect(
+      build()
+        .resolve(repositoryId, SINCE, 30)
+        .then(p => p.windowDays),
+    ).resolves.toBe(30);
   });
 
   it('names its source', () => {

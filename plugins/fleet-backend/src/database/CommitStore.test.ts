@@ -60,6 +60,99 @@ describe('CommitStore', () => {
     repositoryId = stored!.id;
   });
 
+  describe('lifetime', () => {
+    it('counts everything, however old', async () => {
+      // The window answers "is this maintained now"; this answers "what is
+      // this". Both commits here predate any 90-day window.
+      await commits.insertMany(repositoryId, [
+        commit({
+          hash: 'old1',
+          committedAt: '2025-08-18T10:00:00.000Z',
+          authorEmail: 'ada@demandai.co',
+        }),
+        commit({
+          hash: 'old2',
+          committedAt: '2025-08-18T11:00:00.000Z',
+          authorEmail: 'alan@demandai.co',
+        }),
+      ]);
+
+      const lifetime = await commits.lifetime(repositoryId);
+
+      expect(lifetime).toMatchObject({ commits: 2, authors: 2 });
+      expect(lifetime.firstCommitAt).toEqual(
+        new Date('2025-08-18T10:00:00.000Z'),
+      );
+      expect(lifetime.lastCommitAt).toEqual(
+        new Date('2025-08-18T11:00:00.000Z'),
+      );
+    });
+
+    it('distinguishes a two-commit scaffold from a real project', async () => {
+      // chat-widget has two commits in its entire life and looked identical to
+      // an abandoned mature service through a 90-day window.
+      await commits.insertMany(repositoryId, [
+        commit({ hash: 'a', committedAt: '2025-08-18T10:00:00.000Z' }),
+        commit({ hash: 'b', committedAt: '2025-08-18T10:05:00.000Z' }),
+      ]);
+
+      await expect(commits.lifetime(repositoryId)).resolves.toMatchObject({
+        commits: 2,
+      });
+    });
+
+    it('excludes merge commits, as every other count does', async () => {
+      await commits.insertMany(repositoryId, [
+        commit({ hash: 'work' }),
+        commit({ hash: 'merge', parentCount: 2 }),
+      ]);
+
+      await expect(commits.lifetime(repositoryId)).resolves.toMatchObject({
+        commits: 1,
+      });
+    });
+
+    it('reports nothing for a repository with no commits stored', async () => {
+      await expect(commits.lifetime(repositoryId)).resolves.toEqual({
+        commits: 0,
+        authors: 0,
+        firstCommitAt: undefined,
+        lastCommitAt: undefined,
+      });
+    });
+
+    it('counts one person committing many times once', async () => {
+      await commits.insertMany(repositoryId, [
+        commit({ hash: 'a', authorEmail: 'ada@demandai.co' }),
+        commit({ hash: 'b', authorEmail: 'ada@demandai.co' }),
+        commit({ hash: 'c', authorEmail: 'ada@demandai.co' }),
+      ]);
+
+      await expect(commits.lifetime(repositoryId)).resolves.toMatchObject({
+        commits: 3,
+        authors: 1,
+      });
+    });
+
+    it('does not leak another repository in', async () => {
+      await repositories.syncWorkspace(
+        'demandai',
+        [repository(), repository('crm')],
+        NOW,
+      );
+      const other = await repositories.findByEntityRef('component:default/crm');
+      await commits.insertMany(repositoryId, [commit({ hash: 'mine' })]);
+      await commits.insertMany(other!.id, [
+        commit({ hash: 'theirs1' }),
+        commit({ hash: 'theirs2' }),
+      ]);
+
+      await expect(commits.lifetime(repositoryId)).resolves.toMatchObject({
+        commits: 1,
+      });
+    });
+  });
+
   it('stores a commit with its author split out', async () => {
     await commits.insertMany(repositoryId, [commit()]);
 

@@ -170,11 +170,12 @@ describe('OwnershipService', () => {
     let calls = 0;
     const flaky: OwnershipResolver = {
       source: 'flaky',
-      resolve: async (repositoryId, since) => {
+      resolve: async (repositoryId, since, windowDays) => {
         if (++calls === 1) throw new Error('boom');
         return new CommitHistoryOwnershipResolver({ commits }).resolve(
           repositoryId,
           since,
+          windowDays,
         );
       },
     };
@@ -210,6 +211,7 @@ describe('OwnershipService', () => {
         new CommitHistoryOwnershipResolver({ commits }).resolve(
           repositoryId,
           since,
+          90,
         ),
     };
 

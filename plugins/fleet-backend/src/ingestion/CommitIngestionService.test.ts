@@ -231,6 +231,48 @@ describe('CommitIngestionService', () => {
     expect(summary.commitsWritten).toBe(2);
   });
 
+  it('reaches back through all history when no window is configured', async () => {
+    // The default. Measured: the whole estate is ~18,700 commits in ~344
+    // requests, paid once, and bounding it cost the portal the ability to tell
+    // an abandoned service from a two-commit scaffold.
+    await seedRepositories('alpha');
+    const ancient = FakeBitbucketClient.generateCommits(
+      3,
+      new Date('2024-01-01T00:00:00.000Z'),
+    );
+    const recent = FakeBitbucketClient.generateCommits(2, NOW).map(c => ({
+      ...c,
+      hash: `recent-${c.hash}`,
+    }));
+    const client = new FakeBitbucketClient([repository('alpha')]).withCommits(
+      'demandai',
+      'alpha',
+      [...recent, ...ancient],
+    );
+
+    const summary = await build(client).ingest('demandai', NOW);
+
+    expect(summary.commitsWritten).toBe(5);
+  });
+
+  it('counts the repositories it backfilled from scratch', async () => {
+    await seedRepositories('alpha');
+    const client = new FakeBitbucketClient([repository('alpha')]).withCommits(
+      'demandai',
+      'alpha',
+      FakeBitbucketClient.generateCommits(3, NOW),
+    );
+
+    const first = await build(client).ingest('demandai', NOW);
+    const second = await build(client).ingest('demandai', NOW);
+
+    expect(first.backfilled).toBe(1);
+    // The second pass resumes from the watermark, so nothing is backfilled and
+    // nothing is rewritten.
+    expect(second.backfilled).toBe(0);
+    expect(second.commitsWritten).toBe(0);
+  });
+
   it('names its sync_state resource per workspace', () => {
     expect(CommitIngestionService.resourceKey('demandai')).toBe(
       'commits:demandai',

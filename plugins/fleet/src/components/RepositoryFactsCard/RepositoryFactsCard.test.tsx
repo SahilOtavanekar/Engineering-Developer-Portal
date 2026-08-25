@@ -347,4 +347,158 @@ describe('RepositoryFactsCard', () => {
       ).not.toBeInTheDocument();
     });
   });
+  describe('pipeline states', () => {
+    const pipelines = {
+      successful: 14,
+      failed: 3,
+      cancelled: 2,
+      running: 1,
+      successRate: 14 / 17,
+      lastResult: 'SUCCESSFUL',
+      lastRunAt: new Date(Date.now() - 3_600_000).toISOString(),
+    };
+
+    it('shows all four states section 6 asks for', async () => {
+      await render(ok({ ...facts, pipelines }));
+
+      expect(
+        await screen.findByText('Recent pipeline runs'),
+      ).toBeInTheDocument();
+      for (const label of ['Passed', 'Failed', 'Cancelled', 'Running']) {
+        expect(screen.getByText(label)).toBeInTheDocument();
+      }
+      expect(screen.getByText('14')).toBeInTheDocument();
+      expect(screen.getByText('2')).toBeInTheDocument();
+    });
+
+    it('shows a success rate that excludes cancelled runs', async () => {
+      // 14 of 17 judged, not 14 of 19 finished.
+      await render(ok({ ...facts, pipelines }));
+
+      expect(await screen.findByText('82%')).toBeInTheDocument();
+    });
+
+    it('omits the rate when there is nothing to judge', async () => {
+      await render(
+        ok({
+          ...facts,
+          pipelines: { ...pipelines, successRate: undefined },
+        }),
+      );
+
+      expect(await screen.findByText('Cancelled')).toBeInTheDocument();
+      expect(screen.queryByText('Success rate')).not.toBeInTheDocument();
+    });
+
+    it('hides the section for a repository with no runs at all', async () => {
+      // 48 of 95 repositories have no CI. An empty row of zeroes would be
+      // noise on half the estate.
+      await render(
+        ok({
+          ...facts,
+          pipelines: {
+            successful: 0,
+            failed: 0,
+            cancelled: 0,
+            running: 0,
+          },
+        }),
+      );
+
+      expect(await screen.findByText('261')).toBeInTheDocument();
+      expect(
+        screen.queryByText('Recent pipeline runs'),
+      ).not.toBeInTheDocument();
+    });
+
+    it('omits the section entirely when the backend served no such field', async () => {
+      await render(ok({ ...facts, pipelines: undefined }));
+
+      expect(await screen.findByText('261')).toBeInTheDocument();
+      expect(
+        screen.queryByText('Recent pipeline runs'),
+      ).not.toBeInTheDocument();
+    });
+  });
+  describe('review time', () => {
+    it('shows review time alongside merge duration, as two measurements', async () => {
+      await render(
+        ok({
+          ...facts,
+          reviews: {
+            merged: 53,
+            approved: 25,
+            open: 0,
+            medianReviewHours: 4.5,
+            medianMergeHours: 20,
+          },
+        }),
+      );
+
+      expect(await screen.findByText('Median review time')).toBeInTheDocument();
+      expect(screen.getByText('Median merge time')).toBeInTheDocument();
+      expect(screen.getByText('4.5 hours')).toBeInTheDocument();
+      expect(screen.getByText('20 hours')).toBeInTheDocument();
+    });
+
+    it('omits review time when nothing in the window was approved', async () => {
+      await render(
+        ok({
+          ...facts,
+          reviews: {
+            merged: 10,
+            approved: 0,
+            open: 0,
+            medianMergeHours: 3,
+          },
+        }),
+      );
+
+      expect(await screen.findByText('Median merge time')).toBeInTheDocument();
+      expect(screen.queryByText('Median review time')).not.toBeInTheDocument();
+    });
+  });
+  describe('lifetime facts', () => {
+    const lifetime = {
+      commits: 2,
+      authors: 1,
+      // Distinct dates: a repository started a year ago whose last commit was
+      // seven months ago, which is what these look like in the real estate.
+      firstCommitAt: new Date(Date.now() - 371 * 86_400_000).toISOString(),
+      lastCommitAt: new Date(Date.now() - 200 * 86_400_000).toISOString(),
+    };
+
+    it('shows a two-commit repository as two commits, not as empty', async () => {
+      // The whole point: through a 90-day window this looked identical to an
+      // abandoned mature service.
+      await render(
+        ok({
+          ...facts,
+          activity: { windowDays: 90, commits: 0, authors: 0 },
+          lifetime,
+        }),
+      );
+
+      expect(await screen.findByText('Commits (all time)')).toBeInTheDocument();
+      expect(screen.getByText('Contributors (all time)')).toBeInTheDocument();
+      expect(screen.getByText('First commit')).toBeInTheDocument();
+      expect(screen.getByText('Newest commit')).toBeInTheDocument();
+      expect(screen.getByText('1 year ago')).toBeInTheDocument();
+      expect(screen.getByText('6 months ago')).toBeInTheDocument();
+    });
+
+    it('hides the section for a repository with no history at all', async () => {
+      await render(ok({ ...facts, lifetime: { commits: 0, authors: 0 } }));
+
+      expect(await screen.findByText('261')).toBeInTheDocument();
+      expect(screen.queryByText('Commits (all time)')).not.toBeInTheDocument();
+    });
+
+    it('omits the section entirely when the backend served no such field', async () => {
+      await render(ok({ ...facts, lifetime: undefined }));
+
+      expect(await screen.findByText('261')).toBeInTheDocument();
+      expect(screen.queryByText('Commits (all time)')).not.toBeInTheDocument();
+    });
+  });
 });

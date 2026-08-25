@@ -56,12 +56,11 @@ export class CommitHistoryOwnershipResolver implements OwnershipResolver {
     this.minimumCommits = options.minimumCommits ?? DEFAULT_MINIMUM_COMMITS;
   }
 
-  async resolve(repositoryId: number, since: Date): Promise<OwnershipProposal> {
-    const windowDays = Math.max(
-      1,
-      Math.round((Date.now() - since.getTime()) / 86_400_000),
-    );
-
+  async resolve(
+    repositoryId: number,
+    since: Date,
+    windowDays: number,
+  ): Promise<OwnershipProposal> {
     const authors = await this.commits.topAuthorsSince(
       repositoryId,
       since,

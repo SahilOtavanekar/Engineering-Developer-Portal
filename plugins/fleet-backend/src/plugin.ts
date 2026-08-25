@@ -20,6 +20,8 @@ import { CommitIngestionService } from './ingestion/CommitIngestionService';
 import { PullRequestIngestionService } from './ingestion/PullRequestIngestionService';
 import { RepositoryDetailIngestionService } from './ingestion/RepositoryDetailIngestionService';
 import { CommitHistoryOwnershipResolver } from './ownership/CommitHistoryOwnershipResolver';
+import { CompositeOwnershipResolver } from './ownership/CompositeOwnershipResolver';
+import { PermissionOwnershipResolver } from './ownership/PermissionOwnershipResolver';
 import { OwnershipService } from './ownership/OwnershipService';
 import { createRouter } from './router';
 import { describeBackoff, shouldSkip } from './sync/backoff';
@@ -163,6 +165,7 @@ export const fleetPlugin = createBackendPlugin({
             branches: branchStore,
             pullRequests: pullRequestStore,
             deployments: deploymentStore,
+            pipelines: pipelineStore,
             ownership: ownershipStore,
             scores: scoreStore,
             nominalWeight: engine.nominalWeight,
@@ -320,16 +323,31 @@ export const fleetPlugin = createBackendPlugin({
           // requests and can run alongside the ingestion passes rather than
           // after them.
           const ownershipConfig = config.getOptionalConfig('fleet.ownership');
+          // Admin permission first, commit history second. Bitbucket's own
+          // answer to "who is accountable" beats an inference from who types
+          // most, and the two disagree far more often than not.
           const ownership = new OwnershipService({
-            resolver: new CommitHistoryOwnershipResolver({
-              commits,
-              candidateLimit:
-                ownershipConfig?.getOptionalNumber('candidates') ?? undefined,
-              minimumShare:
-                ownershipConfig?.getOptionalNumber('minimumShare') ?? undefined,
-              minimumCommits:
-                ownershipConfig?.getOptionalNumber('minimumCommits') ??
-                undefined,
+            resolver: new CompositeOwnershipResolver({
+              logger,
+              resolvers: [
+                new PermissionOwnershipResolver({
+                  client: newClient(),
+                  commits,
+                  repositories,
+                }),
+                new CommitHistoryOwnershipResolver({
+                  commits,
+                  candidateLimit:
+                    ownershipConfig?.getOptionalNumber('candidates') ??
+                    undefined,
+                  minimumShare:
+                    ownershipConfig?.getOptionalNumber('minimumShare') ??
+                    undefined,
+                  minimumCommits:
+                    ownershipConfig?.getOptionalNumber('minimumCommits') ??
+                    undefined,
+                }),
+              ],
             }),
             repositories,
             ownership: ownershipStore,

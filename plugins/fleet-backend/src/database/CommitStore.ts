@@ -212,6 +212,72 @@ export class CommitStore {
   }
 
   /**
+   * Facts about a repository's whole life, not a window.
+   *
+   * These are what distinguish an abandoned mature service from a repository
+   * somebody created and pushed to twice -- `chat-widget` has two commits in
+   * total, and until history was ingested it looked identical to the former.
+   *
+   * Every scored metric windows explicitly, so nothing here feeds a score.
+   */
+  async lifetime(repositoryId: number): Promise<{
+    commits: number;
+    authors: number;
+    firstCommitAt?: Date;
+    lastCommitAt?: Date;
+  }> {
+    const row = (await this.db('commit')
+      .where({ repository_id: repositoryId })
+      .where('parent_count', '<', 2)
+      .select(
+        this.db.raw('count(*) as commits'),
+        this.db.raw('count(distinct author_email) as authors'),
+        this.db.raw('min(committed_at) as first_at'),
+        this.db.raw('max(committed_at) as last_at'),
+      )
+      .first()) as any;
+
+    return {
+      commits: Number(row?.commits ?? 0),
+      authors: Number(row?.authors ?? 0),
+      firstCommitAt: row?.first_at ? new Date(row.first_at) : undefined,
+      lastCommitAt: row?.last_at ? new Date(row.last_at) : undefined,
+    };
+  }
+
+  /**
+   * Every distinct commit author across a workspace, with a display name.
+   *
+   * Used to join a Bitbucket display name to an email address -- repository
+   * permissions name people but carry no email. Not windowed: an admin who
+   * last committed a year ago still needs their address resolved.
+   */
+  async distinctAuthors(
+    workspace: string,
+  ): Promise<Array<{ name?: string; email: string }>> {
+    const rows = (await this.db('commit')
+      .join('repository', 'repository.id', 'commit.repository_id')
+      .where('repository.workspace', workspace)
+      .whereNotNull('commit.author_email')
+      .whereNot('commit.author_email', 'like', BOT_EMAIL_PATTERN)
+      .orderBy('commit.committed_at', 'desc')
+      .select(
+        'commit.author_email as author_email',
+        'commit.author_name as author_name',
+      )) as Array<{ author_email: string; author_name: string | null }>;
+
+    const byEmail = new Map<string, { name?: string; email: string }>();
+    for (const row of rows) {
+      if (byEmail.has(row.author_email)) continue;
+      byEmail.set(row.author_email, {
+        email: row.author_email,
+        name: row.author_name ?? undefined,
+      });
+    }
+    return [...byEmail.values()];
+  }
+
+  /**
    * Commits in the window that could be attributed to a person.
    *
    * The denominator for an authorship share, and deliberately not

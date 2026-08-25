@@ -180,6 +180,13 @@ export class RepositoryStore {
   }
 
   /** Looks a repository up by the key shared with the catalog. */
+  async findById(id: number): Promise<RepositoryRecord | undefined> {
+    const row = await this.db<RepositoryRecord>('repository')
+      .where({ id })
+      .first();
+    return row ? hydrate(row) : undefined;
+  }
+
   async findByEntityRef(
     entityRef: string,
   ): Promise<RepositoryRecord | undefined> {

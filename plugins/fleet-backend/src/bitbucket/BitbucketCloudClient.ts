@@ -6,6 +6,7 @@ import type {
   BitbucketClient,
   BitbucketCommit,
   BitbucketDeployment,
+  BitbucketRepositoryPermission,
   BitbucketPipelineRun,
   BitbucketPullRequest,
   BitbucketRepository,
@@ -48,7 +49,14 @@ const COMMIT_FIELDS = [
 ].join(',');
 
 /** Pages fetched per repository unless a caller says otherwise. */
-const DEFAULT_MAX_COMMIT_PAGES = 20;
+/**
+ * Pages of commits fetched per repository per pass, at 100 each.
+ *
+ * A runaway guard, not a budget: the busiest repository in this estate needs 6
+ * pages for its entire history, so 50 leaves an order of magnitude of headroom
+ * while still bounding a pathological repository.
+ */
+const DEFAULT_MAX_COMMIT_PAGES = 50;
 
 const BRANCH_FIELDS = [
   'next',
@@ -70,6 +78,15 @@ const PIPELINE_FIELDS = [
 
 /** Enough runs to judge a success rate without paging a busy repository. */
 const DEFAULT_PIPELINE_LIMIT = 20;
+
+const PERMISSION_FIELDS = [
+  'next',
+  'values.permission',
+  'values.user.display_name',
+  'values.user.account_id',
+  'values.user.uuid',
+  'values.user.nickname',
+].join(',');
 
 const DEPLOYMENT_FIELDS = [
   'values.uuid',
@@ -96,10 +113,14 @@ const PULL_REQUEST_FIELDS = [
   'values.state',
   'values.created_on',
   'values.updated_on',
+  // The real end of the pull request's life. `updated_on` moves on any later
+  // edit and cannot be used to measure how long a merge took.
+  'values.closed_on',
   'values.comment_count',
   'values.author.display_name',
   'values.author.account_id',
   'values.participants.approved',
+  'values.participants.participated_on',
   'values.participants.role',
   'values.source.branch.name',
   'values.destination.branch.name',
@@ -373,6 +394,52 @@ export class BitbucketCloudClient implements BitbucketClient {
     return branches;
   }
 
+  async listRepositoryPermissions(
+    workspace: string,
+    slug: string,
+  ): Promise<BitbucketRepositoryPermission[]> {
+    if (!workspace || !slug) {
+      throw new Error('a workspace slug and repository slug are required');
+    }
+
+    const permissions: BitbucketRepositoryPermission[] = [];
+    let url: string | undefined =
+      `${this.apiBaseUrl}/repositories/${encodeURIComponent(workspace)}/` +
+      `${encodeURIComponent(slug)}/permissions-config/users` +
+      `?pagelen=${PAGE_SIZE}&fields=${PERMISSION_FIELDS}`;
+
+    while (url) {
+      let page: PagedResponse;
+      try {
+        page = await this.request(url);
+      } catch (error) {
+        // 403 means the credential cannot read permissions at all; 404 means
+        // the repository has none configured. Neither should fail a sweep --
+        // ownership degrades to the commit-history fallback.
+        if (
+          error instanceof BitbucketApiError &&
+          (error.status === 403 || error.status === 404)
+        ) {
+          return permissions;
+        }
+        throw error;
+      }
+
+      for (const raw of (page.values ?? []) as any[]) {
+        permissions.push({
+          permission: raw.permission,
+          displayName: optional(raw.user?.display_name),
+          accountId: optional(raw.user?.account_id),
+          uuid: optional(raw.user?.uuid),
+          nickname: optional(raw.user?.nickname),
+        });
+      }
+      url = page.next;
+    }
+
+    return permissions;
+  }
+
   async listDeployments(
     workspace: string,
     slug: string,
@@ -512,12 +579,26 @@ export class BitbucketCloudClient implements BitbucketClient {
         const participants = Array.isArray(raw.participants)
           ? raw.participants
           : [];
+
+        // The *first* approval, not the last: review time is how long the
+        // author waited to be unblocked, and a second reviewer arriving later
+        // did not prolong that wait.
+        const approvalTimes = participants
+          .filter((p: any) => p.approved && p.participated_on)
+          .map((p: any) => new Date(p.participated_on).getTime())
+          .filter((time: number) => Number.isFinite(time));
+
         pullRequests.push({
           id: raw.id,
           title: optional(raw.title),
           state: raw.state,
           createdAt: raw.created_on,
           updatedAt,
+          closedAt: optional(raw.closed_on),
+          firstApprovalAt:
+            approvalTimes.length > 0
+              ? new Date(Math.min(...approvalTimes)).toISOString()
+              : undefined,
           commentCount:
             typeof raw.comment_count === 'number' ? raw.comment_count : 0,
           approvalCount: participants.filter((p: any) => p.approved).length,

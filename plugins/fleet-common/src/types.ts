@@ -92,6 +92,40 @@ export interface EnvironmentView {
   deployedAt: string;
 }
 
+/**
+ * A repository's whole recorded life, as opposed to the activity window.
+ *
+ * The window answers "is this maintained now"; this answers "what is this".
+ * Two commits ever and 500 commits ever are very different objects, and both
+ * look identical through a 90-day window once the work stops.
+ */
+export interface LifetimeSummaryView {
+  commits: number;
+  authors: number;
+  /** Effectively the project's age. */
+  firstCommitAt?: string;
+  /** The newest commit at all, however far outside the activity window. */
+  lastCommitAt?: string;
+}
+
+/**
+ * Recent pipeline runs by outcome -- the four states section 6 asks for.
+ *
+ * `cancelled` is reported separately from `failed` and excluded from
+ * `successRate`: a build somebody stopped says nothing about whether the code
+ * builds.
+ */
+export interface PipelineSummaryView {
+  successful: number;
+  failed: number;
+  cancelled: number;
+  running: number;
+  /** Successful over judged runs. Absent when there is nothing to judge. */
+  successRate?: number;
+  lastResult?: string;
+  lastRunAt?: string;
+}
+
 /** Pull request throughput over the activity window. */
 export interface ReviewSummaryView {
   merged: number;
@@ -99,6 +133,12 @@ export interface ReviewSummaryView {
   open: number;
   /** Median hours from opening to merge. Absent when nothing merged. */
   medianMergeHours?: number;
+  /**
+   * Median hours from opening to the first approval -- how long the author
+   * waited to be unblocked. A different measurement from merge duration, and
+   * absent when nothing in the window was approved.
+   */
+  medianReviewHours?: number;
 }
 
 /**
@@ -128,6 +168,9 @@ export interface RepositoryFacts {
   lastSyncedAt: string;
   activity: RepositoryActivitySummary;
   branches?: BranchSummaryView;
+  /** Absent until commit history has been ingested for the repository. */
+  lifetime?: LifetimeSummaryView;
+  pipelines?: PipelineSummaryView;
   reviews?: ReviewSummaryView;
   /**
    * Who commit history suggests owns this, awaiting confirmation. Absent

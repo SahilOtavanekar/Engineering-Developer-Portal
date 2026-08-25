@@ -71,11 +71,19 @@ export class OwnershipService {
     let failures = 0;
 
     try {
+      // Shared setup once, not per repository: the permission resolver builds
+      // an estate-wide name-to-email index here.
+      await this.resolver.prepare?.(workspace);
+
       const live = await this.repositories.listLive(workspace);
 
       for (const repository of live) {
         try {
-          const proposal = await this.resolver.resolve(repository.id, since);
+          const proposal = await this.resolver.resolve(
+            repository.id,
+            since,
+            this.windowDays,
+          );
           await this.ownership.replaceForRepository(
             repository.id,
             proposal,

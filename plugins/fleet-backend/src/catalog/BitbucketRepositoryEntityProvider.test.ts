@@ -40,7 +40,8 @@ function repository(
 function ownerSource(
   bySlug: Record<
     string,
-    { name?: string; email?: string; commits?: number } | undefined
+    | { name?: string; email?: string; commits?: number; source?: string }
+    | undefined
   >,
 ): ProposedOwnerSource {
   return {
@@ -59,7 +60,7 @@ function ownerSource(
               commits: value!.commits ?? 34,
               windowCommits: 41,
               windowDays: 90,
-              source: 'commit-history',
+              source: value!.source ?? 'commit-history',
               resolvedAt: new Date('2026-08-24T12:00:00.000Z'),
             },
           ]),
@@ -536,5 +537,59 @@ describe('derived type and lifecycle', () => {
       lifecycle: 'production',
       owner: 'user:default/ada',
     });
+  });
+});
+
+describe('ownership evidence', () => {
+  async function evidenceFor(owner: {
+    name?: string;
+    email?: string;
+    commits?: number;
+    source?: string;
+  }) {
+    const { provider, connection, mutations } = harness(
+      [repository()],
+      ownerSource({ 'oxp-backend': owner }),
+    );
+    await provider.connect(connection);
+    return (mutations[0] as any).entities[0].entity.metadata.annotations[
+      ANNOTATION_OWNERSHIP_EVIDENCE
+    ];
+  }
+
+  it('leads with the permission when that is what decided it', async () => {
+    // "9 of 208 commits" would read as an absurd justification for a claim
+    // that does not rest on commits at all.
+    const evidence = await evidenceFor({
+      email: 'avinash.more@demandai.co',
+      commits: 9,
+      source: 'repository-admin',
+    });
+
+    expect(evidence).toBe(
+      'Repository admin in Bitbucket, and 9 of 41 commits in 90 days',
+    );
+  });
+
+  it('says so plainly when an admin has not committed at all', async () => {
+    const evidence = await evidenceFor({
+      email: 'makarand.prabhu@demandai.co',
+      commits: 0,
+      source: 'repository-admin',
+    });
+
+    expect(evidence).toBe(
+      'Repository admin in Bitbucket; no commits in the window',
+    );
+  });
+
+  it('gives the commit share alone when that is the whole argument', async () => {
+    const evidence = await evidenceFor({
+      email: 'brijesh.gupta@demandai.co',
+      commits: 34,
+      source: 'commit-history',
+    });
+
+    expect(evidence).toBe('34 of 41 commits in 90 days');
   });
 });

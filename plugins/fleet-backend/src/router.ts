@@ -16,6 +16,7 @@ import type { BranchStore } from './database/BranchStore';
 import type { CommitStore } from './database/CommitStore';
 import type { DeploymentStore } from './database/DeploymentStore';
 import type { OwnershipStore } from './database/OwnershipStore';
+import type { PipelineStore } from './database/PipelineStore';
 import type { PullRequestStore } from './database/PullRequestStore';
 import type { ScoreStore } from './database/ScoreStore';
 import type {
@@ -29,6 +30,7 @@ export interface RouterOptions {
   branches: BranchStore;
   pullRequests: PullRequestStore;
   deployments: DeploymentStore;
+  pipelines: PipelineStore;
   ownership: OwnershipStore;
   scores: ScoreStore;
   /** Nominal total across every registered metric, measurable or not. */
@@ -64,6 +66,7 @@ export async function createRouter(
     branches,
     pullRequests,
     deployments,
+    pipelines,
     ownership,
     scores,
     nominalWeight,
@@ -194,7 +197,10 @@ export async function createRouter(
       const since = new Date(
         Date.now() - activityWindowDays * 24 * 60 * 60 * 1000,
       );
-      const activity = await commits.activitySince(record.id, since);
+      const [activity, lifetime] = await Promise.all([
+        commits.activitySince(record.id, since),
+        commits.lifetime(record.id),
+      ]);
       const [
         latestScore,
         scoreHistory,
@@ -203,6 +209,7 @@ export async function createRouter(
         reviews,
         environments,
         ownershipCandidates,
+        pipelineSummary,
       ] = await Promise.all([
         scores.latest(record.id),
         scores.history(record.id, HISTORY_POINTS),
@@ -211,6 +218,7 @@ export async function createRouter(
         pullRequests.reviewSummary(record.id, since),
         deployments.currentEnvironments(record.id),
         ownership.forRepository(record.id),
+        pipelines.summary(record.id),
       ]);
 
       // Whether a candidate was confident enough to name was decided by the
@@ -249,6 +257,24 @@ export async function createRouter(
           })),
         },
         reviews,
+        lifetime: {
+          commits: lifetime.commits,
+          authors: lifetime.authors,
+          firstCommitAt: iso(lifetime.firstCommitAt ?? null),
+          lastCommitAt: iso(lifetime.lastCommitAt ?? null),
+        },
+        pipelines: {
+          successful: pipelineSummary.successful,
+          failed: pipelineSummary.failed,
+          cancelled: pipelineSummary.cancelled,
+          running: pipelineSummary.inProgress,
+          successRate:
+            pipelineSummary.judged > 0
+              ? pipelineSummary.successful / pipelineSummary.judged
+              : undefined,
+          lastResult: pipelineSummary.lastResult,
+          lastRunAt: iso(pipelineSummary.lastRunAt ?? null),
+        },
         ownershipProposal: leader
           ? {
               source: leader.source,
