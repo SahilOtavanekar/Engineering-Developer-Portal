@@ -1,5 +1,10 @@
 import type { DatabaseService } from '@backstage/backend-plugin-api';
 import type { BitbucketCommit } from '../bitbucket/types';
+import type {
+  BranchPolicySummary,
+  ClassifiedCommit,
+  CommitNode,
+} from '../analysis/branchPolicy';
 
 type DatabaseClient = Awaited<ReturnType<DatabaseService['getClient']>>;
 
@@ -69,6 +74,8 @@ export class CommitStore {
       author_email: commit.authorEmail ?? null,
       author_account_id: commit.authorAccountId ?? null,
       parent_count: commit.parentCount,
+      // First parent first; the chain walk depends on that order.
+      parents: commit.parents?.length ? commit.parents.join(',') : null,
     }));
 
     // Which of these do we already have? Drivers disagree on what an ignored
@@ -94,6 +101,172 @@ export class CommitStore {
         .ignore();
     }
     return fresh.length;
+  }
+
+  /**
+   * Every stored commit as a graph node, newest first.
+   *
+   * Newest first because the classifier starts at the branch tip and follows
+   * first parents; the order is load-bearing, not cosmetic.
+   */
+  async graph(repositoryId: number): Promise<CommitNode[]> {
+    const rows = (await this.db('commit')
+      .where({ repository_id: repositoryId })
+      .orderBy('committed_at', 'desc')
+      .orderBy('id', 'desc')
+      .select('hash', 'parents')) as Array<{
+      hash: string;
+      parents: string | null;
+    }>;
+
+    return rows.map(row => ({
+      hash: row.hash,
+      parents: row.parents ? row.parents.split(',').filter(Boolean) : [],
+    }));
+  }
+
+  /**
+   * How many stored commits are missing parent hashes.
+   *
+   * Must be zero before the branch policy can be computed, and "at least one
+   * has them" is not good enough: the walk follows first parents from the tip,
+   * so it stops dead at the first commit without them and reports a mainline
+   * far shorter than the truth. Commits ingested before the `parents` column
+   * existed have none, and the incremental watermark means they never acquire
+   * any -- those repositories must be skipped, not half-measured.
+   */
+  async commitsMissingParents(repositoryId: number): Promise<number> {
+    const [row] = (await this.db('commit')
+      .where({ repository_id: repositoryId })
+      .whereNull('parents')
+      // A root commit legitimately has no parents; it is stored as null and
+      // would otherwise block its repository for ever.
+      .where('parent_count', '>', 0)
+      .count({ n: '*' })) as Array<{ n: string | number }>;
+    return Number(row?.n ?? 0);
+  }
+
+  /**
+   * Writes how each commit reached the branch.
+   *
+   * Chunked and keyed by hash rather than done with one statement per commit:
+   * the busiest repository here has 524 commits, and a statement each would be
+   * 524 round trips per pass.
+   */
+  async recordArrivals(
+    repositoryId: number,
+    classified: ClassifiedCommit[],
+  ): Promise<number> {
+    if (classified.length === 0) return 0;
+
+    // Group by the value being written so each distinct combination is one
+    // statement, not one per commit. There are only ever four.
+    const groups = new Map<string, string[]>();
+    for (const commit of classified) {
+      const key = `${commit.onMainline ? 1 : 0}:${commit.arrival}`;
+      const list = groups.get(key);
+      if (list) list.push(commit.hash);
+      else groups.set(key, [commit.hash]);
+    }
+
+    let written = 0;
+    for (const [key, hashes] of groups) {
+      const [mainline, arrival] = key.split(':');
+      for (let i = 0; i < hashes.length; i += INSERT_CHUNK) {
+        written += await this.db('commit')
+          .where({ repository_id: repositoryId })
+          .whereIn('hash', hashes.slice(i, i + INSERT_CHUNK))
+          .update({ on_mainline: mainline === '1', arrival });
+      }
+    }
+    return written;
+  }
+
+  /**
+   * How commits reached the default branch within a window.
+   *
+   * Counts from the stored classification rather than recomputing the walk, so
+   * any window is a single aggregate and the reporting period can change
+   * without re-reading Bitbucket.
+   */
+  async branchPolicySince(
+    repositoryId: number,
+    since: Date,
+  ): Promise<BranchPolicySummary & { classified: number }> {
+    const rows = (await this.db('commit')
+      .where({ repository_id: repositoryId })
+      .where('committed_at', '>=', since)
+      .whereNotNull('arrival')
+      .groupBy('arrival')
+      .select('arrival')
+      .count({ n: '*' })) as Array<{ arrival: string; n: string | number }>;
+
+    const of = (arrival: string) =>
+      Number(rows.find(row => row.arrival === arrival)?.n ?? 0);
+
+    const viaPullRequest = of('pull-request');
+    const direct = of('direct');
+    const directMerge = of('direct-merge');
+    const mergedIn = of('merged-in');
+
+    return {
+      mainline: viaPullRequest + direct + directMerge,
+      viaPullRequest,
+      direct,
+      directMerge,
+      mergedIn,
+      classified: viaPullRequest + direct + directMerge + mergedIn,
+    };
+  }
+
+  /**
+   * Branch-policy counts for a whole workspace, keyed by slug.
+   *
+   * One query for the estate. The entity provider needs this for all 95
+   * repositories at once, and a lookup per repository would be an N+1 that is
+   * invisible here and ruinous at the 10,000 the document imagines.
+   *
+   * A slug absent from the map means the classification pass has not reached it.
+   */
+  async branchPolicyForWorkspace(
+    workspace: string,
+    since: Date,
+  ): Promise<Map<string, BranchPolicySummary>> {
+    const rows = (await this.db('commit')
+      .join('repository', 'repository.id', 'commit.repository_id')
+      .where('repository.workspace', workspace)
+      .where('repository.is_live', true)
+      .where('commit.committed_at', '>=', since)
+      .whereNotNull('commit.arrival')
+      .groupBy('repository.slug', 'commit.arrival')
+      .select('repository.slug as slug', 'commit.arrival as arrival')
+      .count({ n: '*' })) as Array<{
+      slug: string;
+      arrival: string;
+      n: string | number;
+    }>;
+
+    const bySlug = new Map<string, BranchPolicySummary>();
+    for (const row of rows) {
+      const current =
+        bySlug.get(row.slug) ??
+        ({
+          mainline: 0,
+          viaPullRequest: 0,
+          direct: 0,
+          directMerge: 0,
+          mergedIn: 0,
+        } as BranchPolicySummary);
+      const n = Number(row.n);
+      if (row.arrival === 'pull-request') current.viaPullRequest += n;
+      else if (row.arrival === 'direct') current.direct += n;
+      else if (row.arrival === 'direct-merge') current.directMerge += n;
+      else if (row.arrival === 'merged-in') current.mergedIn += n;
+      current.mainline =
+        current.viaPullRequest + current.direct + current.directMerge;
+      bySlug.set(row.slug, current);
+    }
+    return bySlug;
   }
 
   /** Newest commit timestamp, or null for a repository with no commits. */

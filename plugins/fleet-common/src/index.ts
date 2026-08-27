@@ -1,4 +1,5 @@
 export { fleetPermissions, fleetRepositoryReadPermission } from './permissions';
+export { OWNERSHIP_SOURCE_REGISTER, isConfirmedOwnership } from './ownership';
 export type {
   BranchSummaryView,
   EnvironmentView,

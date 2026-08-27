@@ -124,6 +124,9 @@ const PULL_REQUEST_FIELDS = [
   'values.participants.role',
   'values.source.branch.name',
   'values.destination.branch.name',
+  // Which commit the merge produced on the destination branch. Costs nothing
+  // extra: same request, one more field.
+  'values.merge_commit.hash',
 ].join(',');
 
 /**
@@ -213,6 +216,11 @@ function toCommit(raw: any): BitbucketCommit {
     authorEmail: email,
     authorAccountId: optional(raw.author?.user?.account_id),
     parentCount: Array.isArray(raw.parents) ? raw.parents.length : 1,
+    parents: Array.isArray(raw.parents)
+      ? raw.parents
+          .map((parent: any) => parent?.hash)
+          .filter((hash: unknown): hash is string => typeof hash === 'string')
+      : undefined,
   };
 }
 
@@ -607,6 +615,7 @@ export class BitbucketCloudClient implements BitbucketClient {
           authorName: optional(raw.author?.display_name),
           sourceBranch: optional(raw.source?.branch?.name),
           destinationBranch: optional(raw.destination?.branch?.name),
+          mergeCommitHash: optional(raw.merge_commit?.hash),
         });
       }
 

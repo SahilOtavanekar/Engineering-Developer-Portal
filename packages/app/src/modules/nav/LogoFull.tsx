@@ -1,35 +1,58 @@
 import { makeStyles } from '@material-ui/core';
+import demandAiLogo from '../../assets/demand-ai-logo.png';
 
 /**
- * The Demand AI wordmark, for the expanded sidebar.
+ * The Demand AI logo for the expanded sidebar: the brand tile plus the
+ * wordmark.
  *
- * Drawn as SVG rather than referencing a raster file so it stays sharp at any
- * sidebar width and inherits the theme's foreground colour instead of carrying
- * a baked-in background. The official artwork sits on a teal block; a block
- * would read as a patch stuck onto the sidebar, so the mark is drawn on
- * transparent and the teal is kept as the accent on the circuit traces.
+ * The official artwork (`src/assets/demand-ai-logo.png`, 137x124) is the mark
+ * only -- it carries no wordmark -- so the name is set as text beside it. That
+ * is also what keeps it legible: text renders at the device's pixel density and
+ * follows the theme, where a raster wordmark would neither.
  *
- * To use the official asset instead: drop it at
- * `packages/app/public/demand-ai-logo.svg` and replace this component's body
- * with `<img src="/demand-ai-logo.svg" className={classes.svg} alt="Demand AI" />`.
+ * **The asset is imported, not referenced by URL.** `index.html` templates its
+ * asset paths through `<%= publicPath %>`, so a hardcoded `/demand-ai-logo.png`
+ * would break the moment the portal is served from anywhere but the domain
+ * root. Importing hands the path to the bundler, which also fingerprints it for
+ * cache-busting. To replace the artwork, overwrite that file -- not anything in
+ * `public/`.
+ *
+ * **Aspect ratio is pinned two ways.** `height` with `width: auto` on an `img`
+ * preserves the intrinsic ratio, and `objectFit: 'contain'` means that even if
+ * an ancestor forces a width on it the image letterboxes instead of stretching.
+ * The previous hand-drawn SVG had neither guard and was squashed by the 72px
+ * container it sat in.
+ *
+ * **Theme handling.** The tile is a fully opaque `#12665E` rectangle, so it is
+ * readable against any backdrop and needs no theme treatment. The wordmark does
+ * not, so it takes `palette.navigation.selectedColor` rather than a hardcoded
+ * white -- correct on the light theme's `#171717` sidebar and the dark theme's
+ * `#424242`, and still correct if either is ever restyled.
  */
 const useStyles = makeStyles(theme => ({
-  svg: {
+  root: {
+    display: 'flex',
+    flexFlow: 'row nowrap',
+    alignItems: 'center',
+    gap: 10,
+  },
+  tile: {
+    height: 32,
     width: 'auto',
-    height: 30,
-  },
-  mark: {
-    fill: 'none',
-    stroke: theme.palette.type === 'dark' ? '#ffffff' : '#14615C',
-    strokeWidth: 5,
-    strokeLinecap: 'round' as const,
-    strokeLinejoin: 'round' as const,
-  },
-  node: {
-    fill: '#2FBFAE',
+    // Never let a parent's width squeeze or stretch the artwork.
+    flexShrink: 0,
+    objectFit: 'contain',
+    borderRadius: 6,
+    display: 'block',
   },
   word: {
-    fill: theme.palette.type === 'dark' ? '#ffffff' : '#14615C',
+    color: theme.palette.navigation.selectedColor,
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 19,
+    fontWeight: 700,
+    letterSpacing: 0.4,
+    lineHeight: 1,
+    whiteSpace: 'nowrap',
   },
 }));
 
@@ -37,44 +60,9 @@ export const LogoFull = () => {
   const classes = useStyles();
 
   return (
-    <svg
-      className={classes.svg}
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 300 80"
-      role="img"
-      aria-label="Demand AI"
-    >
-      {/* Brain outline, split by a vertical spine as in the original mark. */}
-      <g className={classes.mark}>
-        <path d="M40 14c-13 0-24 9-24 21 0 5 2 9 5 13-3 4-5 8-5 13 0 12 11 19 24 19" />
-        <path d="M40 14c13 0 24 9 24 21 0 5-2 9-5 13 3 4 5 8 5 13 0 12-11 19-24 19" />
-        <path d="M40 10v60" />
-        {/* Circuit traces branching off the spine. */}
-        <path d="M40 26h-11v-8" />
-        <path d="M40 40h-14v10" />
-        <path d="M40 56h-10v6" />
-        <path d="M40 32h12v-9" />
-        <path d="M40 48h13v9" />
-      </g>
-      <g className={classes.node}>
-        <circle cx="29" cy="16" r="3.5" />
-        <circle cx="26" cy="52" r="3.5" />
-        <circle cx="30" cy="64" r="3.5" />
-        <circle cx="52" cy="21" r="3.5" />
-        <circle cx="53" cy="59" r="3.5" />
-        <circle cx="40" cy="72" r="3.5" />
-      </g>
-      <text
-        className={classes.word}
-        x="84"
-        y="53"
-        fontFamily="Archivo, Helvetica Neue, Arial, sans-serif"
-        fontSize="34"
-        fontWeight="700"
-        letterSpacing="1.5"
-      >
-        DEMAND AI
-      </text>
-    </svg>
+    <div className={classes.root}>
+      <img className={classes.tile} src={demandAiLogo} alt="" aria-hidden />
+      <span className={classes.word}>Demand AI</span>
+    </div>
   );
 };

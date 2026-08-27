@@ -2,7 +2,12 @@ import type { CSSProperties } from 'react';
 import type { FleetRepositorySummary } from '@internal/backstage-plugin-fleet-common';
 import { Flex, Text } from '@backstage/ui';
 import { BAND_FILL, BAND_LABEL } from '../../bands';
-import { bandCounts, technologyCounts, type FleetFilters } from '../../filter';
+import {
+  bandCounts,
+  directCommitCount,
+  technologyCounts,
+  type FleetFilters,
+} from '../../filter';
 
 /** Technology chips shown before the list is truncated. */
 const MAX_TECHNOLOGIES = 10;
@@ -47,6 +52,7 @@ export function FleetFiltersBar({
 }: FleetFiltersBarProps) {
   const counts = bandCounts(repositories);
   const technologies = technologyCounts(repositories);
+  const bypassing = directCommitCount(repositories);
   const total = repositories.length;
 
   const segments = [
@@ -61,7 +67,11 @@ export function FleetFiltersBar({
       [key]: filters[key] === value ? undefined : value,
     });
 
-  const filtered = filters.band || filters.technology || filters.query?.trim();
+  const filtered =
+    filters.band ||
+    filters.technology ||
+    filters.directCommitsOnly ||
+    filters.query?.trim();
 
   return (
     <Flex direction="column" gap="3">
@@ -134,6 +144,23 @@ export function FleetFiltersBar({
             style={chip(filters.band === 'unscored')}
           >
             Not scored ({counts.unscored})
+          </button>
+        )}
+
+        {bypassing > 0 && (
+          <button
+            type="button"
+            onClick={() =>
+              onChange({
+                ...filters,
+                directCommitsOnly: filters.directCommitsOnly ? undefined : true,
+              })
+            }
+            aria-pressed={Boolean(filters.directCommitsOnly)}
+            title="Repositories where work reached the default branch without a pull request"
+            style={chip(Boolean(filters.directCommitsOnly))}
+          >
+            Direct commits to main ({bypassing})
           </button>
         )}
 

@@ -6,6 +6,9 @@ import { branchHygieneScorer } from './scorers/branchHygiene';
 import { codeReviewCompletedScorer } from './scorers/codeReviewCompleted';
 import { pipelineHealthScorer } from './scorers/pipelineHealth';
 import { readmeAvailableScorer } from './scorers/readmeAvailable';
+import { ownerAssignedScorer } from './scorers/ownerAssigned';
+import { pullRequestDisciplineScorer } from './scorers/pullRequestDiscipline';
+import { OWNERSHIP_SOURCE_REGISTER } from '../ownership/types';
 import { unmeasuredScorer } from './scorers/unmeasured';
 import type { Scorer, ScorerContext } from './types';
 
@@ -378,6 +381,195 @@ describe('readmeAvailableScorer', () => {
       fraction: 0,
       detail: 'No README at the repository root',
     });
+  });
+});
+
+describe('ownerAssignedScorer', () => {
+  const scorer = ownerAssignedScorer();
+  const owner = (over: Record<string, unknown> = {}) =>
+    ({
+      rank: 1,
+      isProposed: true,
+      name: 'Brijesh Gupta',
+      email: 'brijesh.gupta@demandai.co',
+      commits: 175,
+      windowCommits: 202,
+      windowDays: 90,
+      source: OWNERSHIP_SOURCE_REGISTER,
+      resolvedAt: NOW,
+      ...over,
+    } as any);
+
+  const withOwnership = (ownership: any) => ({ ...context(10, 2), ownership });
+
+  it('cannot measure before ownership has ever been resolved', () => {
+    // Not zero. Ninety-five repositories scored zero because a scheduled task
+    // has not run yet would misreport every one of them.
+    expect(scorer.score(withOwnership(undefined))).toBeNull();
+  });
+
+  it('gives full marks for an owner somebody confirmed', () => {
+    expect(scorer.score(withOwnership({ proposed: owner() }))).toEqual({
+      fraction: 1,
+      detail: 'Owner confirmed: Brijesh Gupta',
+    });
+  });
+
+  it('gives nothing for an owner derived from admin permission', () => {
+    // The inference was right 76% of the time against the register. Good enough
+    // to suggest a name, nowhere near good enough to count as ownership.
+    const outcome = scorer.score(
+      withOwnership({ proposed: owner({ source: 'repository-admin' }) }),
+    );
+
+    expect(outcome?.fraction).toBe(0);
+    expect(outcome?.detail).toContain('nobody has confirmed it');
+    expect(outcome?.detail).toContain('repository-admin');
+  });
+
+  it('gives nothing for an owner derived from commit history', () => {
+    const outcome = scorer.score(
+      withOwnership({ proposed: owner({ source: 'commit-history' }) }),
+    );
+
+    expect(outcome?.fraction).toBe(0);
+  });
+
+  it('scores zero, not null, when a pass ran and found nobody', () => {
+    // The distinction the context type exists for: resolved-and-empty is a real
+    // zero, never-resolved is unmeasurable.
+    expect(scorer.score(withOwnership({}))).toEqual({
+      fraction: 0,
+      detail: 'No owner identified',
+    });
+  });
+
+  it('treats a candidate with no address as no owner', () => {
+    // Without a resolvable address there is no User entity to own anything, so
+    // the catalog shows the placeholder owner and this must agree with it.
+    expect(
+      scorer.score(withOwnership({ proposed: owner({ email: undefined }) })),
+    ).toEqual({ fraction: 0, detail: 'No owner identified' });
+  });
+
+  it('falls back to the address when the register has no name', () => {
+    const outcome = scorer.score(
+      withOwnership({ proposed: owner({ name: undefined }) }),
+    );
+
+    expect(outcome?.detail).toBe('Owner confirmed: brijesh.gupta@demandai.co');
+  });
+
+  it('earns its full weight in the total', () => {
+    // The point of the exercise: the ten points this metric forfeited while it
+    // had no data source are now winnable.
+    const result = new ScoringEngine({
+      bands: PROVISIONAL_BANDS,
+      scorers: [
+        { scorer: fixed('measured', 1), weight: 90 },
+        { scorer: ownerAssignedScorer(), weight: 10 },
+      ],
+    }).score(withOwnership({ proposed: owner() }));
+
+    expect(result.total).toBe(100);
+    expect(result.availableWeight).toBe(100);
+    expect(result.breakdown.find(e => e.id === 'owner-assigned')).toMatchObject(
+      { points: 10, available: true },
+    );
+  });
+});
+
+describe('the registered scorecard', () => {
+  it('is a set of weights that totals exactly 100', () => {
+    // Pinned because the total drifted twice: adding the ownership metric took
+    // it to 100, adding pull-request discipline took it to 110, and dropping
+    // the security scan brought it back. A silent drift rescales every score in
+    // the estate.
+    const registered = [20, 10, 20, 10, 10, 10, 10, 10];
+
+    expect(registered).toHaveLength(8);
+    expect(registered.reduce((a, b) => a + b, 0)).toBe(100);
+  });
+});
+
+describe('pullRequestDisciplineScorer', () => {
+  const scorer = pullRequestDisciplineScorer({ windowDays: 30 });
+  const withPolicy = (policy: any) => ({
+    ...context(10, 2),
+    branchPolicy: policy,
+  });
+  const policy = (o: Partial<Record<string, any>> = {}) => ({
+    mainline: 0,
+    viaPullRequest: 0,
+    direct: 0,
+    directMerge: 0,
+    mergedIn: 0,
+    branch: 'main',
+    ...o,
+  });
+
+  it('cannot measure before the classification pass has run', () => {
+    expect(scorer.score(withPolicy(undefined))).toBeNull();
+  });
+
+  it('cannot measure a repository where nothing landed in the window', () => {
+    // 48 of 95 repositories are dormant. Scoring them zero here would punish
+    // them twice for the same silence.
+    expect(scorer.score(withPolicy(policy({ mainline: 0 })))).toBeNull();
+  });
+
+  it('gives full marks when everything came through a pull request', () => {
+    const outcome = scorer.score(
+      withPolicy(policy({ mainline: 22, viaPullRequest: 22 })),
+    );
+
+    expect(outcome?.fraction).toBe(1);
+    expect(outcome?.detail).toContain('all 22 commits on main');
+  });
+
+  it('grades by share rather than passing or failing', () => {
+    // One direct commit in fifty is a slip; eleven in eleven is a repository
+    // with no review at all. Scoring both zero tells the second team nothing.
+    const slip = scorer.score(
+      withPolicy(policy({ mainline: 50, viaPullRequest: 49, direct: 1 })),
+    );
+    const none = scorer.score(
+      withPolicy(policy({ mainline: 11, viaPullRequest: 0, direct: 11 })),
+    );
+
+    expect(slip!.fraction).toBeCloseTo(0.98);
+    expect(none!.fraction).toBe(0);
+  });
+
+  it('counts direct merges as direct, and says how many', () => {
+    const outcome = scorer.score(
+      withPolicy(
+        policy({ mainline: 20, viaPullRequest: 4, direct: 12, directMerge: 4 }),
+      ),
+    );
+
+    expect(outcome?.detail).toContain('16 direct commits to main');
+    expect(outcome?.detail).toContain('4 of them merges');
+    expect(outcome?.detail).toContain('4 of 20 came through a pull request');
+  });
+
+  it('does not mention merges when there are none', () => {
+    const outcome = scorer.score(
+      withPolicy(policy({ mainline: 10, viaPullRequest: 9, direct: 1 })),
+    );
+
+    expect(outcome?.detail).not.toContain('merges');
+    expect(outcome?.detail).toContain('1 direct commit to main');
+  });
+
+  it('ignores commits a merge brought in', () => {
+    // mergedIn is reported so totals reconcile, never judged: those commits
+    // were made on a feature branch, which is the behaviour we want.
+    const outcome = scorer.score(
+      withPolicy(policy({ mainline: 2, viaPullRequest: 2, mergedIn: 998 })),
+    );
+
+    expect(outcome?.fraction).toBe(1);
   });
 });
 

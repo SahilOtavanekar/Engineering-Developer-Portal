@@ -166,3 +166,10 @@ fleet:
     # endpoints (CHANGE-2770), so they must be listed explicitly.
     workspaces:
       - demandai
+  ownership:
+    # Confirmed ownership, from the repository standardization document. This is
+    # the only source the portal treats as authoritative; admin permission and
+    # commit history are inferences behind it. Kept in its own file so it can be
+    # reviewed and corrected without touching config.
+    register:
+      $include: ./catalog/ownership-register.yaml

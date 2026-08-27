@@ -24,8 +24,8 @@ Target is the organization's **real Bitbucket estate**, not a sandbox.
 | Auth            | GitHub OAuth + guest (**placeholder** — Entra ID comes last) |
 | Permissions     | `allow-all-policy` — nothing is enforced yet                 |
 | Custom plugins  | `fleet-common`, `fleet-backend`, `fleet` (frontend)          |
-| Scorecard       | 6 of 9 metrics live — 85 of 100 weight measurable            |
-| Progress        | 26 steps done, 588 tests, 34 suites, 3 e2e                   |
+| Scorecard       | 8 metrics, all live — 100 of 100 weight registered           |
+| Progress        | 29 steps done, 689 tests, 41 suites, 4 e2e                   |
 
 ## Measured facts about the estate
 
@@ -192,6 +192,69 @@ override.
   Bitbucket cannot record a deployment without one, so asking would spend a
   request per repository to learn nothing. `RepositoryDetailIngestionService`
   guards on `runs.length > 0`; a test pins it.
+- **A third-party plugin's hardcoded strings are changed through its
+  translation ref, not through config.** The user-settings plugin renders
+  "Backstage Identity" on Settings > General; that text lives in
+  `userSettingsTranslationRef`, so no `app-config.yaml` value and no
+  `extensions:` override can reach it. `packages/app/src/modules/i18n` supplies
+  replacement messages via `TranslationBlueprint`, which is documented as
+  limited to the app plugin -- so the module registers under `pluginId: 'app'`,
+  as the nav and auth modules do. Leave `full` unset: a partial override keeps
+  the plugin's wording for every key not listed, where a full one must restate
+  every message and renders blank for any the plugin adds later. The keys are
+  type-checked against the ref, so a typo fails `yarn tsc` rather than silently
+  doing nothing. Grep `packages/app/dist/static/*.js` for the new wording to
+  confirm it actually shipped.
+- **The brand asset lives in `packages/app/src/assets/demand-ai-logo.png`, not
+  `public/`.** It is `import`ed by `LogoFull`/`LogoIcon` rather than referenced
+  by URL, because `index.html` templates its asset paths through
+  `<%= publicPath %>` -- a hardcoded `/demand-ai-logo.png` breaks as soon as the
+  portal is served from anywhere but the domain root, and an import also gets
+  fingerprinted for cache-busting. Replace the artwork by overwriting that file.
+  The artwork is the mark only (137x124, a fully opaque `#12665E` tile, no
+  wordmark), so `LogoFull` sets the name as text beside it; that text takes
+  `palette.navigation.selectedColor` rather than a hardcoded white, which is
+  what makes it correct on the light theme's `#171717` sidebar and the dark
+  theme's `#424242`. **Both sidebars are dark** -- verified in
+  `@backstage/theme`'s palettes, not assumed.
+- **`packages/app/public/index.html` is a lodash template, and Prettier breaks
+  it.** Prettier wraps the long `<%= ... %>` expression in `<title>` across a
+  newline, which splits a JavaScript string literal, and
+  `html-webpack-plugin` then fails the whole app build with
+  `SyntaxError: Invalid or unexpected token`. The file is in `.prettierignore`
+  for that reason -- do not format it, and do not remove the entry.
+- **`yarn tsc`, `yarn lint:all` and `yarn prettier:check` do not compile
+  `index.html`.** All three passed clean while the app could not build at all.
+  Anything touching `packages/app/public/` or an imported asset needs
+  `yarn workspace app build`, which is the only check that compiles the HTML
+  template and resolves asset imports. Verify the built output too, not just the
+  exit code: `packages/app/dist/index.html` should carry the resolved
+  `<title>`, and an imported asset should appear fingerprinted in
+  `dist/static/` (e.g. `demand-ai-logo.5af355a2c0a9.png`).
+- **The browser icons are generated, not hand-cut.**
+  `packages/app/scripts/generate-icons.py` rebuilds `favicon.ico` (16/32/48),
+  `favicon-16x16`, `favicon-32x32`, `apple-touch-icon` (180),
+  `android-chrome-192x192` and `safari-pinned-tab.svg` from the same source
+  artwork. Re-run it after replacing the artwork; the outputs are committed and
+  nothing at build time depends on the script.
+  **Small sizes are optically tuned, not merely downscaled** -- thin white
+  strokes average towards the background when resampled, so a straight
+  downscale of this mark is an illegible smudge at 16px. Each size gets its own
+  crop tightness and a stroke dilation applied at 8x supersample. 180 and 192
+  take the brand's own proportions untouched. **16px is legible but no more
+  than a suggestion of the mark**; that is a limit of 137x124 line art, not of
+  the resampling, and higher-resolution artwork is what would fix it.
+  Pillow's ICO writer downsamples one image, which would discard the per-size
+  tuning, so the `.ico` container is assembled by hand with a PNG per entry.
+  Safari's mask icon must be vector, so the stroke mask is thresholded and
+  emitted as 218 merged rectangles.
+- **Pin a logo's aspect ratio twice.** `height` with `width: auto` on an `img`,
+  _and_ `objectFit: 'contain'` so a parent that forces a width letterboxes
+  instead of stretching. The scaffolded `SidebarLogo` pinned both its row and
+  its link to `sidebarConfig.drawerWidthClosed` (72px) whatever the drawer was
+  doing, so the expanded logo was laid out in a 72px box and relied on
+  overflowing it -- which is what visibly distorted it. The widths track the
+  drawer (`width: '100%'`) now.
 - **Never send `Accept: application/json` when fetching raw file content.**
   Bitbucket then labels the response JSON and the reader parses plain text,
   which broke 13 repositories on `requirements.txt` and `pyproject.toml`.
@@ -241,13 +304,152 @@ override.
   hold commits, branch counts matched 95 of 95, and all 48 repositories shown as
   dormant genuinely have no default-branch commit inside the window. Eight
   internal consistency checks clean. The API serves complete facts for 95 of 95.
-- **Admin permission beats commit history, and it is not close.** Measured
-  2026-08-25: where both sources have an answer they **disagree in 18 of 26**
-  repositories. `oxp-backend` -- Brijesh Gupta wrote 187 of 214 commits; the
-  admins are Sreenivas Dasam and Avinash More. Coverage went from **22 to 75 of
-  95** proposed owners. `GET /repositories/{ws}/{slug}/permissions-config/users`
-  **works with the current token**; 68 repositories have exactly one admin, 10
-  have several, 17 have none.
+- **`OWNERSHIP_SOURCE_REGISTER` lives in `fleet-common`, not the backend.** Four
+  places must agree on that string and they cannot import from one another: the
+  resolver that writes it, the entity provider that decides whether to tag
+  `unconfirmed-owner`, the scorer that decides whether to award the metric, and
+  `RepositoryFactsCard`, which decides whether to call the owner a guess. The
+  backend's `ownership/types.ts` re-exports it.
+- **The "Repository activity" card must not call a confirmed owner a guess.**
+  Its ownership block said "Suggested owner — not confirmed" and "a guess -- this
+  repository is still owned by `group:default/unowned`" for _every_ proposal.
+  Once the register landed that was false for 89 repositories, on both counts.
+  It now branches on `isConfirmedOwnership(source)`: confirmed reads "Owner —
+  confirmed" and never leads with a commit share, because that owner does not
+  rest on commits -- the share appears only as corroboration, and only when it
+  is non-zero. Derived owners keep the old caveat verbatim.
+- **The security-scan metric is gone and the weights total 100 again.** Dropped
+  at the product owner's direction on 2026-08-26; the freed 5 points plus 5 taken
+  from `codeReviewCompleted` (15 -> 10) fund `pullRequestDiscipline` at 10, so
+  the eight registered scorers are **20 / 10 / 20 / 10 / 10 / 10 / 10 / 10 = 100**
+  and a test asserts that sum. Code review lost the five because approval is the
+  weaker signal here -- median time from opening to first approval is **12
+  seconds** -- where whether a change went through a pull request at all is not.
+  **Section 7's security-scan requirement did not disappear with the metric**;
+  the portal simply no longer tracks it, and nothing now reports that gap.
+- **`availableWeight < nominalWeight` no longer means the portal is
+  unfinished.** Every registered metric has a data source, so a short
+  denominator now means _this repository_ has nothing to measure -- no pipeline
+  runs, no merged pull requests, no commits on its default branch in the window.
+  The card's wording was changed accordingly; the old "not yet wired up" text
+  would send a team hunting a portal gap that no longer exists. `unmeasuredScorer`
+  is kept, unused, as the mechanism for the next deferred metric.
+- **Direct commits to the default branch are measured from the first-parent
+  chain, not from commit counts.** At a merge the first parent is where the
+  branch already was and the second is what was merged in, so everything
+  reachable by following first parents is the branch's own history and
+  everything else arrived inside a merge. On this estate **1,156 of 1,743
+  commits in 90 days arrived inside a merge**, so a rule that skipped the walk
+  would overstate direct commits threefold. `commit.arrival` records the verdict
+  per commit -- `pull-request`, `direct`, `direct-merge` or `merged-in` -- so any
+  reporting window is a query rather than a refetch.
+  Verified 2026-08-26 against an independent read-only probe that was itself
+  checked against Bitbucket's `commit/{sha}/pullrequests` endpoint on 20 of 20
+  sampled commits: the portal reproduces it **exactly** -- 205 via pull request,
+  365 direct, 15 direct merges, 33 repositories flagged over 90 days; 16 direct
+  across 8 repositories over 30.
+- **`merge_commit.hash` is ABBREVIATED to 12 characters** while commit hashes are
+  full 40-character SHAs. The join must be on a prefix. Matching them whole does
+  not fail -- it reports **every** commit as direct, which is plausible enough to
+  ship. It happened twice: once in the probe, and once in production, where the
+  first classification pass produced 1,031 direct commits and **zero** via pull
+  request.
+- **Two backfills were needed, and neither could be skipped.** `commit.parents`
+  and `pull_request.merge_commit_hash` are both filled from data Bitbucket
+  already returns, but ingestion works from watermarks (`since = known ??
+windowStart` for commits, `updated_on` for pull requests), so existing rows
+  never acquire them. `plugins/fleet-backend/scripts/backfill-commit-parents.js`
+  (3,558 commits, 105 requests) and `backfill-pr-merge-hashes.js` (324 pull
+  requests, 48 requests) fill them **in place**. Deliberately not
+  `DELETE FROM commit` + re-ingest: that reaches the same state but leaves a
+  window with no commits, and a scoring pass firing inside it would write a row
+  of near-zero scores -- score history is append-only and cannot be corrected.
+- **Classifying with no merge hashes is worse than not classifying.**
+  `BranchPolicyService` skips a repository that has merged pull requests but no
+  merge hashes stored, and separately skips one with any commit missing parents
+  -- partial parent data stops the walk at the first gap and understates the
+  mainline. A repository with genuinely no pull requests is a different case and
+  is measured normally.
+- **The discipline metric uses a 30-day window, not the 90 the others use.**
+  Direct commits fell from **7.8 a day to 0.38 a day around 2026-07-27** while
+  pull requests into main rose from 1.1 to 5.4 a day -- a branch restriction was
+  evidently applied and is roughly 90% effective. At 90 days the metric reports
+  380 commits across 33 repositories, most of it already-fixed history; at 30
+  days it reports 16 across 8, which is the live problem.
+  `fleet.scoring.disciplineWindowDays` changes it.
+- **Registering the tenth metric took nominal weight to 110.** Scores still
+  normalise over `availableWeight`, and the card shows the denominator, but every
+  score shifted again. Rebalancing to keep 100 is a config change and a product
+  decision, not a code one.
+- **The catalog tag and the fleet filter are different surfaces.**
+  `direct-commits-to-main` on the entity filters the **catalog** page;
+  the **fleet dashboard** reads `/api/fleet/overview` and needed
+  `FleetRepositorySummary.directCommits` plus a chip in `FleetFiltersBar`. Adding
+  a tag does nothing for the fleet page -- that mistake was made here first.
+- **The ownership metric is earned only by a confirmed owner.** `owner-assigned`
+  was an `unmeasuredScorer` forfeiting 10 weight; it now scores, taking the
+  scorecard from 85 to 95 of 100 measurable. **A derived owner earns zero, not
+  partial credit** -- the portal can name a likely owner for nearly every
+  repository, and if a guess scored, the estate would report as owned while
+  nobody had agreed to own anything.
+  **The two absences in `ScorerContext.ownership` mean different things and must
+  not be conflated:** no `RepositoryOwnership` at all means no pass has ever
+  succeeded, so the metric is _unmeasured_; a `RepositoryOwnership` with no
+  `proposed` means a pass ran and found nobody, which is a real _zero_. The
+  candidate rows cannot tell these apart, because a repository with no owner
+  stores none -- so `ScoringService` reads the `ownership:{workspace}` sync state
+  to decide. Without that, a first boot would score all 95 repositories zero on
+  ownership and misreport every one of them.
+  **Measured live on the pass at 09:15:26 on 2026-08-26, and it matched the
+  projection exactly: 89 scores up, 4 down, 2 unchanged; bands healthy 32 to 36,
+  needs-attention 14 to 17, critical 49 to 42**, all 11 band changes
+  improvements. 89 repositories earn the metric, 6 score zero, none is
+  unmeasured. `available_weight` moved 50/65/70/85 to 60/75/80/95.
+  **The 6 scoring zero are almost exactly the repositories the document does not
+  cover** -- `dds-dai-delivery`, `demand-ai-website`, `email-delete-handler` and
+  `milestone-mockups` are missing from it entirely, and `ux-designs` has "-" as
+  its owner. The metric is pointing at the real gap.
+- **`available_weight` is per repository, not a constant.** It is 50 for 45
+  repositories, 65 for 3, 70 for 9 and 85 for 38, because `readmeAvailable` and
+  others return `null` where their data has not been fetched. Any arithmetic on
+  scores must read each repository's own weight -- assuming a fleet-wide 85
+  produced a projection that showed confirmed repositories _losing_ points,
+  which is impossible.
+- **Ownership is confirmed from a register, not inferred.** The repository
+  standardization document (`Bitbucket repository standardization.pdf`) is the
+  authority, transcribed to `catalog/ownership-register.yaml` and read through
+  `fleet.ownership.register`. `RegisterOwnershipResolver` sits **first** in the
+  chain and its answers are _confirmed_: they carry `confirmed-owner` instead of
+  `unconfirmed-owner`, and the evidence annotation says a person wrote it down.
+  Measured 2026-08-26 after the change: agreement with the document went from
+  **54 to 87 of 91** matched repositories, the 18 repositories where the
+  document named an owner and the portal had none went to **0**, and the catalog
+  went from **0 confirmed / 76 unconfirmed / 19 unowned** to **89 confirmed /
+  5 unconfirmed / 1 unowned**. The register costs no Bitbucket requests, and
+  because it answers first the permission resolver is no longer called for those
+  89 repositories -- the pass got cheaper, not dearer.
+  Edit the YAML and restart; no deploy, no migration.
+- **Neither inference was the authority it was taken for. This corrects an
+  earlier claim here that "admin permission beats commit history, and it is not
+  close."** That compared the two sources _against each other_ with no ground
+  truth. Measured against the document: admin permission agreed on **47 of 62
+  (76%)**, commit history on **7 of 9 (78%)** -- indistinguishable, and the
+  commit-history sample is too small to separate them anyway. `oxp-backend` is
+  the case that settles it: commit history said Brijesh Gupta (187 of 214
+  commits), admin permission said Avinash More, and the document says the owners
+  are Brijesh, Sanjay and Vivek. **The inference we chose to trust was the wrong
+  one.** Both stay in the chain, behind the register, because between them they
+  still answer for the repositories nobody has written down -- but neither may
+  be described as authoritative.
+- **The register names people by first name, and one of them is ambiguous.**
+  `Shubham` on `website-tracking` could be Subham Jain or Shubham Sharma; the
+  document does not say. An owner name with no `people` entry produces **no
+  candidate rather than a guess**, so that repository is owned by Vivek
+  Mangukiya alone. Do not "fix" this by picking one.
+- **`GET /repositories/{ws}/{slug}/permissions-config/users` works with the
+  current token**; 68 repositories have exactly one admin, 10 have several, 17
+  have none. Where both sources have an answer they **disagree in 18 of 26**
+  repositories.
 - **Permissions carry no email.** `GET /2.0/users/{account_id}` is **403**
   without `read:user`, so `AuthorIndex` joins a display name to a commit
   author's address on a normalised name. 14 of 16 admins match; all 75 live
@@ -261,6 +463,18 @@ override.
   permissions (would be 1 request instead of 95), `branch-restrictions`, and
   `/2.0/users/{id}`. Also checked and useless here: `default-reviewers` is empty
   on every repository, and no repository ships a `CODEOWNERS` file.
+- **The document covers 96 repositories, not the 97 it claims, and the estates
+  do not quite match.** `dai-finance tracker` and `dai-finance-tracker` are one
+  repository listed twice with contradictory comments. Five repositories it
+  names (`entitlements-backend`/`-frontend`/`-sdk`,
+  `onboarding_backend`/`_frontend`) **do not exist in the `demandai`
+  workspace at all** -- not stale, absent -- which most likely means a second
+  Bitbucket workspace, invisible because workspace enumeration returns 410
+  (CHANGE-2770). They sit commented out at the end of the register. Four
+  repositories we hold are missing from the document, including
+  **`demand-ai-website` at 288 commits**. Its "no commits" comments are also
+  loose: `campaign-report-generator`, `content-tools` and `ux-designs` each hold
+  exactly one.
 - **Derived owners DO reach `spec.owner`, tagged `unconfirmed-owner`.**
   Reversed in step 20 at the product owner's direction, because every stock
   catalog surface -- Owner column, Owner filter, Owned tab, entity header,

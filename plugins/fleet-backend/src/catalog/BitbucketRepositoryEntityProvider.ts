@@ -18,6 +18,7 @@ import type {
   EntityProviderConnection,
 } from '@backstage/plugin-catalog-node';
 import { BitbucketCloudClient } from '../bitbucket/BitbucketCloudClient';
+import { OWNERSHIP_SOURCE_REGISTER } from '../ownership/types';
 import { toEntityName } from './entityName';
 import { toUserEntityRef } from './userEntityName';
 import type { BitbucketClient, BitbucketRepository } from '../bitbucket/types';
@@ -42,6 +43,26 @@ export const ANNOTATION_OWNERSHIP_EVIDENCE = `${ANNOTATION_NS}/ownership-evidenc
  * reads this tag to refuse to award the ownership metric.
  */
 export const TAG_UNCONFIRMED_OWNER = 'unconfirmed-owner';
+
+/**
+ * Marks a repository whose owner somebody has actually confirmed.
+ *
+ * The absence of {@link TAG_UNCONFIRMED_OWNER} already means this, but a
+ * catalog filter cannot express "does not have a tag" -- so without a positive
+ * tag, "show me everything with a real owner" is unaskable, which is the
+ * question the ownership campaign is actually reported on.
+ */
+export const TAG_CONFIRMED_OWNER = 'confirmed-owner';
+
+/**
+ * Marks a repository where work reached the default branch without a pull
+ * request.
+ *
+ * The scorecard already docks points for it, but a score is a number and this
+ * is a list: "show me everything bypassing review" is the question a lead
+ * actually asks, and it needs a filter rather than a sort.
+ */
+export const TAG_DIRECT_COMMITS = 'direct-commits-to-main';
 
 /**
  * Owner assigned to every repository until real ownership data exists.
@@ -108,12 +129,51 @@ function describeEvidence(proposed: StoredOwnershipCandidate): string {
     `${proposed.commits} of ${proposed.windowCommits} commits in ` +
     `${proposed.windowDays} days`;
 
+  if (proposed.source === OWNERSHIP_SOURCE_REGISTER) {
+    // Not evidence for an inference -- a person wrote this down. Saying
+    // anything about commits first would invite the reader to re-derive a
+    // conclusion that does not rest on them.
+    return proposed.commits > 0
+      ? `Confirmed in the ownership register, and ${share}`
+      : 'Confirmed in the ownership register';
+  }
   if (proposed.source === 'repository-admin') {
     return proposed.commits > 0
       ? `Repository admin in Bitbucket, and ${share}`
       : 'Repository admin in Bitbucket; no commits in the window';
   }
   return share;
+}
+
+/**
+ * Which ownership caveat, if any, the entity should carry.
+ *
+ * The register is the only source that confirms rather than infers, so it is
+ * the only one allowed to leave the caveat off. A named function rather than a
+ * nested conditional because `no-nested-ternary` forbids the obvious form --
+ * the same reason `PermissionOwnershipResolver.pick` exists.
+ */
+function ownerTag(
+  proposedRef: string | undefined,
+  proposed: StoredOwnershipCandidate | undefined,
+): string | undefined {
+  if (!proposedRef) return undefined;
+  return proposed?.source === OWNERSHIP_SOURCE_REGISTER
+    ? TAG_CONFIRMED_OWNER
+    : TAG_UNCONFIRMED_OWNER;
+}
+
+/**
+ * Supplies branch-policy counts keyed by repository slug.
+ *
+ * Absent, or a slug missing from the map, means the classification pass has not
+ * covered it -- which must not read as "no direct commits".
+ */
+export interface BranchPolicySource {
+  branchPolicyForWorkspace(
+    workspace: string,
+    since: Date,
+  ): Promise<Map<string, { direct: number; directMerge: number }>>;
 }
 
 export interface BitbucketRepositoryEntityProviderOptions {
@@ -125,6 +185,13 @@ export interface BitbucketRepositoryEntityProviderOptions {
   owners?: ProposedOwnerSource;
   /** Absent means every repository keeps `service` / `unknown`. */
   classifications?: ClassificationSource;
+  /** Absent means no repository is tagged for direct commits. */
+  branchPolicy?: BranchPolicySource;
+  /**
+   * Window for the direct-commit tag, in days. Defaults to 30, matching the
+   * scorer: a longer window mostly tags behaviour that has already stopped.
+   */
+  branchPolicyWindowDays?: number;
 }
 
 /**
@@ -147,6 +214,8 @@ export class BitbucketRepositoryEntityProvider implements EntityProvider {
   private readonly logger: LoggerService;
   private readonly owners?: ProposedOwnerSource;
   private readonly classifications?: ClassificationSource;
+  private readonly branchPolicy?: BranchPolicySource;
+  private readonly branchPolicyWindowDays: number;
   private connection?: EntityProviderConnection;
 
   constructor(options: BitbucketRepositoryEntityProviderOptions) {
@@ -156,6 +225,8 @@ export class BitbucketRepositoryEntityProvider implements EntityProvider {
     this.logger = options.logger;
     this.owners = options.owners;
     this.classifications = options.classifications;
+    this.branchPolicy = options.branchPolicy;
+    this.branchPolicyWindowDays = options.branchPolicyWindowDays ?? 30;
   }
 
   /**
@@ -171,6 +242,8 @@ export class BitbucketRepositoryEntityProvider implements EntityProvider {
       scheduler: SchedulerService;
       owners?: ProposedOwnerSource;
       classifications?: ClassificationSource;
+      branchPolicy?: BranchPolicySource;
+      branchPolicyWindowDays?: number;
     },
   ): BitbucketRepositoryEntityProvider[] {
     const root = config.getOptionalConfig('fleet.bitbucket');
@@ -204,6 +277,8 @@ export class BitbucketRepositoryEntityProvider implements EntityProvider {
           logger: options.logger,
           owners: options.owners,
           classifications: options.classifications,
+          branchPolicy: options.branchPolicy,
+          branchPolicyWindowDays: options.branchPolicyWindowDays,
           client: BitbucketCloudClient.fromIntegration(integration.config, {
             logger: options.logger,
           }),
@@ -242,15 +317,17 @@ export class BitbucketRepositoryEntityProvider implements EntityProvider {
     }
 
     const repositories = await this.client.listRepositories(this.workspace);
-    const [proposed, classified] = await Promise.all([
+    const [proposed, classified, policy] = await Promise.all([
       this.readProposedOwners(),
       this.readClassifications(),
+      this.readBranchPolicy(),
     ]);
     const entities = repositories.map(repository =>
       this.toEntity(
         repository,
         proposed.get(repository.slug),
         classified.get(repository.slug),
+        policy.get(repository.slug),
       ),
     );
 
@@ -262,13 +339,15 @@ export class BitbucketRepositoryEntityProvider implements EntityProvider {
       })),
     });
 
-    const withOwner = entities.filter(entity =>
-      entity.metadata.tags?.includes(TAG_UNCONFIRMED_OWNER),
-    ).length;
+    const counted = (want: string) =>
+      entities.filter(entity => entity.metadata.tags?.includes(want)).length;
+    const confirmedOwners = counted(TAG_CONFIRMED_OWNER);
+    const proposedOwners = counted(TAG_UNCONFIRMED_OWNER);
     this.logger.info(
       `Registered ${entities.length} repositories from Bitbucket workspace ` +
-        `'${this.workspace}' (${withOwner} with a proposed owner, ` +
-        `${entities.length - withOwner} still unowned)`,
+        `'${this.workspace}' (${confirmedOwners} with a confirmed owner, ` +
+        `${proposedOwners} with a proposed one, ` +
+        `${entities.length - confirmedOwners - proposedOwners} still unowned)`,
     );
   }
 
@@ -316,10 +395,38 @@ export class BitbucketRepositoryEntityProvider implements EntityProvider {
     }
   }
 
+  /**
+   * Direct-commit counts, or none if they cannot be read.
+   *
+   * An unreadable source must leave repositories untagged rather than tag them
+   * all: absence of evidence is not evidence of a bypassed review.
+   */
+  private async readBranchPolicy(): Promise<
+    Map<string, { direct: number; directMerge: number }>
+  > {
+    if (!this.branchPolicy) return new Map();
+    try {
+      const since = new Date(
+        Date.now() - this.branchPolicyWindowDays * 24 * 60 * 60 * 1000,
+      );
+      return await this.branchPolicy.branchPolicyForWorkspace(
+        this.workspace,
+        since,
+      );
+    } catch (error) {
+      this.logger.warn(
+        `Could not read branch policy for '${this.workspace}', leaving ` +
+          `repositories untagged: ${(error as Error).message}`,
+      );
+      return new Map();
+    }
+  }
+
   private toEntity(
     repository: BitbucketRepository,
     proposed?: StoredOwnershipCandidate,
     classification?: { type: string; lifecycle: string },
+    policy?: { direct: number; directMerge: number },
   ): ComponentEntity {
     const location = `url:${repository.url}`;
     const tag = repository.language ? toTag(repository.language) : undefined;
@@ -347,9 +454,12 @@ export class BitbucketRepositoryEntityProvider implements EntityProvider {
     const proposedRef = proposed?.email
       ? toUserEntityRef(proposed.email)
       : undefined;
-    const tags = [tag, proposedRef ? TAG_UNCONFIRMED_OWNER : undefined].filter(
-      (value): value is string => Boolean(value),
-    );
+    const bypassed = (policy?.direct ?? 0) + (policy?.directMerge ?? 0) > 0;
+    const tags = [
+      tag,
+      ownerTag(proposedRef, proposed),
+      bypassed ? TAG_DIRECT_COMMITS : undefined,
+    ].filter((value): value is string => Boolean(value));
 
     if (proposedRef && proposed) {
       annotations[ANNOTATION_OWNERSHIP_SOURCE] = proposed.source;

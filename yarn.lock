@@ -5760,7 +5760,9 @@ __metadata:
     "@types/supertest": "npm:^2.0.12"
     express: "npm:^4.14.0"
     express-promise-router: "npm:^4.1.0"
+    knex: "npm:^3.1.0"
     supertest: "npm:^6.2.4"
+    yaml: "npm:^2.9.0"
   languageName: unknown
   linkType: soft
 
@@ -22316,6 +22318,51 @@ __metadata:
   languageName: node
   linkType: hard
 
+"knex@npm:^3.1.0":
+  version: 3.3.0
+  resolution: "knex@npm:3.3.0"
+  dependencies:
+    colorette: "npm:2.0.19"
+    commander: "npm:^10.0.0"
+    debug: "npm:4.3.4"
+    escalade: "npm:^3.1.1"
+    esm: "npm:^3.2.25"
+    get-package-type: "npm:^0.1.0"
+    getopts: "npm:2.3.0"
+    interpret: "npm:^2.2.0"
+    lodash: "npm:^4.18.1"
+    pg-connection-string: "npm:2.6.2"
+    rechoir: "npm:^0.8.0"
+    resolve-from: "npm:^5.0.0"
+    tarn: "npm:^3.1.0"
+    tildify: "npm:2.0.0"
+  peerDependencies:
+    pg-query-stream: ^4.14.0
+  peerDependenciesMeta:
+    better-sqlite3:
+      optional: true
+    mariadb:
+      optional: true
+    mysql:
+      optional: true
+    mysql2:
+      optional: true
+    pg:
+      optional: true
+    pg-native:
+      optional: true
+    pg-query-stream:
+      optional: true
+    sqlite3:
+      optional: true
+    tedious:
+      optional: true
+  bin:
+    knex: bin/cli.js
+  checksum: 10c0/946fb4d0a55894075fbdd45d8bcd8d14a358f1a89f413e205ee7867b8b3c58eb897b49facd3062f2be2abedaeb6ae98b5a593e6247848830088ceb55af2b4e8a
+  languageName: node
+  linkType: hard
+
 "kubernetes-models@npm:^4.3.1":
   version: 4.5.1
   resolution: "kubernetes-models@npm:4.5.1"
@@ -30040,7 +30087,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"tarn@npm:^3.0.2":
+"tarn@npm:^3.0.2, tarn@npm:^3.1.0":
   version: 3.1.2
   resolution: "tarn@npm:3.1.2"
   checksum: 10c0/fae37a0f2a9ee4b0ba5c309b213a1111e65bbc72cab5056be26beebcfa2980613aa0dd66f054fa0433e0cc6951875137e37c0ac52edb56812fbf05957130a795
@@ -32106,7 +32153,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"yaml@npm:^2.0.0, yaml@npm:^2.2.1, yaml@npm:^2.2.2":
+"yaml@npm:^2.0.0, yaml@npm:^2.2.1, yaml@npm:^2.2.2, yaml@npm:^2.9.0":
   version: 2.9.0
   resolution: "yaml@npm:2.9.0"
   bin:

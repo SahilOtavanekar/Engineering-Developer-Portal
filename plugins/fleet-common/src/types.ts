@@ -204,6 +204,22 @@ export interface FleetRepositorySummary {
    * the catalog still records `group:default/unowned` for everything.
    */
   proposedOwner?: OwnershipCandidateView;
+  /**
+   * Commits that reached the default branch without a pull request.
+   *
+   * Absent until the branch policy pass has covered the repository, which is
+   * not the same as zero -- so the filter must not treat a missing value as
+   * clean.
+   */
+  directCommits?: {
+    /** Direct commits and direct merges together. */
+    total: number;
+    /** How many of those were merges with no pull request behind them. */
+    merges: number;
+    /** Commits on the branch's own history, for context. */
+    mainline: number;
+    windowDays: number;
+  };
   /** Absent until a scoring run has covered this repository. */
   score?: {
     total: number;

@@ -1,5 +1,10 @@
 import type { FleetRepositorySummary } from '@internal/backstage-plugin-fleet-common';
-import { bandCounts, filterRepositories, technologyCounts } from './filter';
+import {
+  bandCounts,
+  directCommitCount,
+  filterRepositories,
+  technologyCounts,
+} from './filter';
 
 function repo(
   slug: string,
@@ -122,6 +127,86 @@ describe('filterRepositories', () => {
       estate[0],
       estate[1],
     ]);
+  });
+});
+
+describe('by direct commits', () => {
+  const policy = (total: number, merges = 0) => ({
+    total,
+    merges,
+    mainline: 20,
+    windowDays: 30,
+  });
+  const withPolicy: FleetRepositorySummary[] = [
+    repo('bypassing', { directCommits: policy(8, 2) }),
+    repo('clean', { directCommits: policy(0) }),
+    repo('unclassified'),
+  ];
+
+  it('keeps only repositories with a direct commit', () => {
+    const kept = filterRepositories(withPolicy, { directCommitsOnly: true });
+
+    expect(kept.map(r => r.slug)).toEqual(['bypassing']);
+  });
+
+  it('excludes a repository the pass has not classified', () => {
+    // Not knowing is not the same as being clean; showing it under a filter
+    // for policy breaches would accuse it of something unmeasured.
+    const kept = filterRepositories(withPolicy, { directCommitsOnly: true });
+
+    expect(kept.map(r => r.slug)).not.toContain('unclassified');
+  });
+
+  it('leaves everything alone when the filter is off', () => {
+    expect(filterRepositories(withPolicy, {})).toHaveLength(3);
+  });
+
+  it('combines with the other filters rather than replacing them', () => {
+    const mixed = [
+      scored('bad-and-bypassing', 20, 'critical'),
+      repo('bypassing-but-healthy', {
+        directCommits: policy(3),
+        score: {
+          total: 90,
+          band: 'healthy',
+          availableWeight: 95,
+          computedAt: '2026-08-26T12:00:00.000Z',
+        },
+      }),
+    ];
+    mixed[0].directCommits = policy(5);
+
+    const kept = filterRepositories(mixed, {
+      directCommitsOnly: true,
+      band: 'critical',
+    });
+
+    expect(kept.map(r => r.slug)).toEqual(['bad-and-bypassing']);
+  });
+});
+
+describe('directCommitCount', () => {
+  it('counts repositories, not commits', () => {
+    // The chip label is a repository count; using the commit total would read
+    // as "94 repositories" on an estate of 95.
+    const count = directCommitCount([
+      repo('a', {
+        directCommits: { total: 84, merges: 4, mainline: 115, windowDays: 30 },
+      }),
+      repo('b', {
+        directCommits: { total: 1, merges: 0, mainline: 2, windowDays: 30 },
+      }),
+      repo('c', {
+        directCommits: { total: 0, merges: 0, mainline: 9, windowDays: 30 },
+      }),
+      repo('d'),
+    ]);
+
+    expect(count).toBe(2);
+  });
+
+  it('is zero before anything has been classified', () => {
+    expect(directCommitCount([repo('a'), repo('b')])).toBe(0);
   });
 });
 

@@ -1,0 +1,198 @@
+# Confirmed repository ownership.
+#
+# Transcribed from "Bitbucket repository standardization" (Demand AI) and
+# reconciled against the portal's derived owners on 2026-08-26. This is the
+# only *confirmed* ownership source the portal has. Everything else it knows is
+# inferred from Bitbucket admin permissions or commit history, which measured
+# 76% and 78% accurate against this document.
+#
+# Edit this file to correct ownership: it is read through
+# `fleet.ownership.register` in app-config.yaml and needs a restart, not a
+# deploy. A repository absent from `repositories` below falls back to the
+# derived resolvers and is still reported as unconfirmed.
+
+# The document names people by first name only. These are the identities those
+# names resolved to, taken from commit authors and Bitbucket admins the portal
+# already holds. A name that cannot be resolved to exactly one person is left
+# out on purpose, so the resolver produces no candidate rather than a guess.
+# `Shubham` on website-tracking is the one such case: this estate contains both
+# Subham Jain and Shubham Sharma, and the document does not say which.
+people:
+  amey:
+    name: Amey Sunil Khurdekar
+    email: amey.sunilkhurdekar@demandai.co
+  brijesh:
+    name: Brijesh Gupta
+    email: brijesh.gupta@demandai.co
+  guru:
+    name: Gurudutt
+    email: gurudutt@demandai.co
+  gurudutt:
+    name: Gurudutt
+    email: gurudutt@demandai.co
+  makarand:
+    name: Makarand Prabhu
+    email: makarand.prabhu@demandai.co
+  makarand-prabhu:
+    name: Makarand Prabhu
+    email: makarand.prabhu@demandai.co
+  mangesh:
+    name: Mangesh Gaikwad
+    email: mangesh.gaikwad@demandai.co
+  mann:
+    name: Mann Bhandari
+    email: mann.bhandari@demandai.co
+  mohit:
+    name: Mohit Sharma
+    email: mohit.sharma@demandai.co
+  mohit-sharma:
+    name: Mohit Sharma
+    email: mohit.sharma@demandai.co
+  prashant:
+    name: Prashant Chaudhari
+    email: prashant.chaudhari@demandai.co
+  pratik:
+    name: Pratik Nimbalkar
+    email: pratik.nimbalkar@demandai.co
+  sanjay:
+    name: Sanjay Kumar
+    email: sanjay.kumar@demandai.co
+  sanjay-kumar:
+    name: Sanjay Kumar
+    email: sanjay.kumar@demandai.co
+  shekhar:
+    name: Shekhar Tanwar
+    email: shekhar.tanwar@demandai.co
+  sreenivas:
+    name: Sreenivas Dasam
+    email: sreenivas.dasam@demandai.co
+  sreenivas-dasam:
+    name: Sreenivas Dasam
+    email: sreenivas.dasam@demandai.co
+  subham:
+    name: Subham Jain
+    email: subham.jain@demandai.co
+  shubham-jain:
+    name: Subham Jain
+    email: subham.jain@demandai.co
+  sunil:
+    name: Sunil Chandrabhan Kadam
+    email: sunil.chandrabhankadam@demandai.co
+  vaibhav:
+    name: Vaibhav Jain
+    email: vaibhav.jain@demandai.co
+  vivek:
+    name: Vivek Mangukiya
+    email: vivek.mangukiya@demandai.co
+  vivek-mangukiya:
+    name: Vivek Mangukiya
+    email: vivek.mangukiya@demandai.co
+
+# Repository slug to owners, strongest first. The document names several people
+# for many repositories; the first becomes the catalog owner and the rest are
+# kept as ranked candidates.
+repositories:
+  accelerators: [shubham-jain]
+  amplifye-portal-mcp: [shekhar]
+  analytics-reports: [mangesh]
+  archieve: [pratik]
+  asset-preprocessor: [makarand-prabhu]
+  callaro-webhook: [makarand-prabhu]
+  campaign-report-generator: [shubham-jain]
+  campaign-report-ui: [sanjay-kumar]
+  chat-api: [mohit, shekhar]
+  chat-widget: [mohit, shekhar]
+  common-ui: [amey]
+  company-website-finder: [mangesh]
+  contact-creator: [pratik]
+  conversation-apis: [mohit-sharma]
+  crm: [makarand, mangesh]
+  daarwyn-ai-services: [mohit, subham]
+  daarwyn-back-office-services: [mohit, subham]
+  daarwyn-billing-services: [mohit, subham]
+  daarwyn-bo-ui: [mohit, subham]
+  daarwyn-data-services: [mohit, subham]
+  daarwyn-data-sync-jobs: [mohit, subham]
+  daarwyn-import-services: [mohit, subham]
+  daarwyn-infra: [mohit, subham]
+  daarwyn-insight-services: [mohit, subham]
+  daarwyn-integration-services: [mohit, subham]
+  daarwyn-ui: [mohit, subham]
+  daarwyn-user-mgmt-services: [mohit, subham]
+  daarwyn_portal: [makarand-prabhu]
+  dai-delivery: [guru, mangesh]
+  dai-delivery-data-flow: [makarand-prabhu]
+  dai-finance-tracker: [pratik]
+  dai-mcp: [makarand-prabhu]
+  dai-redis: [mangesh]
+  dai-strapi-cms: [makarand-prabhu]
+  data-email-pattern-finder-processor: [mangesh]
+  data-enrichment-company-info: [mangesh]
+  data-sync-elastic: [mangesh]
+  data-website-finder-processor: [mangesh]
+  data_plugin_lookup_index_sync_function: [pratik]
+  dataagentui: [pratik]
+  dataagentui-contact-company-backend: [pratik]
+  dataagentui-emailpattern-backend: [pratik]
+  demandai-code: [prashant]
+  demandai-data-search-api: [mangesh]
+  dxp: [mangesh]
+  dxp-enrichment-engine: [mangesh]
+  dxp-enrichment-process: [mangesh]
+  dxp-infra-sam: [mangesh]
+  dxp-lead-status-sync-cron: [mangesh]
+  dxp-mono: [mangesh]
+  elastic-snowflake-enrichment-plugin: [pratik]
+  global-delivery-tracker: [pratik]
+  global-delivery-tracker-v2: [pratik]
+  ingest-jobs: [mohit, shekhar]
+  intend-report: [sanjay-kumar, sreenivas]
+  leadgen-ui-backend: [pratik]
+  leadgen-ui-frontend: [pratik]
+  mailwizz-sync: [guru, mangesh]
+  mdlh-db-artifacts: [mangesh]
+  mdlh-download-ui: [vaibhav, mangesh]
+  mdlh-missing-record-ui: [sunil]
+  mdlh-search-api: [mangesh]
+  mdlh-search-ui: [vaibhav, mangesh]
+  mdlh-search-ui-v2: [vaibhav, mangesh]
+  oxp: [sanjay-kumar, sreenivas]
+  oxp-backend: [brijesh, sanjay, vivek]
+  oxp-communication-services: [brijesh, sanjay, vivek]
+  oxp-email-inbox-watcher: [sanjay]
+  oxp-frontend: [brijesh, sanjay, vivek]
+  oxp-mcp: [mann]
+  oxp-smtp: [sanjay, brijesh]
+  playwright-app: [shekhar]
+  plugin: [pratik]
+  plugin-db-artifacts: [amey]
+  plugin_backend_flow: [pratik]
+  plugin_count: [pratik]
+  plugin_stage: [pratik]
+  plugin_token_generation: [pratik]
+  portal-apis: [shekhar]
+  portal-ui: [shekhar]
+  question-sync: [makarand-prabhu]
+  search-deals-api: [gurudutt]
+  strapi-cms: [mohit-sharma]
+  subscription-center-backend: [shekhar]
+  subscription-center-frontend: [shekhar]
+  tracking-app: [sreenivas-dasam]
+  upload-csv-file-backend: [pratik]
+  upload-csv-file-frontend: [pratik]
+  website-tracking: [vivek-mangukiya]
+
+  # Named in the document with no owner (the Owner cell reads '-'):
+  #   content-tools
+  #   ux-designs
+
+  # In the document but absent from the `demandai` workspace, so the portal has
+  # never seen them. Most likely a second Bitbucket workspace, which cannot be
+  # discovered (CHANGE-2770) and must be named in config. Left commented rather
+  # than claiming slugs whose real spelling is unknown; uncomment when those
+  # repositories appear.
+  #   entitlements-backend: [mohit-sharma]
+  #   entitlements-frontend: [mohit-sharma]
+  #   entitlements-sdk: [mohit-sharma]
+  #   onboarding_backend: [mohit, subham]
+  #   onboarding_frontend: [mohit, subham]

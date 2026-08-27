@@ -14,10 +14,14 @@ import {
   ANNOTATION_SLUG,
   ANNOTATION_WORKSPACE,
   BitbucketRepositoryEntityProvider,
+  TAG_CONFIRMED_OWNER,
+  TAG_DIRECT_COMMITS,
   TAG_UNCONFIRMED_OWNER,
   type ClassificationSource,
+  type BranchPolicySource,
   type ProposedOwnerSource,
 } from './BitbucketRepositoryEntityProvider';
+import { OWNERSHIP_SOURCE_REGISTER } from '../ownership/types';
 import { toEntityName } from './entityName';
 import { stubBitbucketClient } from '../__testUtils__/bitbucket';
 
@@ -81,6 +85,7 @@ function harness(
   repositories: BitbucketRepository[],
   owners?: ProposedOwnerSource,
   classifications?: ClassificationSource,
+  branchPolicy?: BranchPolicySource,
 ) {
   const mutations: EntityProviderMutation[] = [];
   const connection: EntityProviderConnection = {
@@ -95,6 +100,7 @@ function harness(
     client: new FakeBitbucketClient(repositories),
     owners,
     classifications,
+    branchPolicy,
     logger: mockServices.logger.mock(),
     taskRunner: {
       run: async task => {
@@ -591,5 +597,143 @@ describe('ownership evidence', () => {
     });
 
     expect(evidence).toBe('34 of 41 commits in 90 days');
+  });
+
+  it('says a person confirmed it when the register did', async () => {
+    // Leading with a commit share here would invite the reader to re-derive a
+    // conclusion that does not rest on commits at all.
+    const evidence = await evidenceFor({
+      email: 'brijesh.gupta@demandai.co',
+      commits: 34,
+      source: OWNERSHIP_SOURCE_REGISTER,
+    });
+
+    expect(evidence).toBe(
+      'Confirmed in the ownership register, and 34 of 41 commits in 90 days',
+    );
+  });
+
+  it('confirms without mentioning commits when there are none', async () => {
+    const evidence = await evidenceFor({
+      email: 'sunil.chandrabhankadam@demandai.co',
+      commits: 0,
+      source: OWNERSHIP_SOURCE_REGISTER,
+    });
+
+    expect(evidence).toBe('Confirmed in the ownership register');
+  });
+});
+
+describe('direct commits to the default branch', () => {
+  const policySource = (
+    bySlug: Record<string, { direct: number; directMerge: number }>,
+  ) => ({
+    branchPolicyForWorkspace: async () => new Map(Object.entries(bySlug)),
+  });
+
+  async function tagsFor(source: any) {
+    const { provider, connection, mutations } = harness(
+      [repository()],
+      undefined,
+      undefined,
+      source,
+    );
+    await provider.connect(connection);
+    return ((mutations[0] as any).entities[0].entity.metadata.tags ??
+      []) as string[];
+  }
+
+  it('tags a repository with a direct commit', async () => {
+    const tags = await tagsFor(
+      policySource({ 'oxp-backend': { direct: 8, directMerge: 0 } }),
+    );
+
+    expect(tags).toContain(TAG_DIRECT_COMMITS);
+  });
+
+  it('tags a repository whose only direct arrivals were merges', async () => {
+    // 600 merge commits against 324 merged pull requests estate-wide, so a
+    // merge with no PR behind it is not an edge case.
+    const tags = await tagsFor(
+      policySource({ 'oxp-backend': { direct: 0, directMerge: 3 } }),
+    );
+
+    expect(tags).toContain(TAG_DIRECT_COMMITS);
+  });
+
+  it('leaves a fully pull-request-driven repository untagged', async () => {
+    const tags = await tagsFor(
+      policySource({ 'oxp-backend': { direct: 0, directMerge: 0 } }),
+    );
+
+    expect(tags).not.toContain(TAG_DIRECT_COMMITS);
+  });
+
+  it('leaves an unclassified repository untagged', async () => {
+    // Absence of evidence is not evidence of a bypassed review.
+    const tags = await tagsFor(policySource({}));
+
+    expect(tags).not.toContain(TAG_DIRECT_COMMITS);
+  });
+
+  it('registers the estate anyway when the policy source throws', async () => {
+    const tags = await tagsFor({
+      branchPolicyForWorkspace: async () => {
+        throw new Error('fleet database unavailable');
+      },
+    });
+
+    expect(tags).not.toContain(TAG_DIRECT_COMMITS);
+  });
+});
+
+describe('confirmed versus proposed ownership', () => {
+  async function tagsFor(source: string) {
+    const { provider, connection, mutations } = harness(
+      [repository()],
+      ownerSource({
+        'oxp-backend': { email: 'brijesh.gupta@demandai.co', source },
+      }),
+    );
+    await provider.connect(connection);
+    return ((mutations[0] as any).entities[0].entity.metadata.tags ??
+      []) as string[];
+  }
+
+  it('does not caveat an owner somebody actually confirmed', async () => {
+    // The register is the only source that is not an inference. Tagging its
+    // answers 'unconfirmed' would make the caveat meaningless everywhere.
+    const tags = await tagsFor(OWNERSHIP_SOURCE_REGISTER);
+
+    expect(tags).toContain(TAG_CONFIRMED_OWNER);
+    expect(tags).not.toContain(TAG_UNCONFIRMED_OWNER);
+  });
+
+  it('still caveats an owner inferred from admin permission', async () => {
+    // Measured at 76% against the register, so it remains a guess.
+    const tags = await tagsFor('repository-admin');
+
+    expect(tags).toContain(TAG_UNCONFIRMED_OWNER);
+    expect(tags).not.toContain(TAG_CONFIRMED_OWNER);
+  });
+
+  it('still caveats an owner inferred from commit history', async () => {
+    const tags = await tagsFor('commit-history');
+
+    expect(tags).toContain(TAG_UNCONFIRMED_OWNER);
+    expect(tags).not.toContain(TAG_CONFIRMED_OWNER);
+  });
+
+  it('applies neither tag when there is no owner to speak of', async () => {
+    const { provider, connection, mutations } = harness(
+      [repository()],
+      ownerSource({ 'oxp-backend': undefined }),
+    );
+    await provider.connect(connection);
+    const tags = ((mutations[0] as any).entities[0].entity.metadata.tags ??
+      []) as string[];
+
+    expect(tags).not.toContain(TAG_CONFIRMED_OWNER);
+    expect(tags).not.toContain(TAG_UNCONFIRMED_OWNER);
   });
 });

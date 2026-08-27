@@ -3,6 +3,35 @@ import type { RepositoryActivity } from '../database/CommitStore';
 import type { PipelineSummary } from '../database/PipelineStore';
 import type { ReviewSummary } from '../database/PullRequestStore';
 import type { RepositoryRecord } from '../database/RepositoryStore';
+import type { StoredOwnershipCandidate } from '../database/OwnershipStore';
+import type { BranchPolicySummary } from '../analysis/branchPolicy';
+
+/**
+ * Ownership as of the last resolution pass.
+ *
+ * The two absences mean different things and a scorer must not conflate them:
+ * no `RepositoryOwnership` at all means **no pass has ever succeeded** for this
+ * workspace, so ownership is unmeasurable; a `RepositoryOwnership` with no
+ * `proposed` means a pass ran and **found nobody**, which is a real zero. The
+ * distinction cannot be recovered from the candidate rows, because a repository
+ * with no owner stores none.
+ */
+export interface RepositoryOwnership {
+  /** Absent when a pass ran and had nobody to put forward. */
+  proposed?: StoredOwnershipCandidate;
+}
+
+/**
+ * How work reached the default branch, over the discipline scorer's window.
+ *
+ * Absent means the classification pass has not covered this repository, which
+ * is not the same as a repository where nothing landed -- that is present with
+ * `mainline: 0`. Only the first is unmeasurable.
+ */
+export interface RepositoryBranchPolicy extends BranchPolicySummary {
+  /** The branch judged, for the detail line. */
+  branch?: string;
+}
 
 /** Everything a scorer is allowed to look at. */
 export interface ScorerContext {
@@ -13,6 +42,10 @@ export interface ScorerContext {
   branches?: BranchSummary;
   pipelines?: PipelineSummary;
   reviews?: ReviewSummary;
+  /** Absent when ownership has never been resolved. See the type. */
+  ownership?: RepositoryOwnership;
+  /** Absent until the branch policy pass has covered this repository. */
+  branchPolicy?: RepositoryBranchPolicy;
   now: Date;
 }
 

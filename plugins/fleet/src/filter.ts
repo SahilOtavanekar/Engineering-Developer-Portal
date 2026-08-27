@@ -7,6 +7,15 @@ export interface FleetFilters {
   technology?: string;
   /** Free text matched against the repository slug and name. */
   query?: string;
+  /**
+   * Show only repositories where work reached the default branch without a
+   * pull request.
+   *
+   * A repository the branch policy pass has not covered has no counts at all
+   * and is excluded rather than treated as clean -- absence of evidence is not
+   * evidence of review.
+   */
+  directCommitsOnly?: boolean;
 }
 
 export interface TechnologyCount {
@@ -34,6 +43,10 @@ export function filterRepositories(
 
     if (filters.technology) {
       if (!repository.techStack?.includes(filters.technology)) return false;
+    }
+
+    if (filters.directCommitsOnly) {
+      if (!repository.directCommits?.total) return false;
     }
 
     if (query) {
@@ -65,6 +78,13 @@ export function technologyCounts(
   return [...counts.entries()]
     .map(([label, count]) => ({ label, count }))
     .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
+}
+
+/** Repositories with at least one direct commit in the window. */
+export function directCommitCount(
+  repositories: FleetRepositorySummary[],
+): number {
+  return repositories.filter(r => (r.directCommits?.total ?? 0) > 0).length;
 }
 
 /** Band counts for a given set of rows, including the unscored. */

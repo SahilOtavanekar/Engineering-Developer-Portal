@@ -11,6 +11,7 @@ import {
 } from '@backstage/ui';
 import { ScoreTrend } from '../ScoreTrend';
 import { formatBytes, formatHours, timeAgo } from '../../format';
+import { isConfirmedOwnership } from '@internal/backstage-plugin-fleet-common';
 import { BAND_LABEL, BAND_TEXT } from '../../bands';
 import { useRepositoryFacts } from '../../useRepositoryFacts';
 
@@ -112,10 +113,17 @@ export function RepositoryFactsCard({ entity }: { entity: Entity }) {
         )}
 
         {partial && (
+          // Every metric has a data source now, so a short denominator no
+          // longer means the portal is unfinished -- it means this repository
+          // has nothing to measure for one of them: no pipeline runs, no merged
+          // pull requests, no commits on its default branch in the window. Two
+          // very different things that read identically if the wording does not
+          // distinguish them.
           <Text variant="body-x-small" color="secondary">
-            Provisional. Scored over the metrics that can be measured today —
-            the rest are not yet wired up, and band thresholds are placeholders
-            pending sign-off.
+            Scored over the {score!.availableWeight} of {score!.nominalWeight}{' '}
+            weight this repository has data for — the rest of its metrics have
+            nothing to measure yet. Band thresholds are placeholders pending
+            sign-off.
           </Text>
         )}
 
@@ -300,7 +308,9 @@ export function RepositoryFactsCard({ entity }: { entity: Entity }) {
         {facts.ownershipProposal && (
           <Flex direction="column" gap="2">
             <Text variant="body-x-small" color="secondary">
-              Suggested owner — not confirmed
+              {isConfirmedOwnership(facts.ownershipProposal.source)
+                ? 'Owner — confirmed'
+                : 'Suggested owner — not confirmed'}
             </Text>
             {facts.ownershipProposal.proposed ? (
               <>
@@ -309,16 +319,32 @@ export function RepositoryFactsCard({ entity }: { entity: Entity }) {
                     facts.ownershipProposal.proposed.email ??
                     EMPTY}
                 </Text>
-                <Text variant="body-x-small" color="secondary">
-                  {contributionDetail(
-                    facts.ownershipProposal.proposed.commits,
-                    facts.ownershipProposal.windowCommits,
-                  )}{' '}
-                  in {facts.ownershipProposal.windowDays} days. Derived from{' '}
-                  {facts.ownershipProposal.source}, and a guess — this
-                  repository is still owned by{' '}
-                  <code>group:default/unowned</code> in the catalog.
-                </Text>
+                {isConfirmedOwnership(facts.ownershipProposal.source) ? (
+                  // Never a commit share first. This owner does not rest on
+                  // commits, and leading with them invites the reader to
+                  // re-derive a conclusion that was not derived.
+                  <Text variant="body-x-small" color="secondary">
+                    Confirmed in the ownership register, and the owner of this
+                    component in the catalog.
+                    {facts.ownershipProposal.proposed.commits > 0
+                      ? ` Also ${contributionDetail(
+                          facts.ownershipProposal.proposed.commits,
+                          facts.ownershipProposal.windowCommits,
+                        )} in ${facts.ownershipProposal.windowDays} days.`
+                      : ''}
+                  </Text>
+                ) : (
+                  <Text variant="body-x-small" color="secondary">
+                    {contributionDetail(
+                      facts.ownershipProposal.proposed.commits,
+                      facts.ownershipProposal.windowCommits,
+                    )}{' '}
+                    in {facts.ownershipProposal.windowDays} days. Derived from{' '}
+                    {facts.ownershipProposal.source}, and a guess — this
+                    repository is still owned by{' '}
+                    <code>group:default/unowned</code> in the catalog.
+                  </Text>
+                )}
               </>
             ) : (
               // Naming someone here who does not own it would be believed for

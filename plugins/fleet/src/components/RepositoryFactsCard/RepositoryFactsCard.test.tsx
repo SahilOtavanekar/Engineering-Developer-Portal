@@ -7,6 +7,7 @@ import {
 import { screen } from '@testing-library/react';
 import type { RepositoryFacts } from '@internal/backstage-plugin-fleet-common';
 import { RepositoryFactsCard } from './RepositoryFactsCard';
+import { OWNERSHIP_SOURCE_REGISTER } from '@internal/backstage-plugin-fleet-common';
 
 const entity: Entity = {
   apiVersion: 'backstage.io/v1alpha1',
@@ -157,8 +158,26 @@ describe('RepositoryFactsCard', () => {
       }),
     );
 
-    expect(await screen.findByText(/Provisional/)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/nothing to measure yet/),
+    ).toBeInTheDocument();
     expect(screen.getByText('30 of 100 weight')).toBeInTheDocument();
+  });
+
+  it('blames the repository, not the portal, for a short denominator', async () => {
+    // Every metric has a data source now. Saying they are "not yet wired up"
+    // would send a team looking for a portal gap that does not exist.
+    await render(
+      ok({
+        ...facts,
+        score: { ...facts.score, availableWeight: 70, nominalWeight: 100 },
+      }),
+    );
+
+    expect(
+      await screen.findByText(/this repository has data for/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/not yet wired up/)).not.toBeInTheDocument();
   });
 
   it('names metrics that could not be measured, with their forfeited weight', async () => {
@@ -345,6 +364,78 @@ describe('RepositoryFactsCard', () => {
       expect(
         screen.queryByText('Suggested owner — not confirmed'),
       ).not.toBeInTheDocument();
+    });
+
+    describe('a confirmed owner', () => {
+      const confirmed = {
+        ...proposal,
+        source: OWNERSHIP_SOURCE_REGISTER,
+      };
+
+      it('does not call a confirmed owner a suggestion', async () => {
+        // The defect this exists for: once the register landed, 89 repositories
+        // had a confirmed owner and the card still called every one a guess.
+        await render(ok({ ...facts, ownershipProposal: confirmed }));
+
+        expect(
+          await screen.findByText('Owner — confirmed'),
+        ).toBeInTheDocument();
+        expect(
+          screen.queryByText('Suggested owner — not confirmed'),
+        ).not.toBeInTheDocument();
+      });
+
+      it('does not claim the repository is unowned in the catalog', async () => {
+        // It says user:default/... there now, so the old line was simply false.
+        await render(ok({ ...facts, ownershipProposal: confirmed }));
+
+        expect(await screen.findByText('Ada Lovelace')).toBeInTheDocument();
+        expect(
+          screen.queryByText('group:default/unowned'),
+        ).not.toBeInTheDocument();
+        expect(screen.queryByText(/and a guess/)).not.toBeInTheDocument();
+      });
+
+      it('says where the confirmation came from', async () => {
+        await render(ok({ ...facts, ownershipProposal: confirmed }));
+
+        expect(
+          await screen.findByText(/Confirmed in the ownership register/),
+        ).toBeInTheDocument();
+      });
+
+      it('reports commits as corroboration, not as the reason', async () => {
+        // The share must never lead: this owner does not rest on commits.
+        await render(ok({ ...facts, ownershipProposal: confirmed }));
+
+        const detail = await screen.findByText(
+          /Confirmed in the ownership register/,
+        );
+        expect(detail.textContent).toMatch(
+          /Confirmed in the ownership register.*Also 34 of 41/s,
+        );
+      });
+
+      it('omits the commit note entirely for an owner who has not committed', async () => {
+        await render(
+          ok({
+            ...facts,
+            ownershipProposal: {
+              ...confirmed,
+              proposed: {
+                name: 'Ada Lovelace',
+                email: 'ada@demandai.co',
+                commits: 0,
+              },
+            },
+          }),
+        );
+
+        const detail = await screen.findByText(
+          /Confirmed in the ownership register/,
+        );
+        expect(detail.textContent).not.toMatch(/Also/);
+      });
     });
   });
   describe('pipeline states', () => {

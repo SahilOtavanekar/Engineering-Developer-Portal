@@ -74,6 +74,7 @@ export class PullRequestStore {
         : null,
       source_branch: pr.sourceBranch ?? null,
       destination_branch: pr.destinationBranch ?? null,
+      merge_commit_hash: pr.mergeCommitHash ?? null,
     }));
 
     for (let i = 0; i < rows.length; i += CHUNK) {
@@ -93,6 +94,9 @@ export class PullRequestStore {
           'comment_count',
           'approval_count',
           'participant_count',
+          // Only exists once the pull request merges, so a PR first seen open
+          // would never acquire it otherwise.
+          'merge_commit_hash',
         ]);
     }
     return rows.length;
@@ -114,6 +118,56 @@ export class PullRequestStore {
       .count({ n: '*' })
       .first();
     return Number((row as any)?.n ?? 0);
+  }
+
+  /**
+   * `merge_commit_hash` of pull requests merged into one branch.
+   *
+   * Scoped to the branch on purpose: a pull request merged into `develop` does
+   * not license a commit landing on `main`. Measured on this estate the two
+   * readings happen to agree everywhere, but 13 repositories send their pull
+   * requests to `develop`, so the looser rule would start being wrong the
+   * moment one of them merged develop into main through a pull request.
+   */
+  /**
+   * How many pull requests merged into a branch, and how many carry the merge
+   * commit hash the classifier needs.
+   *
+   * The classifier must refuse to run when these disagree. `merge_commit_hash`
+   * arrives only with a pull request the ingestion watermark actually
+   * re-fetched, so a repository can hold 55 merged pull requests and no hashes
+   * at all -- and classifying against an empty hash list does not fail, it
+   * confidently reports every commit as direct. That happened on this estate:
+   * a first pass classified 1,031 commits direct and **zero** via pull request.
+   */
+  async mergeHashCoverage(
+    repositoryId: number,
+    branch: string,
+  ): Promise<{ merged: number; withHash: number }> {
+    const [row] = (await this.db('pull_request')
+      .where({ repository_id: repositoryId, state: 'MERGED' })
+      .where({ destination_branch: branch })
+      .count({ merged: '*' })
+      .count({ withHash: 'merge_commit_hash' })) as Array<{
+      merged: string | number;
+      withHash: string | number;
+    }>;
+
+    return {
+      merged: Number(row?.merged ?? 0),
+      withHash: Number(row?.withHash ?? 0),
+    };
+  }
+
+  async mergeHashesForBranch(
+    repositoryId: number,
+    branch: string,
+  ): Promise<string[]> {
+    return this.db('pull_request')
+      .where({ repository_id: repositoryId, state: 'MERGED' })
+      .where({ destination_branch: branch })
+      .whereNotNull('merge_commit_hash')
+      .pluck('merge_commit_hash');
   }
 
   async reviewSummary(

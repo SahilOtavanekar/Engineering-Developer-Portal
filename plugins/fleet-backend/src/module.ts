@@ -14,6 +14,7 @@ import { BitbucketRepositoryEntityProvider } from './catalog/BitbucketRepository
 import { CommitAuthorEntityProvider } from './catalog/CommitAuthorEntityProvider';
 import { OwnershipStore } from './database/OwnershipStore';
 import { RepositoryStore } from './database/RepositoryStore';
+import { CommitStore } from './database/CommitStore';
 
 /**
  * How often derived Users are refreshed, and how far ahead of the repository
@@ -54,6 +55,7 @@ export const catalogModuleBitbucketRepositories = createBackendModule({
         const client = await fleetDatabaseClient(config, { logger, lifecycle });
         const ownership = new OwnershipStore(client);
         const repositories = new RepositoryStore(client);
+        const commits = new CommitStore(client);
 
         addCommitAuthorProviders({
           catalog,
@@ -68,6 +70,10 @@ export const catalogModuleBitbucketRepositories = createBackendModule({
           scheduler,
           owners: ownership,
           classifications: repositories,
+          branchPolicy: commits,
+          branchPolicyWindowDays: config.getOptionalNumber(
+            'fleet.scoring.disciplineWindowDays',
+          ),
         });
         for (const provider of providers) {
           catalog.addEntityProvider(provider);

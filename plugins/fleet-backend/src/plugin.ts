@@ -22,6 +22,8 @@ import { RepositoryDetailIngestionService } from './ingestion/RepositoryDetailIn
 import { CommitHistoryOwnershipResolver } from './ownership/CommitHistoryOwnershipResolver';
 import { CompositeOwnershipResolver } from './ownership/CompositeOwnershipResolver';
 import { PermissionOwnershipResolver } from './ownership/PermissionOwnershipResolver';
+import { RegisterOwnershipResolver } from './ownership/RegisterOwnershipResolver';
+import { readOwnershipRegister } from './ownership/ownershipRegister';
 import { OwnershipService } from './ownership/OwnershipService';
 import { createRouter } from './router';
 import { describeBackoff, shouldSkip } from './sync/backoff';
@@ -33,7 +35,9 @@ import { branchHygieneScorer } from './scoring/scorers/branchHygiene';
 import { codeReviewCompletedScorer } from './scoring/scorers/codeReviewCompleted';
 import { pipelineHealthScorer } from './scoring/scorers/pipelineHealth';
 import { readmeAvailableScorer } from './scoring/scorers/readmeAvailable';
-import { unmeasuredScorer } from './scoring/scorers/unmeasured';
+import { ownerAssignedScorer } from './scoring/scorers/ownerAssigned';
+import { pullRequestDisciplineScorer } from './scoring/scorers/pullRequestDiscipline';
+import { BranchPolicyService } from './analysis/BranchPolicyService';
 import { RepositoryIngestionService } from './ingestion/RepositoryIngestionService';
 
 const migrationsDirectory = resolvePackagePath(
@@ -132,28 +136,37 @@ export const fleetPlugin = createBackendPlugin({
               weight: metrics?.getOptionalNumber('branchHygiene.weight') ?? 10,
             },
             {
+              // 10, not the document's 15. The five points went to
+              // `pullRequestDiscipline` when the security metric was dropped,
+              // because approval is the weaker of the two signals here:
+              // measured across 243 approved merged pull requests, the median
+              // time from opening to first approval is **12 seconds** and 169
+              // of them were approved within five minutes. That counts ceremony.
+              // Whether a change went through a pull request at all does not.
               scorer: codeReviewCompletedScorer(),
               weight:
-                metrics?.getOptionalNumber('codeReviewCompleted.weight') ?? 15,
+                metrics?.getOptionalNumber('codeReviewCompleted.weight') ?? 10,
             },
             {
               scorer: readmeAvailableScorer(),
               weight:
                 metrics?.getOptionalNumber('readmeAvailable.weight') ?? 10,
             },
-            // Registered without a data source so their forfeited weight stays
-            // visible rather than silently vanishing from the denominator.
             {
-              scorer: unmeasuredScorer('owner-assigned', 'Owner assigned'),
+              scorer: ownerAssignedScorer(),
               weight: metrics?.getOptionalNumber('ownerAssigned.weight') ?? 10,
             },
             {
-              scorer: unmeasuredScorer(
-                'security-scan-passing',
-                'Security scan passing',
-              ),
+              // Its own shorter window, set on the service rather than here so
+              // the scorer and the query that feeds it cannot disagree.
+              scorer: pullRequestDisciplineScorer({
+                windowDays:
+                  scoringConfig?.getOptionalNumber('disciplineWindowDays') ??
+                  undefined,
+              }),
               weight:
-                metrics?.getOptionalNumber('securityScanPassing.weight') ?? 5,
+                metrics?.getOptionalNumber('pullRequestDiscipline.weight') ??
+                10,
             },
           ],
         });
@@ -169,6 +182,9 @@ export const fleetPlugin = createBackendPlugin({
             ownership: ownershipStore,
             scores: scoreStore,
             nominalWeight: engine.nominalWeight,
+            disciplineWindowDays:
+              scoringConfig?.getOptionalNumber('disciplineWindowDays') ??
+              undefined,
             httpAuth,
             permissions,
             logger,
@@ -323,13 +339,39 @@ export const fleetPlugin = createBackendPlugin({
           // requests and can run alongside the ingestion passes rather than
           // after them.
           const ownershipConfig = config.getOptionalConfig('fleet.ownership');
-          // Admin permission first, commit history second. Bitbucket's own
-          // answer to "who is accountable" beats an inference from who types
-          // most, and the two disagree far more often than not.
+          // The confirmed register first, then admin permission, then commit
+          // history. The two inferences were measured against the register at
+          // 76% and 78%, so neither is the authority it was taken for -- but
+          // between them they still answer for the repositories nobody has
+          // written down yet.
+          const register = readOwnershipRegister(
+            ownershipConfig?.getOptionalConfig('register'),
+            logger,
+          );
+          if (register.repositories.size === 0) {
+            logger.warn(
+              'No fleet.ownership.register configured; every owner the portal ' +
+                'shows will be an inference from admin permission or commit ' +
+                'history, which measured 76% and 78% accurate against the ' +
+                'repository standardization document',
+            );
+          } else {
+            logger.info(
+              `Ownership register: ${register.repositories.size} repositories ` +
+                `confirmed across ${register.people.size} named people`,
+            );
+          }
+
           const ownership = new OwnershipService({
             resolver: new CompositeOwnershipResolver({
               logger,
               resolvers: [
+                // First, and the only source that confirms rather than infers.
+                new RegisterOwnershipResolver({
+                  register,
+                  repositories,
+                  commits,
+                }),
                 new PermissionOwnershipResolver({
                   client: newClient(),
                   commits,
@@ -374,10 +416,35 @@ export const fleetPlugin = createBackendPlugin({
             branches: branchStore,
             pipelines: pipelineStore,
             pullRequests: pullRequestStore,
+            ownership: ownershipStore,
             scores: scoreStore,
             syncState,
             logger,
             windowDays: scoringWindowDays,
+            disciplineWindowDays:
+              scoringConfig?.getOptionalNumber('disciplineWindowDays') ??
+              undefined,
+          });
+
+          const branchPolicy = new BranchPolicyService({
+            repositories,
+            commits,
+            pullRequests: pullRequestStore,
+            syncState,
+            logger,
+          });
+
+          await scheduler.scheduleTask({
+            id: BranchPolicyService.resourceKey(workspace),
+            ...schedule,
+            // Ahead of scoring, and costing no Bitbucket requests: it reads
+            // parent hashes and merge hashes that ingestion already stored.
+            initialDelay: { seconds: 120 },
+            fn: guard(
+              'Branch policy',
+              BranchPolicyService.resourceKey(workspace),
+              () => branchPolicy.classifyAll(workspace),
+            ),
           });
 
           await scheduler.scheduleTask({

@@ -1,3 +1,9 @@
+/**
+ * Re-exported from the common package, which is where it has to live: the
+ * frontend card must agree with the backend on it, and cannot import from here.
+ */
+export { OWNERSHIP_SOURCE_REGISTER } from '@internal/backstage-plugin-fleet-common';
+
 /** One person who might own a repository, and the evidence for it. */
 export interface OwnershipCandidate {
   name?: string;

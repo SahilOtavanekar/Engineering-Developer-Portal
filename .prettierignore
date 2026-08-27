@@ -3,3 +3,10 @@ dist-types
 coverage
 .vscode
 e2e-test-report
+
+# packages/app/public/index.html is a lodash template, not plain HTML. Prettier
+# wraps the long <%= ... %> expression in <title> across a newline, which splits
+# a JavaScript string literal and makes html-webpack-plugin fail to compile with
+# "SyntaxError: Invalid or unexpected token". Nothing in tsc, lint or
+# prettier:check catches it -- only an actual app build does.
+packages/app/public/index.html

@@ -40,9 +40,17 @@ export interface RouterOptions {
   logger: LoggerService;
   /** Window used for the activity summary. Defaults to 90 days. */
   activityWindowDays?: number;
+  /**
+   * Window for direct-commit counts. Defaults to 30 days, matching the scorer:
+   * a longer one reports behaviour that has largely already stopped.
+   */
+  disciplineWindowDays?: number;
 }
 
 const DEFAULT_WINDOW_DAYS = 90;
+
+/** Matches the scorer's default; see `pullRequestDisciplineScorer`. */
+const DEFAULT_DISCIPLINE_WINDOW_DAYS = 30;
 
 /** Past runs returned alongside a score. Enough to read a direction. */
 const HISTORY_POINTS = 12;
@@ -73,6 +81,7 @@ export async function createRouter(
     httpAuth,
     permissions,
     activityWindowDays = DEFAULT_WINDOW_DAYS,
+    disciplineWindowDays = DEFAULT_DISCIPLINE_WINDOW_DAYS,
   } = options;
 
   const router = Router();
@@ -101,14 +110,24 @@ export async function createRouter(
 
     const records = await repositories.listLive(workspace);
     const ids = records.map(r => r.id);
-    const [latest, proposedOwners] = await Promise.all([
+    const disciplineSince = new Date(
+      Date.now() - disciplineWindowDays * 24 * 60 * 60 * 1000,
+    );
+    const [latest, proposedOwners, policy] = await Promise.all([
       scores.latestForRepositories(ids),
       ownership.proposedForRepositories(ids),
+      // One query for the estate, keyed by slug. A per-row lookup would be an
+      // N+1 in the one endpoint the two-second page load depends on.
+      commits.branchPolicyForWorkspace(
+        workspace ?? records[0]?.workspace ?? '',
+        disciplineSince,
+      ),
     ]);
 
     const summaries: FleetRepositorySummary[] = records.map(record => {
       const score = latest.get(record.id);
       const owner = proposedOwners.get(record.id);
+      const branchPolicy = policy.get(record.slug);
       return {
         entityRef: record.entity_ref,
         slug: record.slug,
@@ -123,6 +142,14 @@ export async function createRouter(
               name: owner.name,
               email: owner.email,
               commits: owner.commits,
+            }
+          : undefined,
+        directCommits: branchPolicy
+          ? {
+              total: branchPolicy.direct + branchPolicy.directMerge,
+              merges: branchPolicy.directMerge,
+              mainline: branchPolicy.mainline,
+              windowDays: disciplineWindowDays,
             }
           : undefined,
         score: score

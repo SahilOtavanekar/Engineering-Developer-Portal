@@ -4,6 +4,7 @@ import { BranchStore } from '../database/BranchStore';
 import { CommitStore } from '../database/CommitStore';
 import { PipelineStore } from '../database/PipelineStore';
 import { PullRequestStore } from '../database/PullRequestStore';
+import { OwnershipStore } from '../database/OwnershipStore';
 import { RepositoryStore } from '../database/RepositoryStore';
 import { ScoreStore } from '../database/ScoreStore';
 import { SyncStateStore } from '../database/SyncStateStore';
@@ -15,6 +16,9 @@ import { PROVISIONAL_BANDS, ScoringEngine } from './ScoringEngine';
 import { ScoringService } from './ScoringService';
 import { activeCommitsScorer } from './scorers/activeCommits';
 import { activeContributorsScorer } from './scorers/activeContributors';
+import { ownerAssignedScorer } from './scorers/ownerAssigned';
+import { OwnershipService } from '../ownership/OwnershipService';
+import { OWNERSHIP_SOURCE_REGISTER } from '../ownership/types';
 
 const T1 = new Date('2026-08-21T09:00:00.000Z');
 const T2 = new Date('2026-08-22T09:00:00.000Z');
@@ -47,6 +51,7 @@ describe('ScoringService', () => {
   let branches: BranchStore;
   let pipelines: PipelineStore;
   let pullRequests: PullRequestStore;
+  let ownership: OwnershipStore;
   let scores: ScoreStore;
   let syncState: SyncStateStore;
 
@@ -66,6 +71,7 @@ describe('ScoringService', () => {
       branches,
       pipelines,
       pullRequests,
+      ownership,
       scores,
       syncState,
       logger: mockServices.logger.mock(),
@@ -78,6 +84,7 @@ describe('ScoringService', () => {
     branches = new BranchStore(db.client);
     pipelines = new PipelineStore(db.client);
     pullRequests = new PullRequestStore(db.client);
+    ownership = new OwnershipStore(db.client);
     scores = new ScoreStore(db.client);
     syncState = new SyncStateStore(db.client);
   });
@@ -219,6 +226,121 @@ describe('ScoringService', () => {
     const summary = await build().scoreAll('demandai', T2);
 
     expect(summary.scored).toBe(0);
+  });
+
+  describe('ownership reaching the scorer', () => {
+    const ownershipEngine = new ScoringEngine({
+      bands: PROVISIONAL_BANDS,
+      scorers: [{ scorer: ownerAssignedScorer(), weight: 10 }],
+    });
+
+    const buildWithOwnership = () =>
+      new ScoringService({
+        engine: ownershipEngine,
+        repositories,
+        commits,
+        branches,
+        pipelines,
+        pullRequests,
+        ownership,
+        scores,
+        syncState,
+        logger: mockServices.logger.mock(),
+      });
+
+    async function markOwnershipResolved() {
+      await syncState.recordSuccess(OwnershipService.resourceKey('demandai'), {
+        cursor: T1.toISOString(),
+        now: T1,
+      });
+    }
+
+    async function detailFor(id: number) {
+      const score = await scores.latest(id);
+      return score!.breakdown.find(entry => entry.id === 'owner-assigned');
+    }
+
+    it('reports the metric unmeasured until ownership has resolved once', async () => {
+      // The regression this guards: scoring the whole estate zero on ownership
+      // because a scheduled task had not run yet.
+      const id = await seed('oxp-backend', 10, 2);
+
+      await buildWithOwnership().scoreAll('demandai', T2);
+
+      expect(await detailFor(id)).toMatchObject({ available: false });
+    });
+
+    it('awards the metric once a confirmed owner is stored', async () => {
+      const id = await seed('oxp-backend', 10, 2);
+      await ownership.replaceForRepository(
+        id,
+        {
+          candidates: [
+            {
+              name: 'Brijesh Gupta',
+              email: 'brijesh.gupta@demandai.co',
+              commits: 9,
+            },
+          ],
+          proposed: {
+            name: 'Brijesh Gupta',
+            email: 'brijesh.gupta@demandai.co',
+            commits: 9,
+          },
+          windowCommits: 10,
+          windowDays: 90,
+        },
+        OWNERSHIP_SOURCE_REGISTER,
+        T1,
+      );
+      await markOwnershipResolved();
+
+      await buildWithOwnership().scoreAll('demandai', T2);
+
+      expect(await detailFor(id)).toMatchObject({
+        available: true,
+        points: 10,
+        detail: 'Owner confirmed: Brijesh Gupta',
+      });
+    });
+
+    it('scores zero for a repository the pass found no owner for', async () => {
+      const id = await seed('oxp-backend', 10, 2);
+      await markOwnershipResolved();
+
+      await buildWithOwnership().scoreAll('demandai', T2);
+
+      expect(await detailFor(id)).toMatchObject({
+        available: true,
+        points: 0,
+        detail: 'No owner identified',
+      });
+    });
+
+    it('reads ownership once for the estate, not once per repository', async () => {
+      // Invisible at 95 repositories and ruinous at the 10,000 the document
+      // imagines. A verified N+1 guard, like the collator's.
+      await seed('a', 4, 1);
+      await seed('b', 4, 1);
+      await seed('c', 4, 1);
+      await markOwnershipResolved();
+      const batch = jest.spyOn(ownership, 'proposedForRepositories');
+
+      await buildWithOwnership().scoreAll('demandai', T2);
+
+      expect(batch).toHaveBeenCalledTimes(1);
+      batch.mockRestore();
+    });
+
+    it('does not query ownership at all before it has ever resolved', async () => {
+      await seed('oxp-backend', 10, 2);
+      const batch = jest.spyOn(ownership, 'proposedForRepositories');
+
+      await buildWithOwnership().scoreAll('demandai', T2);
+
+      expect(batch).not.toHaveBeenCalled();
+      batch.mockRestore();
+    });
   });
 
   it('names its sync_state resource per workspace', () => {

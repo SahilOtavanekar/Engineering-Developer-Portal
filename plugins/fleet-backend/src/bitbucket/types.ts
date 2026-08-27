@@ -42,6 +42,15 @@ export interface BitbucketCommit {
   /** Present only when Bitbucket matched the email to an account. */
   authorAccountId?: string;
   parentCount: number;
+  /**
+   * Parent hashes, first parent first.
+   *
+   * Already fetched -- `values.parents.hash` has always been in the requested
+   * fields -- and previously reduced to `parentCount` and discarded. The
+   * first-parent chain is the only way to tell a commit made on the default
+   * branch from one a merge brought in from a feature branch.
+   */
+  parents?: string[];
 }
 
 /** A branch and how recently it was touched. */
@@ -104,6 +113,15 @@ export interface BitbucketPullRequest {
   authorName?: string;
   sourceBranch?: string;
   destinationBranch?: string;
+  /**
+   * The commit this pull request produced on its destination branch.
+   *
+   * **Abbreviated to 12 characters by Bitbucket**, where commit hashes are full
+   * 40-character SHAs. Any join against commits must be on a prefix; matching
+   * whole strings silently finds nothing and makes every commit look direct.
+   * Verified populated on 10 of 10 merged pull requests sampled.
+   */
+  mergeCommitHash?: string;
 }
 
 /**
