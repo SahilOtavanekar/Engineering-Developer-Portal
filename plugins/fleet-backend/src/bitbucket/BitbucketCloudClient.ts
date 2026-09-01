@@ -17,6 +17,15 @@ import type {
 const DEFAULT_API_BASE_URL = 'https://api.bitbucket.org/2.0';
 
 /** Bitbucket's maximum. Fewer pages means fewer requests. */
+/**
+ * One page is the whole divergence measurement.
+ *
+ * The commits endpoint returns no total, so an exact count means paging to the
+ * end. A branch 100 commits adrift and one 400 adrift are the same finding, so
+ * the count stops at one page and says it was capped.
+ */
+const DIVERGENCE_PAGE_SIZE = 100;
+
 const PAGE_SIZE = 100;
 
 /**
@@ -122,6 +131,12 @@ const PULL_REQUEST_FIELDS = [
   'values.participants.approved',
   'values.participants.participated_on',
   'values.participants.role',
+  // Identity, so a review can be attributed to a person. Free: the same
+  // request, and the list endpoint returns participants only when asked.
+  'values.participants.user.account_id',
+  'values.participants.user.display_name',
+  'values.closed_by.account_id',
+  'values.closed_by.display_name',
   'values.source.branch.name',
   'values.destination.branch.name',
   // Which commit the merge produced on the destination branch. Costs nothing
@@ -402,6 +417,40 @@ export class BitbucketCloudClient implements BitbucketClient {
     return branches;
   }
 
+  async countCommitsAhead(
+    workspace: string,
+    slug: string,
+    branch: string,
+    exclude: string,
+  ): Promise<{ commits: number; capped: boolean }> {
+    if (!workspace || !slug || !branch || !exclude) {
+      throw new Error(
+        'a workspace, repository, branch and exclude branch are required',
+      );
+    }
+
+    // A branch compared against itself is zero by definition, and asking
+    // Bitbucket would spend a request to be told so.
+    if (branch === exclude) return { commits: 0, capped: false };
+
+    const url =
+      `${this.apiBaseUrl}/repositories/${encodeURIComponent(workspace)}/` +
+      `${encodeURIComponent(slug)}/commits/${encodeURIComponent(branch)}` +
+      `?exclude=${encodeURIComponent(
+        exclude,
+      )}&pagelen=${DIVERGENCE_PAGE_SIZE}` +
+      // Only the shape of the page is needed, never the commits themselves.
+      `&fields=next,values.hash`;
+
+    const page = (await this.request(url)) as {
+      values?: unknown[];
+      next?: string;
+    };
+
+    const commits = (page.values ?? []).length;
+    return { commits, capped: Boolean(page.next) };
+  }
+
   async listRepositoryPermissions(
     workspace: string,
     slug: string,
@@ -616,6 +665,17 @@ export class BitbucketCloudClient implements BitbucketClient {
           sourceBranch: optional(raw.source?.branch?.name),
           destinationBranch: optional(raw.destination?.branch?.name),
           mergeCommitHash: optional(raw.merge_commit?.hash),
+          closedByAccountId: optional(raw.closed_by?.account_id),
+          closedByName: optional(raw.closed_by?.display_name),
+          participants: Array.isArray(raw.participants)
+            ? raw.participants.map((entry: any) => ({
+                accountId: optional(entry?.user?.account_id),
+                displayName: optional(entry?.user?.display_name),
+                role: entry?.role ?? 'PARTICIPANT',
+                approved: entry?.approved === true,
+                participatedAt: optional(entry?.participated_on),
+              }))
+            : undefined,
         });
       }
 

@@ -27,7 +27,7 @@ describe('fleetPage', () => {
   });
 
   it('exposes a title', () => {
-    expect(tester().get(coreExtensionData.title)).toBe('Fleet');
+    expect(tester().get(coreExtensionData.title)).toBe('Health Dashboard');
   });
 
   it('exposes an icon', () => {

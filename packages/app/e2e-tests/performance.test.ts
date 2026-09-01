@@ -64,7 +64,7 @@ async function signIn(page: Page) {
   await expect(
     page
       .getByRole('navigation', { name: 'sidebar nav' })
-      .getByRole('link', { name: 'Fleet', exact: true }),
+      .getByRole('link', { name: 'Health Dashboard', exact: true }),
   ).toBeVisible();
 }
 

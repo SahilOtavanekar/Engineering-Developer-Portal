@@ -11,6 +11,27 @@ app:
         config:
           path: /
 
+    # Relation cards with no data source, disabled rather than left empty.
+    #
+    # Measured against the live catalog: `dependsOn`/`dependencyOf` is ZERO
+    # across the whole estate, and the only `hasPart` relations are the two
+    # System->Component links from examples/entities.yaml -- no Component has a
+    # subcomponent. All 35 manifests were checked and none references another
+    # repository, so section 5 (relationship mapping) has no data source; these
+    # three cards can never fill, and an always-empty card teaches people that
+    # the page is broken.
+    #
+    # Safe to disable, unlike a page: nothing resolves a route ref to a card.
+    # Replaced by entity-card:fleet/about. The stock card's field grid uses
+    # viewport breakpoints ({1, sm 2, lg 3}) while the card sits in the entity
+    # layout's narrow 1fr sidebar, so on a wide screen it rendered three columns
+    # into a ~350px card and overflowed sideways.
+    - entity-card:catalog/about: false
+
+    - entity-card:catalog/depends-on-components: false
+    - entity-card:catalog/depends-on-resources: false
+    - entity-card:catalog/has-subcomponents: false
+
 organization:
   name: Demand AI
 
@@ -48,8 +69,6 @@ backend:
     pluginSources:
       - auth
       - catalog
-      - scaffolder
-  # workingDirectory: /tmp # Use this to configure a working directory for the scaffolder, defaults to the OS temp-dir
 
 integrations:
   github:
@@ -69,17 +88,6 @@ proxy:
   #   '/test':
   #     target: 'https://example.com'
   #     changeOrigin: true
-
-# Reference documentation http://backstage.io/docs/features/techdocs/configuration
-# Note: After experimenting with basic setup, use CI/CD to generate docs
-# and an external cloud storage when deploying TechDocs for production use-case.
-# https://backstage.io/docs/features/techdocs/how-to-guides#how-to-migrate-from-techdocs-basic-to-recommended-deployment-approach
-techdocs:
-  builder: 'local' # Alternatives - 'external'
-  generator:
-    runIn: 'docker' # Alternatives - 'local'
-  publisher:
-    type: 'local' # Alternatives - 'googleGcs' or 'awsS3'. Read documentation for using alternatives.
 
 auth:
   environment: development
@@ -110,25 +118,13 @@ auth:
     #   - 'http://localhost:*'
     #   - 'https://*.example.com/*'
 
-scaffolder:
-  # see https://backstage.io/docs/features/software-templates/configuration for software template options
-
 catalog:
-  import:
-    entityFilename: catalog-info.yaml
-    pullRequestBranchName: backstage-integration
   rules:
     - allow: [Component, System, API, Resource, Location]
   locations:
     # Local example data, file locations are relative to the backend process, typically `packages/backend`
     - type: file
       target: ../../examples/entities.yaml
-
-    # Local example template
-    - type: file
-      target: ../../examples/template/template.yaml
-      rules:
-        - allow: [Template]
 
     # Local example organizational data
     - type: file
@@ -173,3 +169,11 @@ fleet:
     # reviewed and corrected without touching config.
     register:
       $include: ./catalog/ownership-register.yaml
+
+  identity:
+    # Who the commit authors are. Bitbucket gives an address per commit and
+    # nothing more, and this estate has 29 addresses for 22 humans -- so raw
+    # addresses would report five people as several engineers each. Until Entra
+    # ID supplies a directory, this file is the directory.
+    register:
+      $include: ./catalog/identity-register.yaml

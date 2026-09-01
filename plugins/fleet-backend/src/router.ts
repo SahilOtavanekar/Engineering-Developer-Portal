@@ -23,6 +23,14 @@ import type {
   RepositoryRecord,
   RepositoryStore,
 } from './database/RepositoryStore';
+import { deriveProblems } from '@internal/backstage-plugin-fleet-common';
+import type { ProductivityService } from './productivity/ProductivityService';
+import {
+  EMPTY_IDENTITY_REGISTER,
+  isNotAPerson,
+  resolveEngineer,
+  type IdentityRegister,
+} from './identity/identityRegister';
 
 export interface RouterOptions {
   repositories: RepositoryStore;
@@ -45,9 +53,32 @@ export interface RouterOptions {
    * a longer one reports behaviour that has largely already stopped.
    */
   disciplineWindowDays?: number;
+  /**
+   * Per-engineer productivity. Absent means the endpoint reports that it is not
+   * configured rather than returning empty figures, which would read as
+   * "nobody did anything".
+   */
+  productivity?: ProductivityService;
+  /** Default window for productivity, in days. Defaults to 90. */
+  productivityWindowDays?: number;
+  /**
+   * Maps commit addresses to people, for the repository creator and the
+   * contributor list. Defaults to empty, which reports raw addresses rather
+   * than failing -- the register is optional configuration.
+   */
+  identity?: IdentityRegister;
 }
 
 const DEFAULT_WINDOW_DAYS = 90;
+
+/**
+ * How many contributors the repository page lists.
+ *
+ * Measured across this estate: the busiest repository has 5 in 90 days and the
+ * average is 2.3, so this truncates nothing today. It exists so a repository
+ * that suddenly gains fifty contributors cannot bloat the response.
+ */
+const CONTRIBUTOR_LIMIT = 20;
 
 /** Matches the scorer's default; see `pullRequestDisciplineScorer`. */
 const DEFAULT_DISCIPLINE_WINDOW_DAYS = 30;
@@ -63,6 +94,76 @@ function iso(value: Date | string | null | undefined): string | undefined {
 
 function optional(value: string | null | undefined): string | undefined {
   return value ?? undefined;
+}
+
+/**
+ * A repository's creator, compacted for the estate listing.
+ *
+ * The name only. The evidence behind it -- first commit date, repository
+ * creation date -- stays on the repository page, which has room to explain
+ * itself; a table cell does not.
+ */
+function summariseCreator(
+  first: { email?: string; name?: string; committedAt: Date } | undefined,
+  repositoryCreatedAt: Date | string | null | undefined,
+  identity: IdentityRegister,
+): FleetRepositorySummary['createdBy'] {
+  if (!first) return undefined;
+  if (isNotAPerson(identity, first.email)) return undefined;
+
+  const person = resolveEngineer(identity, first.email);
+  return {
+    name: person?.name ?? first.name ?? undefined,
+    email: person?.email ?? first.email ?? undefined,
+    importedHistory: Boolean(
+      repositoryCreatedAt &&
+        first.committedAt.getTime() <
+          new Date(repositoryCreatedAt).getTime() - 86_400_000,
+    ),
+  };
+}
+
+/**
+ * Contributor names for the estate listing, busiest first.
+ *
+ * Merged by person, so a human committing under two addresses is one name --
+ * grouping happens on the raw address in SQL and cannot do this itself.
+ * Unregistered people keep their address rather than being dropped.
+ */
+function summariseContributors(
+  rows: Array<{ email: string; commits: number }> | undefined,
+  identity: IdentityRegister,
+): string[] {
+  if (!rows?.length) return [];
+
+  const totals = new Map<string, { label: string; commits: number }>();
+  for (const row of rows) {
+    if (isNotAPerson(identity, row.email)) continue;
+    const person = resolveEngineer(identity, row.email);
+    const key = person?.key ?? `address:${row.email}`;
+    const existing = totals.get(key);
+    if (existing) {
+      existing.commits += row.commits;
+      continue;
+    }
+    totals.set(key, { label: person?.name ?? row.email, commits: row.commits });
+  }
+
+  return [...totals.values()]
+    .sort((a, b) => b.commits - a.commits || a.label.localeCompare(b.label))
+    .map(entry => entry.label);
+}
+
+/**
+ * The UTC calendar day of an ISO timestamp, or undefined.
+ *
+ * UTC rather than local: a day boundary that moved with the reader's timezone
+ * would reorder the estate listing depending on who is looking at it.
+ * `iso()` always emits `toISOString()`, so the first ten characters are the
+ * UTC date and no parsing is needed.
+ */
+function utcDay(value: string | undefined): string | undefined {
+  return value ? value.slice(0, 10) : undefined;
 }
 
 export async function createRouter(
@@ -82,6 +183,9 @@ export async function createRouter(
     permissions,
     activityWindowDays = DEFAULT_WINDOW_DAYS,
     disciplineWindowDays = DEFAULT_DISCIPLINE_WINDOW_DAYS,
+    productivity,
+    productivityWindowDays = DEFAULT_WINDOW_DAYS,
+    identity = EMPTY_IDENTITY_REGISTER,
   } = options;
 
   const router = Router();
@@ -113,7 +217,20 @@ export async function createRouter(
     const disciplineSince = new Date(
       Date.now() - disciplineWindowDays * 24 * 60 * 60 * 1000,
     );
-    const [latest, proposedOwners, policy] = await Promise.all([
+    // Contributors use the activity window, not the discipline one, so the
+    // names match the "Authors (90d)" figure everywhere else in the portal.
+    const overviewActivitySince = new Date(
+      Date.now() - activityWindowDays * 24 * 60 * 60 * 1000,
+    );
+    const [
+      latest,
+      proposedOwners,
+      policy,
+      lifetimeCommits,
+      lastPipelineRuns,
+      firstCommits,
+      contributorsByRepository,
+    ] = await Promise.all([
       scores.latestForRepositories(ids),
       ownership.proposedForRepositories(ids),
       // One query for the estate, keyed by slug. A per-row lookup would be an
@@ -122,12 +239,38 @@ export async function createRouter(
         workspace ?? records[0]?.workspace ?? '',
         disciplineSince,
       ),
+      // Dormancy needs lifetime history to tell an abandoned service from a
+      // scaffold. One query for the estate.
+      commits.lifetimeCommitsForWorkspace(
+        workspace ?? records[0]?.workspace ?? '',
+      ),
+      // One grouped query for the estate; the listing is ordered by this.
+      pipelines.lastRunForRepositories(ids),
+      // Creator and contributors, one grouped query each. Both must be
+      // batched: this is the endpoint the two-second page load depends on.
+      commits.firstCommitForRepositories(ids),
+      commits.contributorsForRepositories(ids, overviewActivitySince),
     ]);
 
     const summaries: FleetRepositorySummary[] = records.map(record => {
       const score = latest.get(record.id);
       const owner = proposedOwners.get(record.id);
       const branchPolicy = policy.get(record.slug);
+      // The same derivation the repository page uses, from fleet-common, so a
+      // list and a detail page can never disagree about what is wrong.
+      const problems = score
+        ? deriveProblems(
+            {
+              total: score.total,
+              band: score.band,
+              availableWeight: score.available_weight,
+              nominalWeight,
+              computedAt: iso(score.computed_at)!,
+              breakdown: score.breakdown,
+            },
+            { commits: lifetimeCommits.get(record.id) ?? 0, authors: 0 },
+          )
+        : undefined;
       return {
         entityRef: record.entity_ref,
         slug: record.slug,
@@ -137,6 +280,16 @@ export async function createRouter(
         derivedLanguage: optional(record.derived_language),
         techStack: record.tech_stack ?? undefined,
         lastCommitAt: iso(record.last_commit_at),
+        lastPipelineRunAt: iso(lastPipelineRuns.get(record.id)),
+        createdBy: summariseCreator(
+          firstCommits.get(record.id),
+          record.created_at,
+          identity,
+        ),
+        contributors: summariseContributors(
+          contributorsByRepository.get(record.id),
+          identity,
+        ),
         proposedOwner: owner
           ? {
               name: owner.name,
@@ -152,6 +305,17 @@ export async function createRouter(
               windowDays: disciplineWindowDays,
             }
           : undefined,
+        problems: problems
+          ? {
+              top: problems.actionable.map(problem => ({
+                id: problem.id,
+                title: problem.title,
+                lost: Math.round(problem.lost * 10) / 10,
+              })),
+              lostPoints: Math.round(problems.lostPoints * 10) / 10,
+              dormancy: problems.dormancy?.kind,
+            }
+          : undefined,
         score: score
           ? {
               total: score.total,
@@ -163,15 +327,40 @@ export async function createRouter(
       };
     });
 
-    // Worst first. Unscored repositories sort last: they are an absence of
-    // information, not a bad result, and burying them under real problems
-    // would be misleading.
+    // Newest build day first, WORST score within the day.
+    //
+    // Recency decides which repositories are in play; the score then puts the
+    // ones needing attention at the top of each day -- the question the
+    // requirements document opens with, asked of the repositories that are
+    // actually being worked on.
+    //
+    // The *day* rather than the instant: all 49 pipeline timestamps in this
+    // estate are distinct, so ordering on the instant would make score a
+    // tiebreak that never fires and would bury a failing repository under a
+    // healthy one that finished its build four minutes later.
+    //
+    // Both absences sort last rather than first, and this is the subtle one --
+    // with worst-first scoring, an unscored repository placed first would read
+    // as the very worst in the estate. It is an absence of information, not a
+    // bad result, and the same goes for one that has never run a pipeline
+    // (47 of 96).
     summaries.sort((a, b) => {
-      if (a.score && b.score) {
-        return a.score.total - b.score.total || a.slug.localeCompare(b.slug);
+      const dayA = utcDay(a.lastPipelineRunAt);
+      const dayB = utcDay(b.lastPipelineRunAt);
+      if (dayA !== dayB) {
+        if (!dayA) return 1;
+        if (!dayB) return -1;
+        return dayB.localeCompare(dayA);
       }
-      if (a.score) return -1;
-      if (b.score) return 1;
+
+      const scoreA = a.score?.total;
+      const scoreB = b.score?.total;
+      if (scoreA !== scoreB) {
+        if (scoreA === undefined) return 1;
+        if (scoreB === undefined) return -1;
+        return scoreA - scoreB;
+      }
+
       return a.slug.localeCompare(b.slug);
     });
 
@@ -198,6 +387,68 @@ export async function createRouter(
    * The ref is split across path segments rather than passed encoded: a
    * URL-encoded slash survives Express but not every proxy in front of it.
    */
+  /**
+   * Per-engineer figures for requirement 8.
+   *
+   * Window is expressed as `since`/`until` rather than month or quarter: those
+   * are presentation, and putting them here would mean two places deciding when
+   * a quarter starts. The caller sends the dates it means.
+   *
+   * **No access control beyond the read permission yet.** This is per-person
+   * performance data and the portal runs `allow-all-policy`, so everyone who can
+   * see the fleet can see everyone's figures. That is a deliberate, recorded gap
+   * (CLAUDE.md open question 6), not an oversight.
+   */
+  router.get('/productivity', async (req, res) => {
+    const credentials = await httpAuth.credentials(req);
+    const decision = await permissions.authorize(
+      [{ permission: fleetRepositoryReadPermission }],
+      { credentials },
+    );
+    if (decision[0]?.result !== AuthorizeResult.ALLOW) {
+      res.status(403).json({ error: 'Not allowed to read repository facts' });
+      return;
+    }
+
+    if (!productivity) {
+      res.status(501).json({
+        error:
+          'Productivity is not configured; set fleet.identity.register so ' +
+          'commits can be attributed to people',
+      });
+      return;
+    }
+
+    const workspace =
+      typeof req.query.workspace === 'string'
+        ? req.query.workspace
+        : (await repositories.listLive()).at(0)?.workspace ?? '';
+
+    const parseDate = (value: unknown): Date | undefined => {
+      if (typeof value !== 'string') return undefined;
+      const parsed = new Date(value);
+      return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+    };
+
+    const since =
+      parseDate(req.query.since) ??
+      new Date(Date.now() - productivityWindowDays * 24 * 60 * 60 * 1000);
+    const until = parseDate(req.query.until);
+    const repositorySlug =
+      typeof req.query.repository === 'string' && req.query.repository
+        ? req.query.repository
+        : undefined;
+
+    res.json(
+      await productivity.overview({
+        workspace,
+        since,
+        until,
+        repositorySlug,
+      }),
+    );
+  });
+
   router.get(
     '/repositories/by-entity/:kind/:namespace/:name',
     async (req, res) => {
@@ -224,15 +475,21 @@ export async function createRouter(
       const since = new Date(
         Date.now() - activityWindowDays * 24 * 60 * 60 * 1000,
       );
-      const [activity, lifetime] = await Promise.all([
-        commits.activitySince(record.id, since),
-        commits.lifetime(record.id),
-      ]);
+      const [activity, lifetime, firstCommit, contributions] =
+        await Promise.all([
+          commits.activitySince(record.id, since),
+          commits.lifetime(record.id),
+          commits.firstCommit(record.id),
+          // Reuses the grouped author query the ownership resolvers use, so
+          // the names here cannot disagree with the ownership candidates.
+          commits.topAuthorsSince(record.id, since, CONTRIBUTOR_LIMIT),
+        ]);
       const [
         latestScore,
         scoreHistory,
         branchSummary,
         stalest,
+        branchDivergence,
         reviews,
         environments,
         ownershipCandidates,
@@ -242,6 +499,7 @@ export async function createRouter(
         scores.history(record.id, HISTORY_POINTS),
         branches.summary(record.id, since),
         branches.stalest(record.id, since),
+        branches.divergenceSummary(record.id),
         pullRequests.reviewSummary(record.id, since),
         deployments.currentEnvironments(record.id),
         ownership.forRepository(record.id),
@@ -253,6 +511,64 @@ export async function createRouter(
       // a configurable policy in a place that cannot see the config.
       const leader = ownershipCandidates[0];
       const proposedOwner = ownershipCandidates.find(c => c.isProposed);
+
+      const createdBy = firstCommit
+        ? (() => {
+            const person = resolveEngineer(identity, firstCommit.email);
+            return {
+              name: person?.name ?? firstCommit.name ?? undefined,
+              email: person?.email ?? firstCommit.email ?? undefined,
+              firstCommitAt: firstCommit.committedAt.toISOString(),
+              repositoryCreatedAt: iso(record.created_at),
+              // History carried in from elsewhere: the earliest commit is older
+              // than the repository, so its author may never have touched this
+              // one. True for 5 of 96 here.
+              importedHistory: Boolean(
+                record.created_at &&
+                  firstCommit.committedAt.getTime() <
+                    new Date(record.created_at).getTime() - 86_400_000,
+              ),
+              notAPerson: isNotAPerson(identity, firstCommit.email),
+            };
+          })()
+        : undefined;
+
+      // Merged by person, not by address. `topAuthorsSince` groups on the raw
+      // `author_email`, so a human committing under two addresses arrives as
+      // two rows -- reporting them as two contributors of one commit each is
+      // exactly the error the identity register exists to prevent.
+      const merged = new Map<
+        string,
+        {
+          name?: string;
+          email?: string;
+          commits: number;
+          unregistered: boolean;
+        }
+      >();
+      for (const contribution of contributions) {
+        if (isNotAPerson(identity, contribution.email)) continue;
+        const person = resolveEngineer(identity, contribution.email);
+        const key = person?.key ?? `address:${contribution.email ?? 'unknown'}`;
+        const existing = merged.get(key);
+        if (existing) {
+          existing.commits += contribution.commits;
+          continue;
+        }
+        merged.set(key, {
+          name: person?.name ?? contribution.name ?? undefined,
+          email: person?.email ?? contribution.email ?? undefined,
+          commits: contribution.commits,
+          // Named anyway rather than dropped: someone missing from the
+          // register looks exactly like someone who did nothing.
+          unregistered: !person,
+        });
+      }
+      const contributors = [...merged.values()].sort(
+        (a, b) =>
+          b.commits - a.commits ||
+          (a.name ?? a.email ?? '').localeCompare(b.name ?? b.email ?? ''),
+      );
 
       const facts: RepositoryFacts = {
         entityRef: record.entity_ref,
@@ -282,8 +598,14 @@ export async function createRouter(
             name: branch.name,
             lastCommitAt: iso(branch.lastCommitAt),
           })),
+          // Omitted entirely when nothing has been measured: reporting zeroes
+          // would say "no stranded work" where the truth is "not looked yet".
+          divergence:
+            branchDivergence.measured > 0 ? branchDivergence : undefined,
         },
         reviews,
+        createdBy,
+        contributors,
         lifetime: {
           commits: lifetime.commits,
           authors: lifetime.authors,

@@ -3,24 +3,15 @@ import type { FleetRepositorySummary } from '@internal/backstage-plugin-fleet-co
 export interface FleetFilters {
   /** A score band, or 'unscored'. Undefined means every band. */
   band?: string;
-  /** A technology label. Undefined means every technology. */
-  technology?: string;
   /** Free text matched against the repository slug and name. */
   query?: string;
   /**
-   * Show only repositories where work reached the default branch without a
-   * pull request.
+   * Show only repositories carrying a given problem, by metric id.
    *
-   * A repository the branch policy pass has not covered has no counts at all
-   * and is excluded rather than treated as clean -- absence of evidence is not
-   * evidence of review.
+   * The point of the estate view: "show me the 29 repositories with no README"
+   * turns a class of problem into one pass of work rather than 29 visits.
    */
-  directCommitsOnly?: boolean;
-}
-
-export interface TechnologyCount {
-  label: string;
-  count: number;
+  problem?: string;
 }
 
 /**
@@ -41,12 +32,11 @@ export function filterRepositories(
       if (band !== filters.band) return false;
     }
 
-    if (filters.technology) {
-      if (!repository.techStack?.includes(filters.technology)) return false;
-    }
-
-    if (filters.directCommitsOnly) {
-      if (!repository.directCommits?.total) return false;
+    if (filters.problem) {
+      const carries = repository.problems?.top.some(
+        p => p.id === filters.problem,
+      );
+      if (!carries) return false;
     }
 
     if (query) {
@@ -58,33 +48,75 @@ export function filterRepositories(
   });
 }
 
+export interface ProblemCount {
+  id: string;
+  title: string;
+  /** How many repositories carry it. */
+  count: number;
+  /** Points forfeited across the estate, for ordering ties sensibly. */
+  lost: number;
+}
+
 /**
- * Technologies present across the estate, most common first.
+ * Problems across the estate, most widespread first.
  *
- * Derived from what was actually found rather than a fixed list, so a stack
- * nobody uses never appears as an empty filter.
+ * Counted by **repository**, not by points: a lead fixing a class of problem
+ * wants to know how many places to visit. Measured on this estate the answer is
+ * README on 29 repositories, which is the cheapest real win available and was
+ * invisible while every metric sat in one flat list.
  */
-export function technologyCounts(
+export function problemCounts(
   repositories: FleetRepositorySummary[],
-): TechnologyCount[] {
-  const counts = new Map<string, number>();
+): ProblemCount[] {
+  const counts = new Map<string, ProblemCount>();
 
   for (const repository of repositories) {
-    for (const label of repository.techStack ?? []) {
-      counts.set(label, (counts.get(label) ?? 0) + 1);
+    for (const problem of repository.problems?.top ?? []) {
+      const current = counts.get(problem.id);
+      if (current) {
+        current.count += 1;
+        current.lost += problem.lost;
+      } else {
+        counts.set(problem.id, {
+          id: problem.id,
+          title: problem.title,
+          count: 1,
+          lost: problem.lost,
+        });
+      }
     }
   }
 
-  return [...counts.entries()]
-    .map(([label, count]) => ({ label, count }))
-    .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
+  return [...counts.values()].sort(
+    (a, b) =>
+      b.count - a.count || b.lost - a.lost || a.title.localeCompare(b.title),
+  );
 }
 
-/** Repositories with at least one direct commit in the window. */
-export function directCommitCount(
-  repositories: FleetRepositorySummary[],
-): number {
-  return repositories.filter(r => (r.directCommits?.total ?? 0) > 0).length;
+/**
+ * How the below-healthy repositories break down by why.
+ *
+ * Three unrelated populations hide behind one band: 42 of this estate's 59 were
+ * never really developed, 6 were active and stopped, 11 are active but
+ * underperforming. Reporting them as one number invites 42 pointless
+ * conversations.
+ */
+export function dormancyCounts(repositories: FleetRepositorySummary[]) {
+  const of = (kind: string) =>
+    repositories.filter(r => r.problems?.dormancy === kind).length;
+
+  return {
+    neverStarted: of('never-started'),
+    abandoned: of('abandoned'),
+    /** Scored, not dormant, but carrying at least one problem. */
+    underperforming: repositories.filter(
+      r =>
+        r.problems &&
+        !r.problems.dormancy &&
+        r.problems.top.length > 0 &&
+        r.score?.band !== 'healthy',
+    ).length,
+  };
 }
 
 /** Band counts for a given set of rows, including the unscored. */

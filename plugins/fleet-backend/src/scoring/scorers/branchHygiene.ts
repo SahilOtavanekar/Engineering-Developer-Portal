@@ -24,6 +24,12 @@ export function branchHygieneScorer(): Scorer {
       const { active, total } = branches;
       return {
         fraction: active / total,
+        remediation:
+          active === 0
+            ? undefined
+            : `${
+                total - active
+              } of ${total} branches saw no commits in the window. Delete the merged ones.`,
         detail: `${active} of ${total} branch${
           total === 1 ? '' : 'es'
         } active in ${windowDays} days`,

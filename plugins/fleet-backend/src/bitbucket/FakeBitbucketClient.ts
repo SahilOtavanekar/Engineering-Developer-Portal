@@ -24,6 +24,11 @@ export class FakeBitbucketClient implements BitbucketClient {
   private readonly byWorkspace = new Map<string, BitbucketRepository[]>();
   private readonly commitsByRepo = new Map<string, BitbucketCommit[]>();
   private readonly branchesByRepo = new Map<string, BitbucketBranch[]>();
+  /** `workspace/slug#branch` to the divergence a test wants reported. */
+  private readonly divergenceByBranch = new Map<
+    string,
+    { commits: number; capped: boolean }
+  >();
   private readonly runsByRepo = new Map<string, BitbucketPipelineRun[]>();
   private readonly deploymentsByRepo = new Map<string, BitbucketDeployment[]>();
   private readonly permissionsByRepo = new Map<
@@ -346,6 +351,37 @@ export class FakeBitbucketClient implements BitbucketClient {
     }
     this.record('listBranches');
     return [...(this.branchesByRepo.get(`${workspace}/${slug}`) ?? [])];
+  }
+
+  /** Test seam: how far a branch has diverged. Unset branches report zero. */
+  setDivergence(
+    workspace: string,
+    slug: string,
+    branch: string,
+    divergence: { commits: number; capped: boolean },
+  ): void {
+    this.divergenceByBranch.set(`${workspace}/${slug}#${branch}`, divergence);
+  }
+
+  async countCommitsAhead(
+    workspace: string,
+    slug: string,
+    branch: string,
+    exclude: string,
+  ): Promise<{ commits: number; capped: boolean }> {
+    if (!workspace || !slug || !branch || !exclude) {
+      throw new Error(
+        'a workspace, repository, branch and exclude branch are required',
+      );
+    }
+    if (branch === exclude) return { commits: 0, capped: false };
+    this.record('countCommitsAhead');
+    return (
+      this.divergenceByBranch.get(`${workspace}/${slug}#${branch}`) ?? {
+        commits: 0,
+        capped: false,
+      }
+    );
   }
 
   async listRepositoryPermissions(

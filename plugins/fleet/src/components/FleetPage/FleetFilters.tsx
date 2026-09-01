@@ -1,16 +1,14 @@
 import type { CSSProperties } from 'react';
 import type { FleetRepositorySummary } from '@internal/backstage-plugin-fleet-common';
 import { Flex, Text } from '@backstage/ui';
+import SearchIcon from '@material-ui/icons/Search';
 import { BAND_FILL, BAND_LABEL } from '../../bands';
 import {
   bandCounts,
-  directCommitCount,
-  technologyCounts,
+  dormancyCounts,
+  problemCounts,
   type FleetFilters,
 } from '../../filter';
-
-/** Technology chips shown before the list is truncated. */
-const MAX_TECHNOLOGIES = 10;
 
 const chip = (active: boolean): CSSProperties => ({
   appearance: 'none',
@@ -51,8 +49,8 @@ export function FleetFiltersBar({
   onChange,
 }: FleetFiltersBarProps) {
   const counts = bandCounts(repositories);
-  const technologies = technologyCounts(repositories);
-  const bypassing = directCommitCount(repositories);
+  const problems = problemCounts(repositories);
+  const dormancy = dormancyCounts(repositories);
   const total = repositories.length;
 
   const segments = [
@@ -67,11 +65,7 @@ export function FleetFiltersBar({
       [key]: filters[key] === value ? undefined : value,
     });
 
-  const filtered =
-    filters.band ||
-    filters.technology ||
-    filters.directCommitsOnly ||
-    filters.query?.trim();
+  const filtered = filters.band || filters.problem || filters.query?.trim();
 
   return (
     <Flex direction="column" gap="3">
@@ -115,26 +109,85 @@ export function FleetFiltersBar({
         </div>
       )}
 
+      {problems.length > 0 && (
+        <Flex direction="column" gap="2">
+          <Text variant="body-x-small" color="secondary">
+            Most common problems — click to see who has them
+            {dormancy.neverStarted + dormancy.abandoned > 0 &&
+              `. Separately, ${dormancy.abandoned} repositories were abandoned and ${dormancy.neverStarted} were never really developed.`}
+          </Text>
+          <Flex gap="3" align="center" style={{ flexWrap: 'wrap' }}>
+            {problems.map(problem => (
+              <button
+                key={problem.id}
+                type="button"
+                onClick={() =>
+                  onChange({
+                    ...filters,
+                    problem:
+                      filters.problem === problem.id ? undefined : problem.id,
+                  })
+                }
+                aria-pressed={filters.problem === problem.id}
+                title={`${problem.count} repositories, ${Math.round(
+                  problem.lost,
+                )} points forfeited across the estate`}
+                style={chip(filters.problem === problem.id)}
+              >
+                {problem.title} ({problem.count})
+              </button>
+            ))}
+          </Flex>
+        </Flex>
+      )}
+
       <Flex gap="3" align="center" style={{ flexWrap: 'wrap' }}>
-        <input
-          type="search"
-          value={filters.query ?? ''}
-          onChange={event =>
-            onChange({ ...filters, query: event.target.value })
-          }
-          placeholder="Filter repositories"
-          aria-label="Filter repositories by name"
+        {/* The sizing lives on the wrapper so the icon can be positioned
+            over the input's left padding. */}
+        <div
           style={{
-            font: 'inherit',
-            fontSize: '0.8125rem',
-            padding: '0.25rem 0.5rem',
-            border: '1px solid var(--bui-border)',
-            borderRadius: '2px',
-            background: 'transparent',
-            color: 'inherit',
-            minWidth: '14rem',
+            position: 'relative',
+            display: 'flex',
+            alignItems: 'center',
+            // Grows into the row it shares with the remaining chips, but is
+            // capped so it does not swallow a wide screen on its own.
+            flex: '1 1 22rem',
+            maxWidth: '34rem',
           }}
-        />
+        >
+          <SearchIcon
+            // Decorative: the input already carries the accessible name, and
+            // `pointerEvents: none` keeps a click on the icon landing in the
+            // field rather than doing nothing.
+            aria-hidden
+            style={{
+              position: 'absolute',
+              left: '0.55rem',
+              fontSize: '1.15rem',
+              opacity: 0.55,
+              pointerEvents: 'none',
+            }}
+          />
+          <input
+            type="search"
+            value={filters.query ?? ''}
+            onChange={event =>
+              onChange({ ...filters, query: event.target.value })
+            }
+            placeholder="Filter repositories"
+            aria-label="Filter repositories by name"
+            style={{
+              font: 'inherit',
+              fontSize: '0.9375rem',
+              padding: '0.5rem 0.75rem 0.5rem 2.1rem',
+              border: '1px solid var(--bui-border)',
+              borderRadius: '3px',
+              background: 'transparent',
+              color: 'inherit',
+              width: '100%',
+            }}
+          />
+        </div>
 
         {counts.unscored > 0 && (
           <button
@@ -144,23 +197,6 @@ export function FleetFiltersBar({
             style={chip(filters.band === 'unscored')}
           >
             Not scored ({counts.unscored})
-          </button>
-        )}
-
-        {bypassing > 0 && (
-          <button
-            type="button"
-            onClick={() =>
-              onChange({
-                ...filters,
-                directCommitsOnly: filters.directCommitsOnly ? undefined : true,
-              })
-            }
-            aria-pressed={Boolean(filters.directCommitsOnly)}
-            title="Repositories where work reached the default branch without a pull request"
-            style={chip(Boolean(filters.directCommitsOnly))}
-          >
-            Direct commits to main ({bypassing})
           </button>
         )}
 
@@ -175,23 +211,7 @@ export function FleetFiltersBar({
         )}
       </Flex>
 
-      {technologies.length > 0 && (
-        <Flex gap="2" align="center" style={{ flexWrap: 'wrap' }}>
-          {technologies.slice(0, MAX_TECHNOLOGIES).map(technology => (
-            <button
-              key={technology.label}
-              type="button"
-              onClick={() => toggle('technology', technology.label)}
-              aria-pressed={filters.technology === technology.label}
-              style={chip(filters.technology === technology.label)}
-            >
-              {technology.label} ({technology.count})
-            </button>
-          ))}
-        </Flex>
-      )}
-
-      <Text variant="body-x-small" color="secondary">
+      <Text variant="body-medium" color="secondary">
         {filtered
           ? `Showing ${visibleCount} of ${total} repositories`
           : `${total} repositories`}

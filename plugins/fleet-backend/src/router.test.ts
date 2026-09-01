@@ -1,5 +1,10 @@
 import { mockCredentials, mockServices } from '@backstage/backend-test-utils';
 import { AuthorizeResult } from '@backstage/plugin-permission-common';
+import { ConfigReader } from '@backstage/config';
+import {
+  readIdentityRegister,
+  type IdentityRegister,
+} from './identity/identityRegister';
 import express from 'express';
 import request from 'supertest';
 import type { BitbucketCommit, BitbucketRepository } from './bitbucket/types';
@@ -63,8 +68,10 @@ describe('createRouter', () => {
     result:
       | AuthorizeResult.ALLOW
       | AuthorizeResult.DENY = AuthorizeResult.ALLOW,
+    identity?: IdentityRegister,
   ) {
     const router = await createRouter({
+      identity,
       repositories,
       commits,
       branches,
@@ -132,6 +139,153 @@ describe('createRouter', () => {
       defaultBranch: 'main',
       sizeBytes: 13_780_800,
       isPrivate: true,
+    });
+  });
+
+  /** Two addresses for one human, plus an excluded bot. */
+  const register = () =>
+    readIdentityRegister(
+      new ConfigReader({
+        people: {
+          ada: {
+            name: 'Ada Lovelace',
+            email: 'ada@demandai.co',
+            aliases: ['ada.l@gmail.com'],
+          },
+        },
+        notPeople: ['builder@bots.example.com'],
+      }),
+      mockServices.logger.mock(),
+    );
+
+  async function seedWithCommits(rows: Parameters<typeof commit>[0][]) {
+    await repositories.syncWorkspace('demandai', [repository()], NOW);
+    const stored = await repositories.findByEntityRef(
+      'component:default/oxp-backend',
+    );
+    await commits.insertMany(
+      stored!.id,
+      rows.map(r => commit(r)),
+    );
+    return stored!;
+  }
+
+  describe('repository creator', () => {
+    it('names the author of the earliest commit', async () => {
+      // Bitbucket exposes no creator -- its repository `owner` is the
+      // workspace -- so the first commit is the only available answer.
+      await seedWithCommits([
+        {
+          hash: 'later',
+          committedAt: '2026-08-20T10:00:00.000Z',
+          authorEmail: 'alan@demandai.co',
+        },
+        {
+          hash: 'first',
+          committedAt: '2026-08-01T10:00:00.000Z',
+          authorEmail: 'ada.l@gmail.com',
+        },
+      ]);
+
+      const res = await request(await app(AuthorizeResult.ALLOW, register()))
+        .get(url)
+        .expect(200);
+
+      // Resolved through the register: the alias reports the person, not the
+      // address they happened to commit under.
+      expect(res.body.createdBy).toMatchObject({
+        name: 'Ada Lovelace',
+        firstCommitAt: '2026-08-01T10:00:00.000Z',
+        importedHistory: false,
+        notAPerson: false,
+      });
+    });
+
+    it('flags imported history rather than claiming a creator', async () => {
+      // 5 of 96 repositories here have commits older than the repository. The
+      // author of an imported commit may never have touched this repository.
+      const stored = await seedWithCommits([
+        {
+          hash: 'ancient',
+          committedAt: '2020-01-01T10:00:00.000Z',
+          authorEmail: 'ada@demandai.co',
+        },
+      ]);
+      expect(stored).toBeDefined();
+
+      const res = await request(await app(AuthorizeResult.ALLOW, register()))
+        .get(url)
+        .expect(200);
+
+      expect(res.body.createdBy.importedHistory).toBe(true);
+    });
+
+    it('is absent for a repository with no commits', async () => {
+      await repositories.syncWorkspace('demandai', [repository()], NOW);
+
+      const res = await request(await app())
+        .get(url)
+        .expect(200);
+
+      expect(res.body.createdBy).toBeUndefined();
+    });
+  });
+
+  describe('active contributors', () => {
+    it('names them, resolved onto one person per human', async () => {
+      await seedWithCommits([
+        { hash: 'a', authorEmail: 'ada@demandai.co', authorName: 'Ada' },
+        { hash: 'b', authorEmail: 'ada.l@gmail.com', authorName: 'A Lovelace' },
+        { hash: 'c', authorEmail: 'alan@demandai.co', authorName: 'Alan T' },
+      ]);
+
+      const res = await request(await app(AuthorizeResult.ALLOW, register()))
+        .get(url)
+        .expect(200);
+
+      // Two addresses, one human, two commits -- not two contributors of one.
+      // Keyed by email, because the display name on a commit is unreliable:
+      // the register is what decides who someone is.
+      expect(res.body.contributors).toEqual([
+        {
+          name: 'Ada Lovelace',
+          email: 'ada@demandai.co',
+          commits: 2,
+          unregistered: false,
+        },
+        {
+          name: 'Alan T',
+          email: 'alan@demandai.co',
+          commits: 1,
+          unregistered: true,
+        },
+      ]);
+    });
+
+    it('marks someone the register does not know rather than dropping them', async () => {
+      await seedWithCommits([{ hash: 'a', authorEmail: 'ghost@demandai.co' }]);
+
+      const res = await request(await app(AuthorizeResult.ALLOW, register()))
+        .get(url)
+        .expect(200);
+
+      expect(res.body.contributors).toEqual([
+        expect.objectContaining({
+          email: 'ghost@demandai.co',
+          unregistered: true,
+        }),
+      ]);
+    });
+
+    it('is empty for a dormant repository', async () => {
+      // 48 of 96. Dormancy, reported elsewhere -- not an absence of people.
+      await repositories.syncWorkspace('demandai', [repository()], NOW);
+
+      const res = await request(await app())
+        .get(url)
+        .expect(200);
+
+      expect(res.body.contributors).toEqual([]);
     });
   });
 
@@ -754,40 +908,231 @@ describe('createRouter', () => {
       });
     });
 
-    it('orders worst first', async () => {
+    /**
+     * Seeds a whole estate at once.
+     *
+     * `syncWorkspace` is a full sync -- anything absent from the list is marked
+     * not-live -- so the repositories have to be registered together rather
+     * than one call per repository.
+     */
+    async function seedEstate(
+      rows: Array<{
+        slug: string;
+        total: number;
+        band: string;
+        runAt?: string;
+      }>,
+    ) {
       await repositories.syncWorkspace(
         'demandai',
-        [
-          repository({ slug: 'good', name: 'good' }),
-          repository({ slug: 'bad', name: 'bad' }),
-          repository({ slug: 'middling', name: 'middling' }),
-        ],
+        rows.map(r => repository({ slug: r.slug, name: r.slug })),
         NOW,
       );
-      for (const [slug, total, band] of [
-        ['good', 90, 'healthy'],
-        ['bad', 10, 'critical'],
-        ['middling', 55, 'needs-attention'],
-      ] as const) {
+      for (const row of rows) {
         const stored = await repositories.findByEntityRef(
-          `component:default/${slug}`,
+          `component:default/${row.slug}`,
         );
         await scores.record(
           stored!.id,
-          { total, band, availableWeight: 85, breakdown: [] },
+          {
+            total: row.total,
+            band: row.band,
+            availableWeight: 85,
+            breakdown: [],
+          },
           NOW,
         );
+        if (row.runAt) {
+          await pipelines.replaceForRepository(stored!.id, [
+            {
+              uuid: `{${row.slug}}`,
+              state: 'COMPLETED',
+              result: 'SUCCESSFUL',
+              createdAt: row.runAt,
+            },
+          ]);
+        }
       }
+    }
 
-      const res = await request(await app())
+    const slugs = async () =>
+      (
+        await request(await app())
+          .get(fleetUrl)
+          .expect(200)
+      ).body.repositories.map((r: any) => r.slug);
+
+    it('orders by build day, newest first', async () => {
+      await seedEstate([
+        {
+          slug: 'built-today',
+          total: 40,
+          band: 'critical',
+          runAt: '2026-08-27T01:00:00.000Z',
+        },
+        {
+          slug: 'built-yesterday',
+          total: 95,
+          band: 'healthy',
+          runAt: '2026-08-26T23:00:00.000Z',
+        },
+      ]);
+
+      expect(await slugs()).toEqual(['built-today', 'built-yesterday']);
+    });
+
+    it('ranks by worst score within a build day', async () => {
+      // Two things at once. The weaker repository built LATER the same day, so
+      // ordering on the instant would put it first for the wrong reason -- and
+      // it must still come first, for the right one: worst score leads the day.
+      await seedEstate([
+        {
+          slug: 'weak',
+          total: 40,
+          band: 'critical',
+          runAt: '2026-08-27T18:00:00.000Z',
+        },
+        {
+          slug: 'strong',
+          total: 95,
+          band: 'healthy',
+          runAt: '2026-08-27T06:00:00.000Z',
+        },
+      ]);
+
+      expect(await slugs()).toEqual(['weak', 'strong']);
+    });
+
+    it('sorts a repository that has never run a pipeline last', async () => {
+      // Not the same as a run that failed, and it must not lead the list just
+      // because there is nothing to compare. 47 of 96 are in this state.
+      await seedEstate([
+        { slug: 'never-built', total: 99, band: 'healthy' },
+        {
+          slug: 'built',
+          total: 20,
+          band: 'critical',
+          runAt: '2026-08-27T06:00:00.000Z',
+        },
+      ]);
+
+      expect(await slugs()).toEqual(['built', 'never-built']);
+    });
+
+    it('ranks the never-built block worst first too', async () => {
+      await seedEstate([
+        { slug: 'poor', total: 20, band: 'critical' },
+        { slug: 'fine', total: 80, band: 'healthy' },
+      ]);
+
+      expect(await slugs()).toEqual(['poor', 'fine']);
+    });
+
+    it('sorts an unscored repository last, not first', async () => {
+      // The trap in worst-first ordering: no score is not a score of zero, and
+      // putting it at the top would assert it is the worst in the estate.
+      await repositories.syncWorkspace(
+        'demandai',
+        [
+          repository({ slug: 'scored-badly', name: 'scored-badly' }),
+          repository({ slug: 'never-scored', name: 'never-scored' }),
+        ],
+        NOW,
+      );
+      const stored = await repositories.findByEntityRef(
+        'component:default/scored-badly',
+      );
+      await scores.record(
+        stored!.id,
+        { total: 3, band: 'critical', availableWeight: 85, breakdown: [] },
+        NOW,
+      );
+
+      expect(await slugs()).toEqual(['scored-badly', 'never-scored']);
+    });
+
+    it('names a creator and contributors on every row', async () => {
+      await seedEstate([
+        {
+          slug: 'built',
+          total: 70,
+          band: 'healthy',
+          runAt: '2026-08-27T06:00:00.000Z',
+        },
+      ]);
+      const stored = await repositories.findByEntityRef(
+        'component:default/built',
+      );
+      await commits.insertMany(stored!.id, [
+        commit({
+          hash: 'first',
+          committedAt: '2026-08-01T09:00:00.000Z',
+          authorEmail: 'ada@demandai.co',
+        }),
+        commit({
+          hash: 'second',
+          committedAt: '2026-08-20T09:00:00.000Z',
+          authorEmail: 'ada.l@gmail.com',
+        }),
+      ]);
+
+      const res = await request(await app(AuthorizeResult.ALLOW, register()))
+        .get(fleetUrl)
+        .expect(200);
+      const row = res.body.repositories.find((r: any) => r.slug === 'built');
+
+      expect(row.createdBy).toMatchObject({
+        name: 'Ada Lovelace',
+        importedHistory: false,
+      });
+      // One human, two addresses, one name -- not two contributors.
+      expect(row.contributors).toEqual(['Ada Lovelace']);
+    });
+
+    it('asks for creators and contributors once each, not once per repository', async () => {
+      // Both feed a column on every row, so an N+1 here lands squarely in the
+      // endpoint the two-second page load depends on.
+      await seedEstate([
+        { slug: 'a', total: 50, band: 'needs-attention' },
+        { slug: 'b', total: 60, band: 'needs-attention' },
+        { slug: 'c', total: 70, band: 'healthy' },
+      ]);
+
+      const first = jest.spyOn(commits, 'firstCommitForRepositories');
+      const contrib = jest.spyOn(commits, 'contributorsForRepositories');
+      await request(await app())
         .get(fleetUrl)
         .expect(200);
 
-      expect(res.body.repositories.map((r: any) => r.slug)).toEqual([
-        'bad',
-        'middling',
-        'good',
+      expect(first).toHaveBeenCalledTimes(1);
+      expect(contrib).toHaveBeenCalledTimes(1);
+      first.mockRestore();
+      contrib.mockRestore();
+    });
+
+    it('asks for the estate pipeline runs once, not once per repository', async () => {
+      // The listing orders by this, so a per-repository lookup would be an N+1
+      // in the one endpoint the two-second page load depends on.
+      await seedEstate([
+        {
+          slug: 'a',
+          total: 50,
+          band: 'needs-attention',
+          runAt: '2026-08-27T06:00:00.000Z',
+        },
+        {
+          slug: 'b',
+          total: 60,
+          band: 'needs-attention',
+          runAt: '2026-08-27T07:00:00.000Z',
+        },
       ]);
+
+      const spy = jest.spyOn(pipelines, 'lastRunForRepositories');
+      await slugs();
+
+      expect(spy).toHaveBeenCalledTimes(1);
+      spy.mockRestore();
     });
 
     it('sorts unscored repositories last, not first', async () => {

@@ -86,6 +86,11 @@ export class ScoringEngine {
         weight,
         points: Math.round(points * 10) / 10,
         detail: outcome.detail,
+        // Only carried when the metric actually lost something; a remediation
+        // beside full marks is noise in the payload and on the page.
+        ...(outcome.remediation && fraction < 1
+          ? { remediation: outcome.remediation }
+          : {}),
         available: true,
       });
     }

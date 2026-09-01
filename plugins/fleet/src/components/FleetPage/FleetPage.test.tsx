@@ -144,13 +144,6 @@ describe('FleetPage', () => {
     ).toBeInTheDocument();
   });
 
-  it('shows how much weight each score was measured over', async () => {
-    await render(ok(overview));
-
-    expect(await screen.findAllByText('45 / 100')).toHaveLength(2);
-    expect(screen.getAllByText('85 / 100')).toHaveLength(2);
-  });
-
   it('marks an unscored repository plainly rather than as zero', async () => {
     await render(ok(overview));
 
@@ -185,7 +178,7 @@ describe('FleetPage', () => {
     }));
 
     expect(
-      await screen.findByText(/Could not load the fleet/),
+      await screen.findByText(/Could not load the health dashboard/),
     ).toBeInTheDocument();
   });
 

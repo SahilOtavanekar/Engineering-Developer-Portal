@@ -38,6 +38,10 @@ import { readmeAvailableScorer } from './scoring/scorers/readmeAvailable';
 import { ownerAssignedScorer } from './scoring/scorers/ownerAssigned';
 import { pullRequestDisciplineScorer } from './scoring/scorers/pullRequestDiscipline';
 import { BranchPolicyService } from './analysis/BranchPolicyService';
+import { BranchDivergenceService } from './analysis/BranchDivergenceService';
+import { ProductivityStore } from './database/ProductivityStore';
+import { ProductivityService } from './productivity/ProductivityService';
+import { readIdentityRegister } from './identity/identityRegister';
 import { RepositoryIngestionService } from './ingestion/RepositoryIngestionService';
 
 const migrationsDirectory = resolvePackagePath(
@@ -171,6 +175,27 @@ export const fleetPlugin = createBackendPlugin({
           ],
         });
 
+        // Read once at startup. Reference data, not something that changes
+        // under a running process; edit and restart.
+        const identity = readIdentityRegister(
+          config.getOptionalConfig('fleet.identity.register'),
+          logger,
+        );
+        if (identity.people.length === 0) {
+          logger.warn(
+            'No fleet.identity.register configured; per-engineer productivity ' +
+              'is unavailable, because a commit address is not a person and ' +
+              'aggregating raw addresses would split people into several ' +
+              'engineers each',
+          );
+        } else {
+          logger.info(
+            `Identity register: ${identity.people.length} people across ` +
+              `${identity.byAddress.size} addresses, ` +
+              `${identity.excluded.size} address(es) excluded as not people`,
+          );
+        }
+
         httpRouter.use(
           await createRouter({
             repositories: repositoryStore,
@@ -182,6 +207,19 @@ export const fleetPlugin = createBackendPlugin({
             ownership: ownershipStore,
             scores: scoreStore,
             nominalWeight: engine.nominalWeight,
+            productivity:
+              identity.people.length > 0
+                ? new ProductivityService({
+                    store: new ProductivityStore(client),
+                    register: identity,
+                    logger,
+                  })
+                : undefined,
+            productivityWindowDays: scoringWindowDays,
+            // Names the repository creator and the contributor list. Passed
+            // even when empty: the router then reports raw addresses rather
+            // than nothing, and the register is optional configuration.
+            identity,
             disciplineWindowDays:
               scoringConfig?.getOptionalNumber('disciplineWindowDays') ??
               undefined,
@@ -444,6 +482,40 @@ export const fleetPlugin = createBackendPlugin({
               'Branch policy',
               BranchPolicyService.resourceKey(workspace),
               () => branchPolicy.classifyAll(workspace),
+            ),
+          });
+
+          const divergence = new BranchDivergenceService({
+            repositories,
+            branches: branchStore,
+            syncState,
+            client: newClient(),
+            logger,
+            requestBudget: fleetConfig?.getOptionalNumber(
+              'branchDivergence.requestBudget',
+            ),
+          });
+
+          await scheduler.scheduleTask({
+            id: BranchDivergenceService.resourceKey(workspace),
+            ...schedule,
+            // Its own, much slower cadence. This is the only pass that costs a
+            // request per *branch* rather than per repository -- about 185 for
+            // this estate -- and divergence barely moves between one half-hour
+            // and the next, so running it on the common schedule would spend
+            // the whole request budget to learn nothing.
+            frequency: {
+              minutes:
+                fleetConfig?.getOptionalNumber(
+                  'branchDivergence.frequencyMinutes',
+                ) ?? 360,
+            },
+            timeout: { minutes: 20 },
+            initialDelay: { seconds: 180 },
+            fn: guard(
+              'Branch divergence',
+              BranchDivergenceService.resourceKey(workspace),
+              () => divergence.measureAll(workspace),
             ),
           });
 

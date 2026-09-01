@@ -23,6 +23,10 @@ export function activeContributorsScorer(
       const { authors } = activity;
       return {
         fraction: Math.min(1, authors / target),
+        remediation:
+          authors === 0
+            ? undefined
+            : `${target} contributors in ${windowDays} days earns full marks; this has ${authors}. A repository only one person touches is a risk whatever its commit count.`,
         detail:
           authors === 0
             ? `No contributors in ${windowDays} days`

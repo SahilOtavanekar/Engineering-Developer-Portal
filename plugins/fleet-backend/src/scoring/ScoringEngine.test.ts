@@ -144,7 +144,9 @@ describe('ScoringEngine', () => {
       { scorer: activeContributorsScorer({ target: 2 }), weight: 10 },
     ]).score(context(5, 1));
 
-    expect(result.breakdown).toEqual([
+    // toMatchObject, not toEqual: the entry gained `remediation` and an exact
+    // match makes every future field addition look like a regression here.
+    expect(result.breakdown).toMatchObject([
       {
         id: 'active-commits',
         title: 'Active commits',
@@ -377,7 +379,7 @@ describe('readmeAvailableScorer', () => {
   });
 
   it('gives nothing when there is none', () => {
-    expect(scorer.score(withReadme(false))).toEqual({
+    expect(scorer.score(withReadme(false))).toMatchObject({
       fraction: 0,
       detail: 'No README at the repository root',
     });
@@ -438,7 +440,7 @@ describe('ownerAssignedScorer', () => {
   it('scores zero, not null, when a pass ran and found nobody', () => {
     // The distinction the context type exists for: resolved-and-empty is a real
     // zero, never-resolved is unmeasurable.
-    expect(scorer.score(withOwnership({}))).toEqual({
+    expect(scorer.score(withOwnership({}))).toMatchObject({
       fraction: 0,
       detail: 'No owner identified',
     });
@@ -449,7 +451,7 @@ describe('ownerAssignedScorer', () => {
     // the catalog shows the placeholder owner and this must agree with it.
     expect(
       scorer.score(withOwnership({ proposed: owner({ email: undefined }) })),
-    ).toEqual({ fraction: 0, detail: 'No owner identified' });
+    ).toMatchObject({ fraction: 0, detail: 'No owner identified' });
   });
 
   it('falls back to the address when the register has no name', () => {
@@ -476,6 +478,88 @@ describe('ownerAssignedScorer', () => {
     expect(result.breakdown.find(e => e.id === 'owner-assigned')).toMatchObject(
       { points: 10, available: true },
     );
+  });
+});
+
+describe('remediation', () => {
+  const withRemediation = (fraction: number): Scorer => ({
+    id: 'fixable',
+    title: 'Fixable',
+    score: () => ({ fraction, detail: 'detail', remediation: 'do the thing' }),
+  });
+
+  const run = (scorer: Scorer) =>
+    new ScoringEngine({
+      bands: PROVISIONAL_BANDS,
+      scorers: [{ scorer, weight: 10 }],
+    }).score(context(10, 2)).breakdown[0];
+
+  it('carries the remediation the scorer supplied when points were lost', () => {
+    expect(run(withRemediation(0.4))).toMatchObject({
+      points: 4,
+      remediation: 'do the thing',
+    });
+  });
+
+  it('drops it at full marks, where it is noise', () => {
+    expect(run(withRemediation(1)).remediation).toBeUndefined();
+  });
+
+  it('omits it entirely when the scorer had nothing to say', () => {
+    // activeCommits deliberately stays silent for a repository with no commits
+    // at all: "commit more" answers neither the scaffold case nor the
+    // abandoned one.
+    const silent: Scorer = {
+      id: 'silent',
+      title: 'Silent',
+      score: () => ({ fraction: 0, detail: 'nothing happened' }),
+    };
+
+    expect(run(silent).remediation).toBeUndefined();
+  });
+
+  it('is absent on an unmeasurable metric', () => {
+    expect(
+      new ScoringEngine({
+        bands: PROVISIONAL_BANDS,
+        scorers: [{ scorer: unmeasurable, weight: 10 }],
+      }).score(context(10, 2)).breakdown[0].remediation,
+    ).toBeUndefined();
+  });
+});
+
+describe('scorers supply their own remediation', () => {
+  it('activeCommits quotes the configured target, not a hardcoded one', () => {
+    // The whole reason remediation lives in the scorer: the target is config,
+    // and a frontend lookup table would drift the moment it was tuned.
+    const outcome = activeCommitsScorer({ target: 25 }).score(context(5, 1));
+
+    expect(outcome?.remediation).toContain('25 commits in 90 days');
+    expect(outcome?.remediation).toContain('this has 5');
+  });
+
+  it('activeCommits says nothing to a repository with no commits', () => {
+    expect(
+      activeCommitsScorer({ target: 10 }).score(context(0, 0))?.remediation,
+    ).toBeUndefined();
+  });
+
+  it('readmeAvailable names the file to add', () => {
+    const outcome = readmeAvailableScorer().score({
+      ...context(10, 2),
+      repository: { ...context(10, 2).repository, has_readme: false },
+    });
+
+    expect(outcome?.remediation).toContain('README.md');
+  });
+
+  it('readmeAvailable stays silent when the README exists', () => {
+    const outcome = readmeAvailableScorer().score({
+      ...context(10, 2),
+      repository: { ...context(10, 2).repository, has_readme: true },
+    });
+
+    expect(outcome?.remediation).toBeUndefined();
   });
 });
 
@@ -541,25 +625,38 @@ describe('pullRequestDisciplineScorer', () => {
     expect(none!.fraction).toBe(0);
   });
 
-  it('counts direct merges as direct, and says how many', () => {
+  it('reports all three ways work reached main, separately', () => {
+    // Merged-without-a-pull-request and written-straight-on-main need
+    // different fixes, so one combined total would hide which you have.
     const outcome = scorer.score(
       withPolicy(
         policy({ mainline: 20, viaPullRequest: 4, direct: 12, directMerge: 4 }),
       ),
     );
 
-    expect(outcome?.detail).toContain('16 direct commits to main');
-    expect(outcome?.detail).toContain('4 of them merges');
-    expect(outcome?.detail).toContain('4 of 20 came through a pull request');
+    expect(outcome?.detail).toBe(
+      '20 commits reached main in 30 days: 4 through a pull request, ' +
+        '4 merged from a branch with no pull request, 12 written directly on main',
+    );
   });
 
-  it('does not mention merges when there are none', () => {
+  it('leaves out a route nothing took', () => {
     const outcome = scorer.score(
       withPolicy(policy({ mainline: 10, viaPullRequest: 9, direct: 1 })),
     );
 
-    expect(outcome?.detail).not.toContain('merges');
-    expect(outcome?.detail).toContain('1 direct commit to main');
+    expect(outcome?.detail).not.toContain('merged from a branch');
+    expect(outcome?.detail).toContain('1 written directly on main');
+  });
+
+  it('still counts a merge with no pull request against the score', () => {
+    // It came from a branch, but nobody reviewed it -- so it is not the same
+    // as a pull request, and the fraction must not treat it as one.
+    const outcome = scorer.score(
+      withPolicy(policy({ mainline: 10, viaPullRequest: 5, directMerge: 5 })),
+    );
+
+    expect(outcome?.fraction).toBeCloseTo(0.5);
   });
 
   it('ignores commits a merge brought in', () => {

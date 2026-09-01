@@ -68,6 +68,44 @@ export interface Config {
       };
     };
 
+    /**
+     * Who the commit authors are.
+     *
+     * An address is not a person. Without this, per-engineer figures split
+     * anyone who commits under more than one address into several engineers.
+     */
+    identity?: {
+      register?: {
+        /**
+         * Keyed by a stable slug. `aliases` are additional addresses the same
+         * human commits under; they resolve to `email`.
+         */
+        people?: {
+          [key: string]: {
+            name: string;
+            email: string;
+            aliases?: string[];
+          };
+        };
+        /** Addresses belonging to no person -- bots, agents. Counted nowhere. */
+        notPeople?: string[];
+      };
+    };
+
+    /**
+     * How much work is stranded on unmerged branches.
+     *
+     * The only pass that costs a request per *branch* rather than per
+     * repository, so both knobs are about spending: how often it runs, and how
+     * many requests one sweep may spend before leaving the rest for next time.
+     */
+    branchDivergence?: {
+      /** Defaults to 360 (six hours). Divergence barely moves. */
+      frequencyMinutes?: number;
+      /** Defaults to 400. The estate needs about 185 today. */
+      requestBudget?: number;
+    };
+
     /** Health scoring. Weights and thresholds are config, never code. */
     scoring?: {
       /** Activity window scorers measure over, in days. Defaults to 90. */

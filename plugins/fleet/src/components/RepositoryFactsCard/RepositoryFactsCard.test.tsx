@@ -140,14 +140,14 @@ describe('RepositoryFactsCard', () => {
   });
 
   it('explains every metric that contributed to the score', async () => {
+    // Points and detail are separate elements: they used to share one wrapped
+    // line, which made the numbers the hardest thing on the card to find.
     await render(ok(facts));
 
-    expect(
-      await screen.findByText(/20 \/ 20 — 261 commits in 90 days/),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText(/10 \/ 10 — 5 contributors in 90 days/),
-    ).toBeInTheDocument();
+    expect(await screen.findByText('20 / 20')).toBeInTheDocument();
+    expect(screen.getByText('261 commits in 90 days')).toBeInTheDocument();
+    expect(screen.getByText('10 / 10')).toBeInTheDocument();
+    expect(screen.getByText('5 contributors in 90 days')).toBeInTheDocument();
   });
 
   it('flags a partial score rather than presenting it as complete', async () => {
@@ -275,6 +275,144 @@ describe('RepositoryFactsCard', () => {
       expect(screen.queryByText('Environments')).not.toBeInTheDocument();
     });
   });
+  describe('problems on a low-scoring repository', () => {
+    const lowScore = (breakdown: any[], band = 'critical'): any => ({
+      total: 30,
+      band,
+      availableWeight: breakdown
+        .filter(b => b.available)
+        .reduce((sum: number, b: any) => sum + b.weight, 0),
+      nominalWeight: 100,
+      computedAt: new Date().toISOString(),
+      breakdown,
+    });
+
+    const metric = (
+      id: string,
+      title: string,
+      weight: number,
+      points: number | undefined,
+      detail: string,
+    ) => ({
+      id,
+      title,
+      weight,
+      ...(points === undefined ? {} : { points }),
+      detail,
+      available: points !== undefined,
+    });
+
+    it('leads with the problems, worst first', async () => {
+      await render(
+        ok({
+          ...facts,
+          score: lowScore([
+            metric('readme-available', 'README available', 10, 0, 'No README'),
+            metric(
+              'pipeline-passing',
+              'Pipeline passing',
+              20,
+              4,
+              '1 of 5 passed',
+            ),
+            metric('active-commits', 'Active commits', 20, 16, '8 commits'),
+          ]),
+        }),
+      );
+
+      expect(
+        await screen.findByText(/Problems — 3 costing 30 points/),
+      ).toBeInTheDocument();
+      expect(screen.getByText(/16 of 20 points lost/)).toBeInTheDocument();
+    });
+
+    it('says nothing for a healthy repository', async () => {
+      // 36 repositories are healthy. Bannering them is how a warning gets
+      // trained out of people.
+      await render(ok(facts));
+
+      expect(await screen.findByText('100')).toBeInTheDocument();
+      expect(screen.queryByText(/Problems —/)).not.toBeInTheDocument();
+    });
+
+    it('calls a scaffold what it is instead of a decaying service', async () => {
+      // 42 of the 59 repositories below healthy have ten or fewer commits ever.
+      await render(
+        ok({
+          ...facts,
+          lifetime: { commits: 4, authors: 1 },
+          score: lowScore([
+            metric('active-commits', 'Active commits', 20, 0, 'no commits'),
+            metric('active-contributors', 'Active contributors', 10, 0, 'none'),
+          ]),
+        }),
+      );
+
+      expect(
+        await screen.findByText(/Never really developed: 4 commits/),
+      ).toBeInTheDocument();
+      expect(screen.getByText(/Not a decaying service/)).toBeInTheDocument();
+    });
+
+    it('calls a repository with real history abandoned', async () => {
+      await render(
+        ok({
+          ...facts,
+          lifetime: { commits: 276, authors: 6 },
+          score: lowScore([
+            metric('active-commits', 'Active commits', 20, 0, 'no commits'),
+          ]),
+        }),
+      );
+
+      expect(
+        await screen.findByText(/Abandoned: 276 commits in its history/),
+      ).toBeInTheDocument();
+    });
+
+    it('does not list the activity metrics as problems when dormant', async () => {
+      // They are one fact three times over; the dormancy line already says it.
+      await render(
+        ok({
+          ...facts,
+          lifetime: { commits: 4, authors: 1 },
+          score: lowScore([
+            metric('active-commits', 'Active commits', 20, 0, 'no commits'),
+            metric('active-contributors', 'Active contributors', 10, 0, 'none'),
+            metric('branch-hygiene', 'Branch hygiene', 10, 0, 'none active'),
+            metric('readme-available', 'README available', 10, 0, 'No README'),
+          ]),
+        }),
+      );
+
+      expect(
+        await screen.findByText(/Problems — 1 costing 10 points/),
+      ).toBeInTheDocument();
+    });
+
+    it('never counts an unmeasurable metric as a problem', async () => {
+      await render(
+        ok({
+          ...facts,
+          score: lowScore([
+            metric('readme-available', 'README available', 10, 0, 'No README'),
+            metric(
+              'code-review-completed',
+              'Code review completed',
+              10,
+              undefined,
+              'x',
+            ),
+          ]),
+        }),
+      );
+
+      expect(
+        await screen.findByText(/Problems — 1 costing 10 points/),
+      ).toBeInTheDocument();
+    });
+  });
+
   describe('ownership proposal', () => {
     const proposal = {
       source: 'commit-history',

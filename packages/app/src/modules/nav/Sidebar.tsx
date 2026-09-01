@@ -24,6 +24,11 @@ export const SidebarContent = NavContentBlueprint.make({
       // Skipped items
       nav.take('page:search'); // Using search modal instead
       nav.take('page:notifications'); // Using NotificationsSidebarItem manually instead
+      // The relations graph is wanted on entity pages, but the standalone
+      // graph browser is not. Taken and discarded rather than disabled in
+      // config: `entity-card:catalog-graph/relations` resolves this page's
+      // route ref, and `useRouteRef` throws outright when the route is gone.
+      nav.take('page:catalog-graph');
 
       return (
         <Sidebar>
@@ -34,7 +39,6 @@ export const SidebarContent = NavContentBlueprint.make({
           <SidebarDivider />
           <SidebarGroup label="Menu" icon={<MenuIcon />}>
             {nav.take('page:catalog')}
-            {nav.take('page:scaffolder')}
             <SidebarDivider />
             <SidebarScrollWrapper>
               {nav.rest({ sortBy: 'title' })}

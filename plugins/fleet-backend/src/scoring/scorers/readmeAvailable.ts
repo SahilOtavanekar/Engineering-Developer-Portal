@@ -27,6 +27,9 @@ export function readmeAvailableScorer(): Scorer {
         detail: repository.has_readme
           ? 'README present at the repository root'
           : 'No README at the repository root',
+        remediation: repository.has_readme
+          ? undefined
+          : 'Add a README.md at the repository root. The cheapest points on the scorecard, and the most common gap on this estate.',
       };
     },
   };

@@ -75,6 +75,8 @@ export class PullRequestStore {
       source_branch: pr.sourceBranch ?? null,
       destination_branch: pr.destinationBranch ?? null,
       merge_commit_hash: pr.mergeCommitHash ?? null,
+      closed_by_account_id: pr.closedByAccountId ?? null,
+      closed_by_name: pr.closedByName ?? null,
     }));
 
     for (let i = 0; i < rows.length; i += CHUNK) {
@@ -97,9 +99,80 @@ export class PullRequestStore {
           // Only exists once the pull request merges, so a PR first seen open
           // would never acquire it otherwise.
           'merge_commit_hash',
+          'closed_by_account_id',
+          'closed_by_name',
         ]);
     }
+    await this.replaceParticipants(repositoryId, pullRequests);
     return rows.length;
+  }
+
+  /**
+   * Replaces the participant rows for the given pull requests.
+   *
+   * Snapshot-replaced rather than appended: a reviewer can withdraw an approval
+   * or be removed, so yesterday's row is not history worth keeping -- unlike a
+   * commit or a score, which are.
+   *
+   * Only touches pull requests the caller actually fetched. A pull request
+   * whose participants were not returned keeps whatever it had, because an
+   * empty list from a request that did not ask for participants is
+   * indistinguishable from a pull request nobody looked at.
+   */
+  private async replaceParticipants(
+    repositoryId: number,
+    pullRequests: BitbucketPullRequest[],
+  ): Promise<void> {
+    const withParticipants = pullRequests.filter(
+      pr => pr.participants !== undefined,
+    );
+    if (withParticipants.length === 0) return;
+
+    const ids = (await this.db('pull_request')
+      .where({ repository_id: repositoryId })
+      .whereIn(
+        'pr_id',
+        withParticipants.map(pr => pr.id),
+      )
+      .select('id', 'pr_id')) as Array<{ id: number; pr_id: number }>;
+    const byPrId = new Map(ids.map(row => [Number(row.pr_id), Number(row.id)]));
+
+    const rowIds = [...byPrId.values()];
+    for (let i = 0; i < rowIds.length; i += CHUNK) {
+      await this.db('pull_request_participant')
+        .whereIn('pull_request_id', rowIds.slice(i, i + CHUNK))
+        .delete();
+    }
+
+    const rows: Array<Record<string, unknown>> = [];
+    for (const pr of withParticipants) {
+      const pullRequestId = byPrId.get(pr.id);
+      if (pullRequestId === undefined) continue;
+      // Deduplicate on account id: Bitbucket has been seen to repeat a
+      // participant, and the unique constraint would reject the whole chunk.
+      const seen = new Set<string>();
+      for (const participant of pr.participants ?? []) {
+        const key = participant.accountId ?? `name:${participant.displayName}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        rows.push({
+          pull_request_id: pullRequestId,
+          account_id: participant.accountId ?? null,
+          display_name: participant.displayName ?? null,
+          role: participant.role,
+          approved: participant.approved,
+          participated_at: participant.participatedAt
+            ? new Date(participant.participatedAt)
+            : null,
+        });
+      }
+    }
+
+    for (let i = 0; i < rows.length; i += CHUNK) {
+      await this.db('pull_request_participant').insert(
+        rows.slice(i, i + CHUNK),
+      );
+    }
   }
 
   /** Newest update time held, used as the incremental watermark. */

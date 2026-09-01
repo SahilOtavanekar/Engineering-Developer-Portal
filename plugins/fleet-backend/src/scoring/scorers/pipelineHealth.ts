@@ -32,6 +32,9 @@ export function pipelineHealthScorer(): Scorer {
       const aside = cancelled > 0 ? `, ${cancelled} cancelled` : '';
       return {
         fraction: successful / judged,
+        remediation: `${
+          judged - successful
+        } of the last ${judged} judged runs failed. Cancelled runs are already excluded, so these are real failures.`,
         detail: `${successful} of ${judged} recent run${
           judged === 1 ? '' : 's'
         } passed${aside}`,

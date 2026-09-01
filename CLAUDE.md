@@ -33,6 +33,10 @@ Measured 2026-08-20 by a read-only recon spike (104 requests). **These supersede
 the figures in the requirements document, which are wrong by roughly two orders
 of magnitude.**
 
+**The estate is live and grows.** 95 was the count on 2026-08-20; `exp` appeared
+on 2026-08-27, taking it to **96**. Figures below are the original measurement,
+not a running total -- check the database rather than trusting the number here.
+
 |               | Document says | Actually measured                             |
 | ------------- | ------------- | --------------------------------------------- |
 | Repositories  | 10,000        | **95** (workspace `demandai`)                 |
@@ -163,6 +167,17 @@ override.
   and with no warning -- the page still routes and still renders when visited
   directly, it just never appears in the nav. `plugins/fleet/src/plugin.test.tsx`
   pins all three; keep that pattern for every new page.
+- **To hide a page from the sidebar but keep it routable, take it in
+  `Sidebar.tsx` -- do not disable the extension.** `nav.take('page:<id>')` and
+  discard the result, as `page:search` and `page:notifications` already do.
+  `app.extensions: [- page:x: false]` **is** supported (see
+  `readAppExtensionsConfig` in `@backstage/frontend-app-api`; this corrects an
+  earlier note here claiming no such override exists), but it deletes the
+  route, and any card resolving that route ref through `useRouteRef` then
+  **throws** rather than degrading. That is what
+  `entity-card:catalog-graph/relations` does: disabling `page:catalog-graph`
+  put `No path for routeRef{id=catalog-graph.catalogGraph}` on every entity
+  page. Disabling the extension is right only when nothing else references it.
 - **Do not delete `routes.ts` when stripping scaffolder demo code.** The
   generated `routeRef` and the plugin's `routes:` block are load-bearing, not
   part of the demo.
@@ -551,6 +566,157 @@ connection`, which took `/api/catalog` down to 404 and left every page in the
 - **A tie is never an owner.** Two people on half the commits each clear a 50%
   share threshold; the resolver additionally requires the leader to be strictly
   ahead of the runner-up. Three tests fail if that rule is removed.
+
+- **The problem derivation lives in `fleet-common`, because both sides need
+  it.** The fleet overview endpoint and the repository card both classify
+  problems, and two implementations would eventually disagree about what is
+  wrong with a repository. `plugins/fleet-common/src/problems.ts` is the single
+  one; the router imports it exactly as the card does.
+  **The overview sends a compact summary, not the breakdown.** 96 repositories
+  times eight metrics with detail _and_ remediation strings would add tens of
+  kilobytes to the one endpoint the two-second page load depends on, and that
+  requirement is already unsigned-off. `FleetRepositorySummary.problems` carries
+  only `{id, title, lost}[]`, a total, and the dormancy kind -- what a list needs
+  to count, rank and filter. Full text stays on the repository page.
+  Dormancy classification needs lifetime commit counts, so
+  `CommitStore.lifetimeCommitsForWorkspace` is one query for the estate; a
+  per-repository lookup would be an N+1 in precisely the wrong endpoint.
+  **There are two `ScoreBreakdownEntry` definitions** -- one in
+  `fleet-backend/src/scoring/types.ts` that the engine writes, one in
+  `fleet-common` that the frontend reads. Adding `remediation` to only the
+  second compiled fine, because an object spread bypasses excess-property
+  checking, and then failed at the first property access. Keep them in step.
+- **Remediation text belongs to the scorer, not to whatever renders it.**
+  `ScorerOutcome.remediation` is optional and each of the eight scorers supplies
+  its own, because the fix almost always quotes a **configured** value -- the
+  commit target, the discipline window -- and a frontend lookup table would
+  duplicate config and drift silently the moment someone tuned it. A test proves
+  it: `activeCommitsScorer({ target: 25 })` says "25 commits in 90 days", not a
+  hardcoded 10.
+  The engine drops remediation at full marks, so it never travels beside a
+  metric that lost nothing. Two scorers deliberately stay **silent**:
+  `activeCommits` and `activeContributors` say nothing to a repository with no
+  commits at all, because "commit more" answers neither the scaffold case nor
+  the abandoned one -- the card reports that as dormancy instead.
+  **Adding the field broke four pre-existing tests** that used `toEqual` on
+  outcomes and breakdown entries. They are `toMatchObject` now; exact equality
+  on a growing object makes every future field addition look like a regression.
+  Breakdowns are stored as JSON, so scores computed before this simply lack the
+  field until the next pass rewrites them.
+- **Highlighting problems is about classifying the repository, not ranking
+  metrics.** 59 of 96 repositories score below healthy, and they are three
+  unrelated populations: **42 were never really developed** (ten or fewer commits
+  ever), **6 were active and stopped**, and only **11 are active but
+  underperforming**. Ranking metrics by points lost and showing the worst would
+  print "no commits in 90 days" 48 times, 42 of them about scaffolds -- which is
+  how a warning gets trained out of people.
+  So `plugins/fleet/src/problems.ts` folds `active-commits`,
+  `active-contributors` and `branch-hygiene` into a single dormancy statement
+  whenever the activity metric is zero: they are one fact wearing three hats,
+  and a dormant repository scores zero on all three by construction. Dormancy is
+  then phrased by history -- `portal-ui` with 276 lifetime commits reads
+  "abandoned", a four-commit scaffold reads "never really developed. Not a
+  decaying service." Absent lifetime data assumes never-started, because that is
+  the less alarming of the two guesses.
+  Unmeasurable metrics are listed separately and never counted as problems: 55
+  repositories cannot be judged on code review at all.
+  **The payoff is that the top actionable problem across the estate turns out to
+  be `README available` on 29 repositories** -- minutes of work each, previously
+  buried beneath four larger numbers nobody could act on. Pipeline passing is
+  second at 14.
+  Problems are shown only below healthy: a banner on the 36 healthy
+  repositories would be noise. This is derived from the breakdown the scoring
+  pass already writes -- no migration, no new pass, no Bitbucket requests -- and
+  the cost of that is that the wording cannot quote a configured target, so
+  remediation text is deferred rather than guessed.
+- **"Register existing component" is removed, and the document was checked
+  first.** All 196 paragraphs of `Engineering portal.docx` were extracted and
+  searched: **zero occurrences** of register, import, onboard, catalog-info or
+  self-service. The document specifies the opposite mechanism -- section 2 says
+  the platform "shall **synchronize**" and that "synchronization should occur
+  periodically". The only clause permitting manual entry is section 4's
+  "ownership information should be synchronized from repository metadata **or
+  configured manually**", which is about _ownership_ and is already satisfied by
+  `catalog/ownership-register.yaml`.
+  Removal was also positively better than leaving it: **0% of the estate has a
+  `catalog-info.yaml`**, so the import flow had nothing to import, and an
+  imported entity would arrive under a `url:` locationKey for an entity ref the
+  provider already owns under `bitbucket-repositories:demandai` -- two owners for
+  one entity is the conflict case locationKey exists to detect.
+  Three touch points only: the `@backstage/plugin-catalog-import` dependency and
+  the `catalog.import` config block, with **no source references at all** -- it
+  reached the sidebar through `nav.rest()`, so no `Sidebar.tsx` edit was needed.
+  Nothing of ours reads `catalog.import.*`, and the entity provider never looks
+  for a `catalog-info.yaml`; it synthesises a Component unconditionally.
+  **The trade-off, accepted knowingly:** there is now no way to catalog anything
+  that is not a Bitbucket repository in a configured workspace except by adding
+  it to `catalog.locations`. For the five repositories the standardization
+  document names but the `demandai` workspace lacks, the answer is another entry
+  in `fleet.bitbucket.workspaces`, not a manual registration.
+- **The scaffolder ("Create...") is removed, deliberately and completely.**
+  Dropped 2026-08-27 at the product owner's direction. Nine touch points: the
+  `@backstage/plugin-scaffolder` app dependency, four backend packages, the
+  `backend.add` calls in `packages/backend/src/index.ts`, `nav.take(
+'page:scaffolder')` in `Sidebar.tsx`, the `scaffolder:` config block,
+  `scaffolder` in `mcpActions.pluginSources`, the `catalog.locations` entry for
+  the example template, and `examples/template/`.
+  **The order was not arbitrary.**
+  `plugin-catalog-backend-module-scaffolder-entity-model` is what teaches the
+  catalog the `Template` kind, so the catalog location had to go **first** and
+  the Template entity be confirmed gone before that module was removed --
+  otherwise the catalog meets an entity of a kind it no longer understands.
+  Backstage hot-reloaded the config change and dropped it without a restart.
+  **The page appeared because of `app.packages: all`**, which discovers plugins
+  from `packages/app/package.json`; removing the dependency is what removes the
+  page, and there is no `extensions:` override that would have done it.
+  `yarn install` then failed with `EPERM` unlinking `isolated-vm` -- a scaffolder
+  native module the running backend still had loaded. Stop the app first.
+  `plugins/fleet/src/routes.ts` was **not** touched: the warning above is about
+  not deleting it during exactly this operation, and it holds the fleet plugin's
+  own route ref. The `backstage_plugin_scaffolder` database is left in place;
+  it is inert and dropping it buys nothing.
+  Verified: 13 plugins initialise where there were 14, no errors, catalog serves
+  97 Components and 0 Templates.
+
+- **Requirement 8 delivers eight of its ten measures, and the two missing ones
+  are a cost decision.** Lines added and deleted exist only behind
+  `/2.0/repositories/{ws}/{slug}/diffstat/{sha}` -- verified working, returning
+  real numbers -- at **one or more requests per commit**, so about 4,000 for this
+  estate against ~500 for a full sweep. Open decision 5 should be settled on that
+  number. **Filtering by Team has no data source at all**, not merely deferred.
+- **Participants and `closed_by` cost nothing, and looked unavailable.** The
+  pull request _list_ endpoint omits `participants` entirely by default; asking
+  for `values.participants.user.display_name` and friends returns them in full.
+  A first probe concluded they were unavailable because it used an invalid
+  nested selector and the single-PR endpoint returned none for a pull request
+  that genuinely had none. Same lesson as `merge_commit.hash`: the field is
+  there if the selector asks.
+- **Commits and pull requests identify people differently, and the register
+  bridges them.** A commit carries an address and an unreliable name; a pull
+  request carries a display name and an account id but **no address**, because
+  `/2.0/users/{account_id}` is 403. So `ProductivityService` resolves commits by
+  address and pull requests by normalised name onto one person. Measured: **332
+  of 332 pull request authors matched**, and all 29 commit addresses resolve.
+- **`RegisteredEngineer.email` is optional, because reviewing is not
+  committing.** `Saideep Narayan Avhad` reviews pull requests and has never
+  committed, so there is no address to key them on -- found by the pass
+  reporting them as unattributed rather than dropping them. Requiring an address
+  would have silently erased a real contributor; inventing one would later
+  attribute somebody else's commits to them.
+- **Anything the register cannot account for is named on the page.** An engineer
+  missing from the register looks exactly like one who did nothing, and only one
+  of those is worth a conversation. `ProductivityOverview.unattributed` carries
+  the addresses, the names and the commits they cover.
+- **Reporting periods are computed in the frontend and sent as dates.**
+  `plugins/fleet/src/periods.ts` turns "this quarter" into explicit
+  `since`/`until` in UTC. Two places deciding when a quarter starts is how a
+  dashboard and a report come to disagree; UTC because local midnight shifts
+  commits between buckets depending on who is looking.
+- **Productivity has no access control yet, deliberately.** Open question 6 is
+  unresolved and the portal runs `allow-all-policy`, so everyone who can read the
+  fleet can read everyone's figures. The endpoint checks only
+  `fleetRepositoryReadPermission`. This is per-person performance data; treat the
+  gap as blocking before anyone outside the team sees the page.
 
 ## Commands
 

@@ -14,6 +14,18 @@ const cell: CSSProperties = {
   verticalAlign: 'top',
 };
 
+/**
+ * Contributor names for one table cell.
+ *
+ * Truncated at three: measured across this estate the busiest repository has
+ * five in 90 days, so this rarely fires -- but one repository gaining a dozen
+ * must not stretch the row and push every other column off screen.
+ */
+function formatContributors(names: string[]): string {
+  const shown = names.slice(0, 3).join(' · ');
+  return names.length > 3 ? `${shown} +${names.length - 3}` : shown;
+}
+
 function useFleet() {
   const { fetch } = useApi(fetchApiRef);
 
@@ -21,7 +33,7 @@ function useFleet() {
     const response = await fetch('plugin://fleet/repositories');
     if (!response.ok) {
       throw new Error(
-        `Failed to load the fleet: ${response.status} ${response.statusText}`,
+        `Failed to load the health dashboard: ${response.status} ${response.statusText}`,
       );
     }
     return response.json();
@@ -56,7 +68,9 @@ export function FleetPage() {
 
   if (error) {
     return (
-      <Text color="secondary">Could not load the fleet. {error.message}</Text>
+      <Text color="secondary">
+        Could not load the health dashboard. {error.message}
+      </Text>
     );
   }
 
@@ -68,8 +82,6 @@ export function FleetPage() {
       </Text>
     );
   }
-
-  const { nominalWeight } = fleet;
 
   return (
     <Flex direction="column" gap="5">
@@ -88,7 +100,7 @@ export function FleetPage() {
             style={{
               borderCollapse: 'collapse',
               width: '100%',
-              minWidth: '44rem',
+              minWidth: '62rem',
             }}
           >
             <thead>
@@ -97,8 +109,9 @@ export function FleetPage() {
                   'Repository',
                   'Score',
                   'Band',
-                  'Measured',
                   'Last commit',
+                  'Created by',
+                  'Contributors',
                   'Owner?',
                   'Stack',
                 ].map(heading => (
@@ -154,16 +167,33 @@ export function FleetPage() {
                         : 'Not scored'}
                     </Text>
                   </td>
-                  <td style={{ ...cell, fontVariantNumeric: 'tabular-nums' }}>
+                  <td style={cell}>
                     <Text variant="body-small" color="secondary">
-                      {repository.score
-                        ? `${repository.score.availableWeight} / ${nominalWeight}`
+                      {timeAgo(repository.lastCommitAt) ?? 'Never'}
+                    </Text>
+                  </td>
+                  <td style={cell}>
+                    {/* Bitbucket records no creator, so this is the author of
+                        the earliest commit. Where history was imported that
+                        author may never have touched this repository, which is
+                        what the asterisk marks -- the repository page explains
+                        it in full. */}
+                    <Text variant="body-small" color="secondary">
+                      {repository.createdBy
+                        ? `${
+                            repository.createdBy.name ??
+                            repository.createdBy.email ??
+                            '—'
+                          }${repository.createdBy.importedHistory ? ' *' : ''}`
                         : '—'}
                     </Text>
                   </td>
                   <td style={cell}>
                     <Text variant="body-small" color="secondary">
-                      {timeAgo(repository.lastCommitAt) ?? 'Never'}
+                      {repository.contributors &&
+                      repository.contributors.length > 0
+                        ? formatContributors(repository.contributors)
+                        : '—'}
                     </Text>
                   </td>
                   <td style={cell}>

@@ -54,6 +54,18 @@ export interface ScorerOutcome {
   fraction: number;
   /** Short human-readable explanation, e.g. '237 commits in 90 days'. */
   detail: string;
+  /**
+   * What would close the gap, in the imperative.
+   *
+   * Belongs to the scorer rather than to whatever renders it, because the fix
+   * usually quotes a **configured** value -- the commit target, the discipline
+   * window -- and a frontend lookup table would duplicate config and drift
+   * silently the moment someone tuned it.
+   *
+   * Omit when the metric is at full marks, or when there is nothing useful to
+   * say: a dormant repository does not need to be told to commit more.
+   */
+  remediation?: string;
 }
 
 /**
@@ -70,7 +82,15 @@ export interface Scorer {
   score(context: ScorerContext): ScorerOutcome | null;
 }
 
-/** Per-metric result, as persisted and as served to the UI. */
+/**
+ * Per-metric result, as persisted and as served to the UI.
+ *
+ * Deliberately mirrored by `ScoreBreakdownEntry` in `fleet-common`, which is
+ * what the frontend sees. The two must be kept in step: the engine writes this
+ * one, the router serves that one, and a field added to only one of them
+ * compiles fine -- an object spread bypasses excess-property checking -- and
+ * then fails at the first property access.
+ */
 export interface ScoreBreakdownEntry {
   id: string;
   title: string;
@@ -78,6 +98,8 @@ export interface ScoreBreakdownEntry {
   /** Absent when the metric could not be measured. */
   points?: number;
   detail: string;
+  /** What would close the gap. Absent at full marks. */
+  remediation?: string;
   available: boolean;
 }
 

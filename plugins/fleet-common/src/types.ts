@@ -14,6 +14,12 @@ export interface ScoreBreakdownEntry {
   /** Absent when the metric could not be measured. */
   points?: number;
   detail: string;
+  /**
+   * What would close the gap. Absent at full marks, and absent on any score
+   * computed before remediation existed -- breakdowns are stored as JSON, so
+   * old rows simply lack the field until the next pass rewrites them.
+   */
+  remediation?: string;
   available: boolean;
 }
 
@@ -52,6 +58,29 @@ export interface BranchSummaryView {
   stale: number;
   /** Longest-abandoned first. Excludes the default branch. */
   stalest: Array<{ name: string; lastCommitAt?: string }>;
+  /**
+   * Work sitting on branches that never reached the default branch.
+   *
+   * Absent until the divergence pass has run -- which is not the same as
+   * nothing being stranded, and is why `measured` is reported alongside the
+   * counts. Branches that are the source of a merged pull request are excluded
+   * from the measurement entirely: 51% of merged pull requests here are
+   * squashed, and a squash leaves the original commits unreachable from the
+   * default branch for ever, so those branches would read as fully diverged
+   * when their work has actually shipped.
+   */
+  divergence?: {
+    /** Branches actually measured. */
+    measured: number;
+    /** Of those, how many hold unmerged work. */
+    diverged: number;
+    /** Commits stranded across them. */
+    commits: number;
+    /** A branch hit the one-page cap, so `commits` is a floor, not a total. */
+    capped: boolean;
+    /** Worst first. */
+    worst: Array<{ name: string; commits: number; capped: boolean }>;
+  };
 }
 
 /** Someone who might own a repository, with the evidence for it. */
@@ -79,6 +108,107 @@ export interface OwnershipProposalView {
   windowCommits: number;
   windowDays: number;
   resolvedAt: string;
+}
+
+/**
+ * How the commit trend is bucketed, chosen from the window's length.
+ *
+ * Adaptive because one rule cannot serve every period: a month bucketed
+ * monthly is a single bar, and 90 days bucketed daily is 90 of them. Reported
+ * in the payload so the chart can say which it is rather than leaving the
+ * reader to infer it from the bar count.
+ */
+export type TrendBucket = 'day' | 'week' | 'month';
+
+/** One bucket of an engineer's commit history. */
+export interface CommitTrendPoint {
+  /**
+   * ISO timestamp of the bucket's start.
+   *
+   * Named `start` rather than `month`: the bucket is a day, a week or a month
+   * depending on the window, and a field called `month` holding a Tuesday is
+   * the kind of thing that is believed until it matters.
+   */
+  start: string;
+  commits: number;
+}
+
+/** One repository an engineer committed to inside the window. */
+export interface EngineerRepository {
+  slug: string;
+  commits: number;
+}
+
+/**
+ * One engineer's figures, over whatever window was requested.
+ *
+ * Section 8 asks for ten measures. Eight are here. **Lines added and deleted
+ * are absent**: Bitbucket only exposes them through a per-commit diffstat
+ * endpoint, which is one request per commit -- about 4,000 for this estate,
+ * eight times a full sweep -- so whether to pay that is a product decision, not
+ * a technical one.
+ */
+export interface EngineerProductivity {
+  /** Stable slug from the identity register. */
+  key: string;
+  name: string;
+  /** Absent for someone who reviews but has never committed. */
+  email?: string;
+  commits: number;
+  /** Distinct repositories they committed to in the window. */
+  activeRepositories: number;
+  lastCommitAt?: string;
+  pullRequestsCreated: number;
+  /** Of the ones they created. */
+  pullRequestsMergedOfTheirOwn: number;
+  /** Pull requests they took part in, whoever wrote them. */
+  pullRequestsReviewed: number;
+  /** Of those, how many they approved. */
+  pullRequestsApproved: number;
+  /** Pull requests they pressed merge on, whoever wrote them. */
+  pullRequestsMerged: number;
+  /** Mean hours from opening to merge, across their own pull requests. */
+  averageMergeHours?: number;
+  /** Oldest bucket first. */
+  commitTrend: CommitTrendPoint[];
+  /**
+   * Repositories they committed to in the window, busiest first.
+   *
+   * Named rather than counted -- `activeRepositories` gives the number.
+   * Measured at 107 author-repository pairs across the whole estate, so this
+   * adds a few kilobytes rather than warranting its own endpoint.
+   */
+  repositories: EngineerRepository[];
+}
+
+/** The productivity dashboard payload. */
+export interface ProductivityOverview {
+  generatedAt: string;
+  window: {
+    since: string;
+    until?: string;
+    /** Present when scoped to one repository. */
+    repositorySlug?: string;
+  };
+  /** Busiest first. */
+  engineers: EngineerProductivity[];
+  /** How `commitTrend` is bucketed, derived from the window's length. */
+  trendBucket: TrendBucket;
+  /** Repository slugs with activity in the window, for the filter. */
+  repositories: string[];
+  /**
+   * Names and addresses the identity register could not account for.
+   *
+   * Surfaced rather than dropped: an unregistered engineer looks exactly like
+   * one who did nothing, and this is the difference between a gap in the
+   * register and a gap in someone's output.
+   */
+  unattributed: {
+    commitAddresses: string[];
+    pullRequestNames: string[];
+    /** Commits those addresses account for. */
+    commits: number;
+  };
 }
 
 /** What is currently running in one environment. */
@@ -170,6 +300,52 @@ export interface RepositoryFacts {
   branches?: BranchSummaryView;
   /** Absent until commit history has been ingested for the repository. */
   lifetime?: LifetimeSummaryView;
+  /**
+   * Who made the repository's earliest commit, and when.
+   *
+   * The only available answer to "who created this". Verified against the live
+   * API: the Bitbucket repository object's `owner` is the *workspace*
+   * (`{"type":"team","display_name":"DemandAI"}`), and there is no `creator`,
+   * `created_by` or `author` field on it at all.
+   *
+   * `importedHistory` is the honesty flag. On 5 of 96 repositories here the
+   * earliest commit predates the repository's own creation date -- history
+   * carried in from somewhere else -- so its author wrote the oldest *imported*
+   * commit and need never have touched this repository. Present on all 96.
+   */
+  createdBy?: {
+    /** From the identity register; absent when the address is unregistered. */
+    name?: string;
+    email?: string;
+    /** The earliest commit's timestamp, not the repository's creation date. */
+    firstCommitAt: string;
+    /** Bitbucket's own `created_on`, for comparison. */
+    repositoryCreatedAt?: string;
+    /** Earliest commit predates repository creation: the name is weak evidence. */
+    importedHistory: boolean;
+    /** The register says this address belongs to no person -- a bot or a tool. */
+    notAPerson: boolean;
+  };
+  /**
+   * Everyone who authored a commit on the default branch inside the activity
+   * window, busiest first.
+   *
+   * Named rather than counted: `activity.authors` already gives the number.
+   * Resolved through the identity register, so one human committing under two
+   * addresses is one contributor here -- the raw addresses would report several
+   * people. Bots and merge commits are excluded, matching every other activity
+   * figure on the card.
+   *
+   * Empty for the 48 of 96 repositories with no commits in the window; that is
+   * dormancy, reported separately, not an absence of contributors.
+   */
+  contributors?: Array<{
+    name?: string;
+    email?: string;
+    commits: number;
+    /** No identity-register entry. Named anyway, so nobody is silently erased. */
+    unregistered: boolean;
+  }>;
   pipelines?: PipelineSummaryView;
   reviews?: ReviewSummaryView;
   /**
@@ -200,6 +376,38 @@ export interface FleetRepositorySummary {
   techStack?: string[];
   lastCommitAt?: string;
   /**
+   * Who made the earliest commit -- the only available answer to who created
+   * the repository, since Bitbucket exposes no creator at all.
+   *
+   * Compact by design: the estate listing carries a name, and the evidence
+   * behind it -- the first commit date, the repository's own creation date,
+   * whether history was imported -- stays on the repository page.
+   */
+  createdBy?: {
+    name?: string;
+    email?: string;
+    /** Earliest commit predates the repository: weak evidence, flagged. */
+    importedHistory: boolean;
+  };
+  /**
+   * Everyone who committed inside the activity window, busiest first.
+   *
+   * Names only, no counts: the listing ranks and filters, it does not explain.
+   * Per-person commit totals are on the repository page. Measured across this
+   * estate at 1-5 people per active repository, so this adds a few hundred
+   * bytes to the response rather than a few hundred kilobytes.
+   */
+  contributors?: string[];
+  /**
+   * When this repository's most recent pipeline run started.
+   *
+   * The estate listing is ordered by the *day* of this, newest first, then by
+   * score within the day. Absent means the repository has never run a pipeline
+   * -- 47 of 96 here -- which is not the same as a run that failed, and sorts
+   * to the bottom rather than to the top.
+   */
+  lastPipelineRunAt?: string;
+  /**
    * Who commit history suggests owns this. **A proposal, not ownership** --
    * the catalog still records `group:default/unowned` for everything.
    */
@@ -220,6 +428,25 @@ export interface FleetRepositorySummary {
     mainline: number;
     windowDays: number;
   };
+  /**
+   * Problems, compacted for the estate listing.
+   *
+   * Deliberately not the whole breakdown: 96 repositories times eight metrics
+   * with their detail and remediation strings would add tens of kilobytes to
+   * the one endpoint the two-second page load depends on. The detail lives on
+   * the repository's own page; this carries only what a list needs to count,
+   * rank and filter.
+   *
+   * Absent until a scoring pass has covered the repository, which is not the
+   * same as having no problems.
+   */
+  problems?: {
+    /** Actionable gaps, worst first. */
+    top: Array<{ id: string; title: string; lost: number }>;
+    lostPoints: number;
+    /** Present only when nothing landed in the activity window. */
+    dormancy?: 'never-started' | 'abandoned';
+  };
   /** Absent until a scoring run has covered this repository. */
   score?: {
     total: number;
@@ -230,10 +457,19 @@ export interface FleetRepositorySummary {
 }
 
 /**
- * The whole estate, worst first.
+ * The whole estate, most recently built first, worst score leading each day.
  *
- * Ordered server-side so every client agrees on what "needs attention" means,
- * which is the question the requirements document opens with.
+ * Ordered server-side so every client agrees on the order. Repositories are
+ * grouped by the **UTC day** of their last pipeline run, newest day first, and
+ * ranked by score **ascending** within each day -- so today's builds lead, and
+ * the ones needing attention lead those. Day rather than timestamp because
+ * every one of the 49 timestamps in this estate is distinct, so ordering on the
+ * instant would make score a tiebreak that never fires.
+ *
+ * Repositories that have never run a pipeline sort last, worst first among
+ * themselves. Unscored ones sort last of all: with worst-first scoring, placing
+ * them at the top would read as a claim that they are the worst in the estate,
+ * when they are an absence of information.
  */
 export interface FleetOverview {
   generatedAt: string;

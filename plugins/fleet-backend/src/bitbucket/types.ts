@@ -122,6 +122,29 @@ export interface BitbucketPullRequest {
    * Verified populated on 10 of 10 merged pull requests sampled.
    */
   mergeCommitHash?: string;
+  /**
+   * Everyone involved, with identity.
+   *
+   * The list endpoint omits this entirely unless the field selector asks for
+   * it, which is why it first appeared unavailable. Asking costs no extra
+   * request.
+   */
+  participants?: BitbucketPullRequestParticipant[];
+  /** Who pressed merge. Not necessarily the author or an approver. */
+  closedByAccountId?: string;
+  closedByName?: string;
+}
+
+/** One person's involvement in a pull request. */
+export interface BitbucketPullRequestParticipant {
+  /** Stable across renames. No address: `/2.0/users/{id}` is 403 here. */
+  accountId?: string;
+  displayName?: string;
+  /** `REVIEWER` was asked to look; `PARTICIPANT` turned up. */
+  role: string;
+  approved: boolean;
+  /** Absent when they were assigned and never acted. */
+  participatedAt?: string;
 }
 
 /**
@@ -215,6 +238,22 @@ export interface BitbucketClient {
 
   /** Every branch in the repository, with its most recent commit. */
   listBranches(workspace: string, slug: string): Promise<BitbucketBranch[]>;
+
+  /**
+   * How many commits are on `branch` but not on `exclude`.
+   *
+   * Bitbucket exposes no ahead/behind on a branch object -- verified against
+   * the live API -- so this is `GET /commits/{branch}?exclude={exclude}`.
+   * That response carries no total either, so the count is capped at one page:
+   * `capped` true means "at least `commits`", and an exact figure would cost a
+   * request per hundred commits for a signal that reads the same either way.
+   */
+  countCommitsAhead(
+    workspace: string,
+    slug: string,
+    branch: string,
+    exclude: string,
+  ): Promise<{ commits: number; capped: boolean }>;
 
   /**
    * Recent deployments, newest first.

@@ -8,3 +8,11 @@ import { createRouteRef } from '@backstage/frontend-plugin-api';
  * still routes and renders, but never appears in the sidebar.
  */
 export const fleetRouteRef = createRouteRef();
+
+/**
+ * Route for the engineering productivity dashboard.
+ *
+ * Same rule as above: without a route ref, a title and an icon, `AppNav` drops
+ * the page from the sidebar silently.
+ */
+export const productivityRouteRef = createRouteRef();

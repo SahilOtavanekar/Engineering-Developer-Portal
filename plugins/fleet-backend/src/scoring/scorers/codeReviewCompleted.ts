@@ -23,6 +23,9 @@ export function codeReviewCompletedScorer(): Scorer {
       const { approved, merged } = reviews;
       return {
         fraction: approved / merged,
+        remediation: `${
+          merged - approved
+        } of ${merged} merged pull requests carried no approval. Note that approval is a weak signal here -- the median time to first approval across this estate is 12 seconds.`,
         detail: `${approved} of ${merged} merged PR${
           merged === 1 ? '' : 's'
         } approved in ${windowDays} days`,

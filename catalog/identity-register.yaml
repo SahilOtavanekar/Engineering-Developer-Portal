@@ -1,0 +1,134 @@
+# Who the commit authors actually are.
+#
+# Bitbucket gives an email per commit and nothing more, and an email is not a
+# person: this estate has 29 distinct addresses for roughly 22 humans. Six
+# people commit under more than one address, so aggregating raw addresses
+# would report each of them as several engineers -- and productivity figures
+# that split one person in two are worse than no figures.
+#
+# Addresses are compared NORMALISED: lowercased, then reduced to the
+# characters legal in an address. That alone merges Shalvi Mishra, whose git
+# config wrapped her address in smart quotes (U+201C/U+201D) for 259 of her
+# commits -- no alias entry is needed for that case.
+#
+# Read through fleet.identity.register in app-config.yaml. Edit and restart;
+# no deploy, no migration. Until Entra ID supplies a real directory, this file
+# IS the directory.
+
+# Names are the human's name, not the most-used git config. Generating this
+# file by "most commits wins" produced `shekhar.tanwar`, `Mann140` and
+# `Pradnya gomase`, because a login or a typo can outnumber the real name --
+# Shekhar's login form has 127 commits against 89 for his name. Fixed by hand;
+# keep them that way.
+people:
+  brijesh-gupta:
+    name: Brijesh Gupta
+    email: brijesh.gupta@demandai.co
+    # 780 commits
+  sanjay-kumar:
+    name: Sanjay Kumar
+    email: sanjay.kumar@demandai.co
+    # 483 commits
+  subham-jain:
+    name: Subham Jain
+    email: subham.jain@demandai.co
+    # 379 commits
+  prashant-chaudhari:
+    name: Prashant Chaudhari
+    email: prashant.chaudhari@demandai.co
+    aliases:
+      - prashantchaudhari@demandai.co
+    # 350 commits
+  avinash-more:
+    name: Avinash More
+    email: avinash.more@demandai.co
+    # 347 commits
+  shalvi-mishra:
+    name: Shalvi Mishra
+    email: shalvi.mishra@demandai.co
+    # 309 commits
+  mangesh-gaikwad:
+    name: Mangesh Gaikwad
+    email: mangesh.gaikwad@demandai.co
+    # 218 commits
+  shekhar-tanwar:
+    name: Shekhar Tanwar
+    email: shekhar.tanwar@demandai.co
+    # 216 commits
+  mohit-sharma:
+    name: Mohit Sharma
+    email: mohit.sharma@demandai.co
+    aliases:
+      - mohit.sharma@consiliorit.com
+    # 139 commits
+  gurudutt:
+    name: Gurudutt
+    email: gurudutt@demandai.co
+    # 134 commits
+  makarand-prabhu:
+    name: Makarand Prabhu
+    email: makarand.prabhu@demandai.co
+    aliases:
+      - makarand.r.prabhu@gmail.com
+      - makarandprabhu@users.noreply.bitbucket.org
+    # 118 commits
+  vaibhav-jain:
+    name: Vaibhav Jain
+    email: vaibhav.jain@demandai.co
+    # 110 commits
+  pratik-nimbalkar:
+    name: Pratik Nimbalkar
+    email: pratik.nimbalkar@demandai.co
+    # 106 commits
+  vivek-mangukiya:
+    name: Vivek Mangukiya
+    email: vivek.mangukiya@demandai.co
+    # 102 commits
+  suvodip-mondal:
+    name: Suvodip Mondal
+    email: suvodip.mondal@demandai.co
+    # 42 commits
+  ameyk:
+    name: AmeyK
+    email: amey.sunilkhurdekar@demandai.co
+    # 35 commits
+  bitbucket-pipeline:
+    name: Bitbucket Pipeline
+    email: 7gxtj5eqqtgo8iu1yo8il0dejdf5ua@bots.bitbucket.org
+    # 25 commits
+  sreenivas-dasam:
+    name: Sreenivas Dasam
+    email: sreenivas.dasam@demandai.co
+    # 10 commits
+  mann-bhandari:
+    name: Mann Bhandari
+    email: mann.bhandari@demandai.co
+    aliases:
+      - bhandarimann633@gmail.com
+    # 9 commits
+  pradnya-gomase:
+    name: Pradnya Gomase
+    email: pradnya.gomase@demandai.co
+    aliases:
+      - pradnya.gomase@demand.ai
+    # 4 commits
+  shubham-sharma:
+    name: Shubham Sharma
+    email: shubham.sharma@demandai.co
+    # 1 commits
+  sunil-chandrabhan-kadam:
+    name: Sunil Chandrabhan Kadam
+    email: sunil.chandrabhankadam@demandai.co
+    # 1 commits
+
+  # Reviews pull requests and has never committed, so there is no address to
+  # key them on. Found by the productivity pass reporting them as
+  # unattributed rather than dropping them. Add an email if they ever commit.
+  saideep-narayan-avhad:
+    name: Saideep Narayan Avhad
+
+# Addresses that are not people. Counted nowhere, rather than left to appear
+# in a league table of engineers.
+notPeople:
+  # An AI coding agent.
+  - noreply@anthropic.com

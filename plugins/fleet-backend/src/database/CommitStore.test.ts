@@ -203,6 +203,59 @@ describe('CommitStore', () => {
     await expect(commits.latestCommitAt(repositoryId)).resolves.toBeNull();
   });
 
+  describe('firstCommit', () => {
+    it('returns the earliest commit and who wrote it', async () => {
+      // The only available answer to "who created this repository": Bitbucket's
+      // repository object has no creator field, only the workspace as `owner`.
+      await commits.insertMany(repositoryId, [
+        commit({
+          hash: 'later',
+          committedAt: '2025-09-01T10:00:00.000Z',
+          authorEmail: 'alan@demandai.co',
+        }),
+        commit({
+          hash: 'earliest',
+          committedAt: '2025-08-18T10:00:00.000Z',
+          authorEmail: 'ada@demandai.co',
+        }),
+      ]);
+
+      const first = await commits.firstCommit(repositoryId);
+
+      expect(first?.email).toBe('ada@demandai.co');
+      expect(first?.committedAt).toEqual(new Date('2025-08-18T10:00:00.000Z'));
+    });
+
+    it('is undefined for a repository with no commits', async () => {
+      // Not an error and not a zero date: nobody created it as far as the
+      // commit history is concerned.
+      await expect(commits.firstCommit(repositoryId)).resolves.toBeUndefined();
+    });
+
+    it('ignores merge commits', async () => {
+      // Consistent with every other figure here, and a repository's first
+      // commit is never a merge -- a merge sorting first would mean the real
+      // first commit was missed.
+      await commits.insertMany(repositoryId, [
+        commit({
+          hash: 'merge',
+          committedAt: '2025-08-01T10:00:00.000Z',
+          authorEmail: 'bot@demandai.co',
+          parentCount: 2,
+        }),
+        commit({
+          hash: 'real',
+          committedAt: '2025-08-18T10:00:00.000Z',
+          authorEmail: 'ada@demandai.co',
+        }),
+      ]);
+
+      const first = await commits.firstCommit(repositoryId);
+
+      expect(first?.email).toBe('ada@demandai.co');
+    });
+  });
+
   describe('activitySince', () => {
     it('counts commits and distinct authors in the window', async () => {
       await commits.insertMany(repositoryId, [

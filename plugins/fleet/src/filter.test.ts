@@ -1,9 +1,9 @@
 import type { FleetRepositorySummary } from '@internal/backstage-plugin-fleet-common';
 import {
   bandCounts,
-  directCommitCount,
+  dormancyCounts,
   filterRepositories,
-  technologyCounts,
+  problemCounts,
 } from './filter';
 
 function repo(
@@ -70,27 +70,6 @@ describe('filterRepositories', () => {
     });
   });
 
-  describe('by technology', () => {
-    it('narrows to repositories carrying that label', () => {
-      const docker = filterRepositories(estate, { technology: 'Docker' });
-
-      expect(docker.map(r => r.slug)).toEqual(['oxp-backend', 'crm']);
-    });
-
-    it('excludes repositories with no derived stack', () => {
-      expect(
-        filterRepositories(estate, { technology: 'Docker' }).some(
-          r => r.slug === 'brand-new',
-        ),
-      ).toBe(false);
-    });
-
-    it('matches exactly, not by substring', () => {
-      // 'Node' must not match 'Node.js' -- the labels are a closed set.
-      expect(filterRepositories(estate, { technology: 'Node' })).toEqual([]);
-    });
-  });
-
   describe('by text', () => {
     it('matches part of a slug', () => {
       expect(
@@ -116,119 +95,143 @@ describe('filterRepositories', () => {
   it('applies every filter together', () => {
     const result = filterRepositories(estate, {
       band: 'critical',
-      technology: 'Python',
+      query: 'idle',
     });
 
     expect(result.map(r => r.slug)).toEqual(['idle-service']);
   });
 
   it('preserves the order it was given, which is worst-first', () => {
-    expect(filterRepositories(estate, { technology: 'Docker' })).toEqual([
-      estate[0],
-      estate[1],
+    expect(filterRepositories(estate, { band: 'critical' })).toEqual([
+      estate[2],
+      estate[3],
     ]);
   });
 });
 
-describe('by direct commits', () => {
-  const policy = (total: number, merges = 0) => ({
-    total,
-    merges,
-    mainline: 20,
-    windowDays: 30,
-  });
-  const withPolicy: FleetRepositorySummary[] = [
-    repo('bypassing', { directCommits: policy(8, 2) }),
-    repo('clean', { directCommits: policy(0) }),
-    repo('unclassified'),
-  ];
-
-  it('keeps only repositories with a direct commit', () => {
-    const kept = filterRepositories(withPolicy, { directCommitsOnly: true });
-
-    expect(kept.map(r => r.slug)).toEqual(['bypassing']);
-  });
-
-  it('excludes a repository the pass has not classified', () => {
-    // Not knowing is not the same as being clean; showing it under a filter
-    // for policy breaches would accuse it of something unmeasured.
-    const kept = filterRepositories(withPolicy, { directCommitsOnly: true });
-
-    expect(kept.map(r => r.slug)).not.toContain('unclassified');
-  });
-
-  it('leaves everything alone when the filter is off', () => {
-    expect(filterRepositories(withPolicy, {})).toHaveLength(3);
-  });
-
-  it('combines with the other filters rather than replacing them', () => {
-    const mixed = [
-      scored('bad-and-bypassing', 20, 'critical'),
-      repo('bypassing-but-healthy', {
-        directCommits: policy(3),
-        score: {
-          total: 90,
-          band: 'healthy',
-          availableWeight: 95,
-          computedAt: '2026-08-26T12:00:00.000Z',
-        },
-      }),
-    ];
-    mixed[0].directCommits = policy(5);
-
-    const kept = filterRepositories(mixed, {
-      directCommitsOnly: true,
-      band: 'critical',
+describe('problems across the estate', () => {
+  const withProblems = (
+    slug: string,
+    top: Array<{ id: string; title: string; lost: number }>,
+    dormancy?: 'never-started' | 'abandoned',
+    band = 'critical',
+  ) =>
+    repo(slug, {
+      problems: {
+        top,
+        lostPoints: top.reduce((a, p) => a + p.lost, 0),
+        ...(dormancy ? { dormancy } : {}),
+      },
+      score: {
+        total: 30,
+        band,
+        availableWeight: 100,
+        computedAt: '2026-08-27T08:00:00.000Z',
+      },
     });
 
-    expect(kept.map(r => r.slug)).toEqual(['bad-and-bypassing']);
+  const readme = {
+    id: 'readme-available',
+    title: 'README available',
+    lost: 10,
+  };
+  const pipeline = {
+    id: 'pipeline-passing',
+    title: 'Pipeline passing',
+    lost: 16,
+  };
+
+  const problemEstate = [
+    withProblems('a', [readme, pipeline]),
+    withProblems('b', [readme]),
+    withProblems('c', [pipeline]),
+    withProblems('d', [], 'never-started'),
+    repo('unscored'),
+  ];
+
+  describe('problemCounts', () => {
+    it('counts repositories, not points', () => {
+      // A lead fixing a class of problem wants to know how many places to
+      // visit, which is why README on 29 repositories is the useful number.
+      const counts = problemCounts(problemEstate);
+
+      expect(counts.map(c => [c.id, c.count])).toEqual([
+        ['pipeline-passing', 2],
+        ['readme-available', 2],
+      ]);
+    });
+
+    it('breaks a tie on points forfeited', () => {
+      // Both sit on two repositories, so the more expensive one leads: pipeline
+      // is costing 32 points against README's 20.
+      const counts = problemCounts(problemEstate);
+
+      expect(counts[0].id).toBe('pipeline-passing');
+      expect(counts[0].lost).toBe(32);
+      expect(counts[1].lost).toBe(20);
+    });
+
+    it('is empty before anything has been scored', () => {
+      expect(problemCounts([repo('a'), repo('b')])).toEqual([]);
+    });
   });
-});
 
-describe('directCommitCount', () => {
-  it('counts repositories, not commits', () => {
-    // The chip label is a repository count; using the commit total would read
-    // as "94 repositories" on an estate of 95.
-    const count = directCommitCount([
-      repo('a', {
-        directCommits: { total: 84, merges: 4, mainline: 115, windowDays: 30 },
-      }),
-      repo('b', {
-        directCommits: { total: 1, merges: 0, mainline: 2, windowDays: 30 },
-      }),
-      repo('c', {
-        directCommits: { total: 0, merges: 0, mainline: 9, windowDays: 30 },
-      }),
-      repo('d'),
-    ]);
+  describe('filtering by problem', () => {
+    it('keeps only repositories carrying it', () => {
+      const kept = filterRepositories(problemEstate, {
+        problem: 'readme-available',
+      });
 
-    expect(count).toBe(2);
+      expect(kept.map(r => r.slug)).toEqual(['a', 'b']);
+    });
+
+    it('excludes a repository with no problems payload at all', () => {
+      const kept = filterRepositories(problemEstate, {
+        problem: 'readme-available',
+      });
+
+      expect(kept.map(r => r.slug)).not.toContain('unscored');
+    });
+
+    it('combines with the band filter', () => {
+      const mixed = [
+        withProblems('bad', [readme], undefined, 'critical'),
+        withProblems('ok', [readme], undefined, 'healthy'),
+      ];
+
+      const kept = filterRepositories(mixed, {
+        problem: 'readme-available',
+        band: 'critical',
+      });
+
+      expect(kept.map(r => r.slug)).toEqual(['bad']);
+    });
   });
 
-  it('is zero before anything has been classified', () => {
-    expect(directCommitCount([repo('a'), repo('b')])).toBe(0);
-  });
-});
+  describe('dormancyCounts', () => {
+    it('separates the three populations hiding behind one band', () => {
+      // 42 never developed, 6 abandoned and 11 underperforming all read as
+      // "below healthy" otherwise, and only 17 of them are worth a
+      // conversation.
+      const counts = dormancyCounts([
+        ...problemEstate,
+        withProblems('old', [], 'abandoned'),
+      ]);
 
-describe('technologyCounts', () => {
-  it('counts each label across the estate', () => {
-    expect(technologyCounts(estate)).toEqual([
-      { label: 'Docker', count: 2 },
-      { label: 'Python', count: 2 },
-      { label: 'AWS SAM', count: 1 },
-      { label: 'Node.js', count: 1 },
-      { label: 'React', count: 1 },
-    ]);
-  });
+      expect(counts).toEqual({
+        neverStarted: 1,
+        abandoned: 1,
+        underperforming: 3,
+      });
+    });
 
-  it('orders by frequency, then alphabetically for ties', () => {
-    const labels = technologyCounts(estate).map(t => t.label);
+    it('does not count a healthy repository as underperforming', () => {
+      const counts = dormancyCounts([
+        withProblems('fine', [readme], undefined, 'healthy'),
+      ]);
 
-    expect(labels.slice(0, 2)).toEqual(['Docker', 'Python']);
-  });
-
-  it('returns nothing when no repository has a derived stack', () => {
-    expect(technologyCounts([repo('a'), repo('b')])).toEqual([]);
+      expect(counts.underperforming).toBe(0);
+    });
   });
 });
 
@@ -243,12 +246,12 @@ describe('bandCounts', () => {
   });
 
   it('reflects a filtered subset rather than the whole estate', () => {
-    const docker = filterRepositories(estate, { technology: 'Docker' });
+    const critical = filterRepositories(estate, { band: 'critical' });
 
-    expect(bandCounts(docker)).toEqual({
-      critical: 0,
-      needsAttention: 1,
-      healthy: 1,
+    expect(bandCounts(critical)).toEqual({
+      critical: 2,
+      needsAttention: 0,
+      healthy: 0,
       unscored: 0,
     });
   });

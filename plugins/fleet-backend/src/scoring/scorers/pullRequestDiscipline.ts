@@ -17,8 +17,19 @@ export interface PullRequestDisciplineOptions {
 export const DEFAULT_DISCIPLINE_WINDOW_DAYS = 30;
 
 /**
- * What share of the work landing on the default branch went through a pull
- * request.
+ * How work reaches the default branch: through a branch and a pull request, or
+ * straight onto main.
+ *
+ * **Squash-safe, and that matters more than it looks.** 178 of this estate's
+ * 346 merged pull requests (51%) leave no merge commit -- squashed or
+ * fast-forwarded -- and a squash rewrites the branch's commits into one, so
+ * the originals are unreachable from main and never ingested. Counting
+ * `merged-in` commits against `direct` ones would therefore report every
+ * squash-merging team as pushing straight to main, penalising the better
+ * practice. This scores `viaPullRequest` instead, which `BranchPolicyService`
+ * derives by matching the pull request's merge hash: 91 of 219 mainline
+ * commits attributed to a pull request here have a single parent, and every
+ * one of those is a squash that a parent-count rule would have missed.
  *
  * Graded rather than pass/fail: one direct commit among fifty is a slip, and
  * eleven out of eleven is a repository with no review at all. Scoring both zero
@@ -38,7 +49,7 @@ export function pullRequestDisciplineScorer(
 
   return {
     id: 'pull-request-discipline',
-    title: 'Changes land through pull requests',
+    title: 'Main branch health',
     score: ({ branchPolicy }) => {
       if (!branchPolicy) return null;
 
@@ -58,13 +69,34 @@ export function pullRequestDisciplineScorer(
         };
       }
 
-      const merges = directMerge > 0 ? `, ${directMerge} of them merges` : '';
+      // The three ways work reaches main, stated separately. Merged-without-a-
+      // pull-request and written-straight-on-main are different problems with
+      // different fixes, and reporting one total for both hides which you have.
+      const split = [
+        `${viaPullRequest} through a pull request`,
+        directMerge > 0
+          ? `${directMerge} merged from a branch with no pull request`
+          : undefined,
+        direct > 0 ? `${direct} written directly on ${branch}` : undefined,
+      ]
+        .filter(Boolean)
+        .join(', ');
+
+      // Hoisted rather than inlined: concatenating a conditional expression
+      // onto a string trips `prefer-template`, where two template literals
+      // joined with `+` do not.
+      const mergeNote =
+        directMerge > 0
+          ? ` ${directMerge} of those were merges with no pull request behind them, usually a local merge pushed straight up.`
+          : '';
       return {
         fraction,
+        remediation:
+          `Land changes on ${branch} through a pull request. ` +
+          `${directTotal} of the last ${mainline} mainline commits did not.${mergeNote}`,
         detail:
-          `${directTotal} direct commit${directTotal === 1 ? '' : 's'} to ` +
-          `${branch} in ${windowDays} days${merges} — ` +
-          `${viaPullRequest} of ${mainline} came through a pull request`,
+          `${mainline} commit${mainline === 1 ? '' : 's'} reached ${branch} ` +
+          `in ${windowDays} days: ${split}`,
       };
     },
   };

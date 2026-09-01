@@ -32,6 +32,8 @@ export function ownerAssignedScorer(): Scorer {
         return {
           fraction: 0,
           detail: 'No owner identified',
+          remediation:
+            'Add this repository to the ownership register (catalog/ownership-register.yaml). No deploy needed, only a restart.',
         };
       }
 
@@ -40,6 +42,7 @@ export function ownerAssignedScorer(): Scorer {
         return {
           fraction: 0,
           detail: `${who} is a likely owner, derived from ${proposed.source}, but nobody has confirmed it`,
+          remediation: `Confirm ${who} in the ownership register, or name whoever is actually accountable. A derived owner earns nothing: the two inferences behind it were only 76% and 78% accurate.`,
         };
       }
 

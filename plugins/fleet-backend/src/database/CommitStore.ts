@@ -269,6 +269,29 @@ export class CommitStore {
     return bySlug;
   }
 
+  /**
+   * Lifetime commit counts for a workspace, keyed by repository id.
+   *
+   * One query for the estate. Dormancy classification needs it -- a repository
+   * with 276 commits and none recently is abandoned, one with four was never
+   * developed -- and the overview endpoint judges all 96 at once, so a
+   * per-repository lookup would be an N+1 in the endpoint the two-second page
+   * load depends on.
+   */
+  async lifetimeCommitsForWorkspace(
+    workspace: string,
+  ): Promise<Map<number, number>> {
+    const rows = (await this.db('commit')
+      .join('repository', 'repository.id', 'commit.repository_id')
+      .where('repository.workspace', workspace)
+      .where('repository.is_live', true)
+      .groupBy('commit.repository_id')
+      .select('commit.repository_id as id')
+      .count({ n: '*' })) as Array<{ id: number; n: string | number }>;
+
+    return new Map(rows.map(row => [Number(row.id), Number(row.n)]));
+  }
+
   /** Newest commit timestamp, or null for a repository with no commits. */
   async latestCommitAt(repositoryId: number): Promise<Date | null> {
     const row = await this.db('commit')
@@ -393,6 +416,161 @@ export class CommitStore {
    *
    * Every scored metric windows explicitly, so nothing here feeds a score.
    */
+  /**
+   * The earliest commit on record, and who authored it.
+   *
+   * The only available answer to "who created this repository". Verified
+   * against the live API on 2026-09-01: the Bitbucket repository object exposes
+   * `owner`, but for a workspace repository that is the workspace itself
+   * (`{"type":"team","display_name":"DemandAI"}`) -- there is no `creator`,
+   * `created_by` or `author` field anywhere on it.
+   *
+   * Merges are excluded, as everywhere else here; a repository's first commit
+   * is never one. Bots are **not** excluded: if a bot really did push first,
+   * that is the fact, and the caller can say so rather than skipping to the
+   * first human and presenting them as the creator.
+   */
+  async firstCommit(repositoryId: number): Promise<
+    | {
+        email?: string;
+        name?: string;
+        committedAt: Date;
+      }
+    | undefined
+  > {
+    const row = (await this.db('commit')
+      .where({ repository_id: repositoryId })
+      .where('parent_count', '<', 2)
+      .orderBy('committed_at', 'asc')
+      .orderBy('id', 'asc')
+      .first('author_email', 'author_name', 'committed_at')) as
+      | {
+          author_email: string | null;
+          author_name: string | null;
+          committed_at: Date | string;
+        }
+      | undefined;
+
+    if (!row) return undefined;
+    return {
+      email: row.author_email ?? undefined,
+      name: row.author_name ?? undefined,
+      committedAt: new Date(row.committed_at),
+    };
+  }
+
+  /**
+   * The earliest commit per repository, for the whole estate.
+   *
+   * Batched because the fleet overview shows a creator on every row, and a
+   * per-repository lookup would be an N+1 in the one endpoint the two-second
+   * page load depends on.
+   *
+   * Joined against a grouped `min(committed_at)` rather than `distinct on`,
+   * which is Postgres-only -- the unit tests run this against SQLite. Two
+   * commits sharing the earliest timestamp would both come back; the first
+   * wins, deterministically, because the query is ordered by id.
+   */
+  async firstCommitForRepositories(
+    repositoryIds: number[],
+  ): Promise<
+    Map<number, { email?: string; name?: string; committedAt: Date }>
+  > {
+    if (repositoryIds.length === 0) return new Map();
+
+    const earliest = this.db('commit')
+      .whereIn('repository_id', repositoryIds)
+      .where('parent_count', '<', 2)
+      .groupBy('repository_id')
+      .select('repository_id')
+      .min({ first_at: 'committed_at' })
+      .as('f');
+
+    const rows = (await this.db({ c: 'commit' })
+      .join(earliest, function joinOnEarliest() {
+        this.on('f.repository_id', '=', 'c.repository_id').andOn(
+          'f.first_at',
+          '=',
+          'c.committed_at',
+        );
+      })
+      .where('c.parent_count', '<', 2)
+      .orderBy('c.id', 'asc')
+      .select(
+        'c.repository_id',
+        'c.author_email',
+        'c.author_name',
+        'c.committed_at',
+      )) as Array<{
+      repository_id: number;
+      author_email: string | null;
+      author_name: string | null;
+      committed_at: Date | string | number;
+    }>;
+
+    const first = new Map<
+      number,
+      { email?: string; name?: string; committedAt: Date }
+    >();
+    for (const row of rows) {
+      const id = Number(row.repository_id);
+      if (first.has(id)) continue;
+      first.set(id, {
+        email: row.author_email ?? undefined,
+        name: row.author_name ?? undefined,
+        committedAt: new Date(row.committed_at),
+      });
+    }
+    return first;
+  }
+
+  /**
+   * Commit authors per repository inside a window, for the whole estate.
+   *
+   * One grouped query rather than `topAuthorsSince` per repository. Display
+   * names are deliberately not fetched: the caller resolves addresses through
+   * the identity register, which is the thing that decides who someone is --
+   * a commit's `author_name` is whatever the committer put in their git config
+   * and is unreliable enough that the register exists to override it.
+   */
+  async contributorsForRepositories(
+    repositoryIds: number[],
+    since: Date,
+  ): Promise<Map<number, Array<{ email: string; commits: number }>>> {
+    if (repositoryIds.length === 0) return new Map();
+
+    const rows = (await this.db('commit')
+      .whereIn('repository_id', repositoryIds)
+      .where('committed_at', '>=', since)
+      .where('parent_count', '<', 2)
+      .whereNotNull('author_email')
+      .whereNot('author_email', 'like', BOT_EMAIL_PATTERN)
+      .groupBy('repository_id', 'author_email')
+      .select('repository_id', 'author_email')
+      .count({ commits: '*' })) as Array<{
+      repository_id: number;
+      author_email: string;
+      commits: number | string;
+    }>;
+
+    const byRepository = new Map<
+      number,
+      Array<{ email: string; commits: number }>
+    >();
+    for (const row of rows) {
+      const id = Number(row.repository_id);
+      const list = byRepository.get(id) ?? [];
+      list.push({ email: row.author_email, commits: Number(row.commits) });
+      byRepository.set(id, list);
+    }
+    for (const list of byRepository.values()) {
+      list.sort(
+        (a, b) => b.commits - a.commits || a.email.localeCompare(b.email),
+      );
+    }
+    return byRepository;
+  }
+
   async lifetime(repositoryId: number): Promise<{
     commits: number;
     authors: number;

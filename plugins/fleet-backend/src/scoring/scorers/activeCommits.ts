@@ -30,6 +30,13 @@ export function activeCommitsScorer(
             : `${commits} commit${
                 commits === 1 ? '' : 's'
               } in ${windowDays} days`,
+        // Nothing useful to say to a repository with no commits at all: it is
+        // either a scaffold or abandoned, and "commit more" answers neither.
+        // The card reports that as dormancy instead.
+        remediation:
+          commits === 0
+            ? undefined
+            : `${target} commits in ${windowDays} days earns full marks; this has ${commits}.`,
       };
     },
   };
