@@ -1,5 +1,7 @@
 import { createFrontendModule } from '@backstage/frontend-plugin-api';
 import { userSettingsTranslations } from './userSettings';
+import { catalogTranslations } from './catalog';
+import { catalogReactTranslations } from './catalogReact';
 
 /**
  * String overrides for third-party plugins.
@@ -10,5 +12,9 @@ import { userSettingsTranslations } from './userSettings';
  */
 export const i18nModule = createFrontendModule({
   pluginId: 'app',
-  extensions: [userSettingsTranslations],
+  extensions: [
+    userSettingsTranslations,
+    catalogTranslations,
+    catalogReactTranslations,
+  ],
 });

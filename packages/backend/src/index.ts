@@ -48,14 +48,12 @@ backend.add(import('@backstage/plugin-search-backend-module-pg'));
 // search collators
 backend.add(import('@backstage/plugin-search-backend-module-catalog'));
 
-// kubernetes plugin
-backend.add(import('@backstage/plugin-kubernetes-backend'));
-
 // user settings plugin
 backend.add(import('@backstage/plugin-user-settings-backend'));
 
-// notifications and signals plugins
-backend.add(import('@backstage/plugin-notifications-backend'));
+// signals -- the websocket transport. Kept although notifications are gone:
+// `plugin-app-module-user-settings` builds the server-backed `storageApiRef`
+// out of `signalApiRef`, so removing signals breaks settings persistence.
 backend.add(import('@backstage/plugin-signals-backend'));
 
 // mcp actions plugin

@@ -14,14 +14,31 @@ app:
     # Relation cards with no data source, disabled rather than left empty.
     #
     # Measured against the live catalog: `dependsOn`/`dependencyOf` is ZERO
-    # across the whole estate, and the only `hasPart` relations are the two
-    # System->Component links from examples/entities.yaml -- no Component has a
-    # subcomponent. All 35 manifests were checked and none references another
-    # repository, so section 5 (relationship mapping) has no data source; these
-    # three cards can never fill, and an always-empty card teaches people that
-    # the page is broken.
+    # across the whole estate, and no Component has a subcomponent. The only
+    # `hasPart` relations are the System->Component links the Bitbucket entity
+    # provider emits from `project_key`. All 35 manifests were checked and none
+    # references another repository, so section 5 (relationship mapping) has no
+    # data source; these three cards can never fill, and an always-empty card
+    # teaches people that the page is broken.
     #
     # Safe to disable, unlike a page: nothing resolves a route ref to a card.
+    # Catalog filters with nothing to filter on.
+    #
+    # Namespace: all 124 entities are in `default` and always will be --
+    # `entityName.ts` hardcodes it, and namespaces exist to separate tenants
+    # with colliding entity names, which a single workspace does not have. The
+    # dropdown offered one option that selected everything.
+    #
+    # Processing status: zero entities have processing errors and zero are
+    # orphaned. Removed at the product owner's direction; it is a diagnostic
+    # rather than a data view, so re-enable it when chasing a processing
+    # failure -- both the migration failures and the orphaned
+    # meeting-room-booking entities would have shown up here.
+    #
+    # Safe to disable, unlike a page: nothing resolves a route ref to a filter.
+    - catalog-filter:catalog/namespace: false
+    - catalog-filter:catalog/processing-status: false
+
     # Replaced by entity-card:fleet/about. The stock card's field grid uses
     # viewport breakpoints ({1, sm 2, lg 3}) while the card sits in the entity
     # layout's narrow 1fr sidebar, so on a wide screen it rendered three columns
@@ -70,24 +87,29 @@ backend:
       - auth
       - catalog
 
-integrations:
-  github:
-    - host: github.com
-      # This is a Personal Access Token or PAT from GitHub. You can find out how to generate this token, and more information
-      # about setting up the GitHub integration here: https://backstage.io/docs/integrations/github/locations#configuration
-      token: ${GITHUB_TOKEN}
-    ### Example for how to add your GitHub Enterprise instance using the API:
-    # - host: ghe.example.net
-    #   apiBaseUrl: https://ghe.example.net/api/v3
-    #   token: ${GHE_TOKEN}
+# `integrations:` is NOT declared here, because the only one this portal needs
+# carries a credential and so cannot be committed.
+#
+#   integrations.bitbucketCloud is REQUIRED. It is the portal's single most
+#   load-bearing piece of config: `fleetPlugin` reads it through
+#   `ScmIntegrations.fromConfig(config).bitbucketCloud.byHost('bitbucket.org')`
+#   and refuses to start the ingestion passes without it, and it is what makes
+#   an entity's "View Source" link resolve. Set it in `app-config.local.yaml`:
+#
+#     integrations:
+#       bitbucketCloud:
+#         - username: <bitbucket username, NOT an email>
+#           appPassword: <app password>
+#
+# `integrations.github` was removed on 2026-09-02: nothing consumed it. GitHub
+# sign-in reads `auth.providers.github` below, which is a different key, and no
+# catalog location points at github.com. A `${GITHUB_TOKEN}` placeholder that
+# feeds nothing reads as a required credential and is not one.
 
-proxy:
-  ### Example for how to add a proxy endpoint for the frontend.
-  ### A typical reason to do this is to handle HTTPS and CORS for internal services.
-  # endpoints:
-  #   '/test':
-  #     target: 'https://example.com'
-  #     changeOrigin: true
+# `proxy:` is deliberately absent. `plugin-proxy-backend` is still loaded and
+# needs no config to start; add a `proxy.endpoints` block here when something
+# actually needs proxying. The key on its own parsed as null and configured
+# nothing.
 
 auth:
   environment: development
@@ -122,11 +144,12 @@ catalog:
   rules:
     - allow: [Component, System, API, Resource, Location]
   locations:
-    # Local example data, file locations are relative to the backend process, typically `packages/backend`
-    - type: file
-      target: ../../examples/entities.yaml
-
-    # Local example organizational data
+    # The portal's people and groups. Not example data despite the folder name:
+    # `sahilotavanekar` is what the `usernameMatchingUserEntityName` sign-in
+    # resolver matches a GitHub login against, and `unowned` is the placeholder
+    # group every repository without a confirmed owner is counted against.
+    # File locations are relative to the backend process, typically
+    # `packages/backend`.
     - type: file
       target: ../../examples/org.yaml
       rules:
@@ -142,9 +165,6 @@ catalog:
     #   rules:
     #     - allow: [User, Group]
 
-kubernetes:
-  # see https://backstage.io/docs/features/kubernetes/configuration for kubernetes configuration options
-
 # see https://backstage.io/docs/permissions/getting-started for more on the permission framework
 permission:
   # setting this to `false` will disable permissions
@@ -153,7 +173,7 @@ permission:
 # see https://backstage.io/docs/ai/mcp-actions for more details
 mcpActions:
   name: 'Demand AI Engineering Portal' # defaults to "backstage"
-  description: 'Tools for managing your software catalog, creating new services from templates, and exploring your developer portal' # optional
+  description: 'Tools for exploring the Bitbucket repository catalog, its ownership and its health scores' # optional
 
 # Engineering portal -- repository fleet ingestion.
 fleet:

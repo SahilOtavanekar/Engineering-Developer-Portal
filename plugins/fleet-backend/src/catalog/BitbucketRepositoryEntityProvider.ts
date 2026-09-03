@@ -11,6 +11,7 @@ import {
   ANNOTATION_ORIGIN_LOCATION,
   ANNOTATION_SOURCE_LOCATION,
   type ComponentEntity,
+  type SystemEntity,
 } from '@backstage/catalog-model';
 import { ScmIntegrations } from '@backstage/integration';
 import type {
@@ -45,22 +46,43 @@ export const ANNOTATION_OWNERSHIP_EVIDENCE = `${ANNOTATION_NS}/ownership-evidenc
 export const TAG_UNCONFIRMED_OWNER = 'unconfirmed-owner';
 
 /**
- * Marks a repository whose owner somebody has actually confirmed.
+ * No longer stamped on entities. Kept as the name of the *concept*, which the
+ * provider's own log line still reports.
  *
- * The absence of {@link TAG_UNCONFIRMED_OWNER} already means this, but a
- * catalog filter cannot express "does not have a tag" -- so without a positive
- * tag, "show me everything with a real owner" is unaskable, which is the
- * question the ownership campaign is actually reported on.
+ * It used to be applied to every confirmed repository so that a catalog filter
+ * could express "show me everything with a real owner" -- a filter cannot ask
+ * for the *absence* of a tag. Dropped 2026-09-02 at the product owner's
+ * direction: it was on **89 of 95** repositories, so as a filter it selected
+ * 94% of the estate, and as a chip it appeared on nearly every row of the
+ * catalog table for no information.
+ *
+ * Nothing is lost that cannot be asked another way. The useful question is the
+ * inverse -- {@link TAG_UNCONFIRMED_OWNER} still marks the 6 repositories whose
+ * owner is a guess -- and the repository page states "Owner — confirmed" with
+ * the register evidence beside it.
+ *
+ * **Hiding it in the table only was not possible.** The catalog's tag chips
+ * render as `label={tag}` with no `title`, `aria-label` or `data-` attribute,
+ * so no CSS selector can reach one by its text.
  */
 export const TAG_CONFIRMED_OWNER = 'confirmed-owner';
 
 /**
- * Marks a repository where work reached the default branch without a pull
- * request.
+ * No longer stamped on entities.
  *
- * The scorecard already docks points for it, but a score is a number and this
- * is a list: "show me everything bypassing review" is the question a lead
- * actually asks, and it needs a filter rather than a sort.
+ * It marked a repository where work reached the default branch without a pull
+ * request, so that "show me everything bypassing review" was a catalog filter
+ * rather than a sort. Dropped 2026-09-02 at the product owner's direction.
+ *
+ * The information is not lost, and is now better placed than it was. Since the
+ * tag was added, that behaviour became the **Main branch health** metric --
+ * scored, with the three-way split of how work reached main in its detail --
+ * and the Health Dashboard carries a "Changes bypassing pull requests" problem
+ * chip that filters the same 7 repositories. A tag on 7 of 97 rows was the
+ * weakest of the three surfaces.
+ *
+ * `branchPolicyForWorkspace` on `CommitStore` still exists and still feeds the
+ * fleet overview, so restoring the tag is a two-line change if wanted.
  */
 export const TAG_DIRECT_COMMITS = 'direct-commits-to-main';
 
@@ -113,7 +135,9 @@ export interface ProposedOwnerSource {
 export interface ClassificationSource {
   classificationForWorkspace(
     workspace: string,
-  ): Promise<Map<string, { type: string; lifecycle: string }>>;
+  ): Promise<
+    Map<string, { type: string; lifecycle: string; language?: string }>
+  >;
 }
 
 /**
@@ -158,22 +182,11 @@ function ownerTag(
   proposed: StoredOwnershipCandidate | undefined,
 ): string | undefined {
   if (!proposedRef) return undefined;
+  // Only the guess is tagged. A confirmed owner needs no chip on every row --
+  // see TAG_CONFIRMED_OWNER for why that tag is no longer applied.
   return proposed?.source === OWNERSHIP_SOURCE_REGISTER
-    ? TAG_CONFIRMED_OWNER
+    ? undefined
     : TAG_UNCONFIRMED_OWNER;
-}
-
-/**
- * Supplies branch-policy counts keyed by repository slug.
- *
- * Absent, or a slug missing from the map, means the classification pass has not
- * covered it -- which must not read as "no direct commits".
- */
-export interface BranchPolicySource {
-  branchPolicyForWorkspace(
-    workspace: string,
-    since: Date,
-  ): Promise<Map<string, { direct: number; directMerge: number }>>;
 }
 
 export interface BitbucketRepositoryEntityProviderOptions {
@@ -185,13 +198,6 @@ export interface BitbucketRepositoryEntityProviderOptions {
   owners?: ProposedOwnerSource;
   /** Absent means every repository keeps `service` / `unknown`. */
   classifications?: ClassificationSource;
-  /** Absent means no repository is tagged for direct commits. */
-  branchPolicy?: BranchPolicySource;
-  /**
-   * Window for the direct-commit tag, in days. Defaults to 30, matching the
-   * scorer: a longer window mostly tags behaviour that has already stopped.
-   */
-  branchPolicyWindowDays?: number;
 }
 
 /**
@@ -207,6 +213,19 @@ export interface BitbucketRepositoryEntityProviderOptions {
  * the provider owns, so a failure in one workspace must not be able to empty
  * another.
  */
+/**
+ * A Bitbucket project key as a Backstage entity name.
+ *
+ * Lowercased deliberately. `toEntityName` only strips characters Backstage
+ * forbids, so `MDLH` would survive as `MDLH` -- and entity refs are lowercased
+ * on several paths through the catalog and this plugin's own router, so a
+ * mixed-case name invites a lookup that matches nothing. The original key is
+ * kept as the System's title, which is what a reader sees.
+ */
+function toSystemName(projectKey: string): string {
+  return toEntityName(projectKey.toLowerCase());
+}
+
 export class BitbucketRepositoryEntityProvider implements EntityProvider {
   private readonly workspace: string;
   private readonly client: BitbucketClient;
@@ -214,8 +233,6 @@ export class BitbucketRepositoryEntityProvider implements EntityProvider {
   private readonly logger: LoggerService;
   private readonly owners?: ProposedOwnerSource;
   private readonly classifications?: ClassificationSource;
-  private readonly branchPolicy?: BranchPolicySource;
-  private readonly branchPolicyWindowDays: number;
   private connection?: EntityProviderConnection;
 
   constructor(options: BitbucketRepositoryEntityProviderOptions) {
@@ -225,8 +242,6 @@ export class BitbucketRepositoryEntityProvider implements EntityProvider {
     this.logger = options.logger;
     this.owners = options.owners;
     this.classifications = options.classifications;
-    this.branchPolicy = options.branchPolicy;
-    this.branchPolicyWindowDays = options.branchPolicyWindowDays ?? 30;
   }
 
   /**
@@ -242,8 +257,6 @@ export class BitbucketRepositoryEntityProvider implements EntityProvider {
       scheduler: SchedulerService;
       owners?: ProposedOwnerSource;
       classifications?: ClassificationSource;
-      branchPolicy?: BranchPolicySource;
-      branchPolicyWindowDays?: number;
     },
   ): BitbucketRepositoryEntityProvider[] {
     const root = config.getOptionalConfig('fleet.bitbucket');
@@ -277,8 +290,6 @@ export class BitbucketRepositoryEntityProvider implements EntityProvider {
           logger: options.logger,
           owners: options.owners,
           classifications: options.classifications,
-          branchPolicy: options.branchPolicy,
-          branchPolicyWindowDays: options.branchPolicyWindowDays,
           client: BitbucketCloudClient.fromIntegration(integration.config, {
             logger: options.logger,
           }),
@@ -317,23 +328,25 @@ export class BitbucketRepositoryEntityProvider implements EntityProvider {
     }
 
     const repositories = await this.client.listRepositories(this.workspace);
-    const [proposed, classified, policy] = await Promise.all([
+    const [proposed, classified] = await Promise.all([
       this.readProposedOwners(),
       this.readClassifications(),
-      this.readBranchPolicy(),
     ]);
     const entities = repositories.map(repository =>
       this.toEntity(
         repository,
         proposed.get(repository.slug),
         classified.get(repository.slug),
-        policy.get(repository.slug),
       ),
     );
+    // Emitted in the same mutation as the components that reference them: a
+    // `spec.system` pointing at an entity the catalog does not hold renders as
+    // a broken link, which reads as a defect rather than the gap it is.
+    const systems = this.toSystemEntities(repositories);
 
     await this.connection.applyMutation({
       type: 'full',
-      entities: entities.map(entity => ({
+      entities: [...systems, ...entities].map(entity => ({
         entity,
         locationKey: this.getProviderName(),
       })),
@@ -341,8 +354,14 @@ export class BitbucketRepositoryEntityProvider implements EntityProvider {
 
     const counted = (want: string) =>
       entities.filter(entity => entity.metadata.tags?.includes(want)).length;
-    const confirmedOwners = counted(TAG_CONFIRMED_OWNER);
     const proposedOwners = counted(TAG_UNCONFIRMED_OWNER);
+    // Counted from the owner ref rather than from a tag: `confirmed-owner` is
+    // no longer stamped, so anything owned but not flagged as a guess is
+    // confirmed.
+    const owned = entities.filter(
+      entity => entity.spec.owner !== DEFAULT_OWNER,
+    ).length;
+    const confirmedOwners = owned - proposedOwners;
     this.logger.info(
       `Registered ${entities.length} repositories from Bitbucket workspace ` +
         `'${this.workspace}' (${confirmedOwners} with a confirmed owner, ` +
@@ -379,7 +398,7 @@ export class BitbucketRepositoryEntityProvider implements EntityProvider {
    * the reader precision, not cost them the estate.
    */
   private async readClassifications(): Promise<
-    Map<string, { type: string; lifecycle: string }>
+    Map<string, { type: string; lifecycle: string; language?: string }>
   > {
     if (!this.classifications) return new Map();
     try {
@@ -395,41 +414,18 @@ export class BitbucketRepositoryEntityProvider implements EntityProvider {
     }
   }
 
-  /**
-   * Direct-commit counts, or none if they cannot be read.
-   *
-   * An unreadable source must leave repositories untagged rather than tag them
-   * all: absence of evidence is not evidence of a bypassed review.
-   */
-  private async readBranchPolicy(): Promise<
-    Map<string, { direct: number; directMerge: number }>
-  > {
-    if (!this.branchPolicy) return new Map();
-    try {
-      const since = new Date(
-        Date.now() - this.branchPolicyWindowDays * 24 * 60 * 60 * 1000,
-      );
-      return await this.branchPolicy.branchPolicyForWorkspace(
-        this.workspace,
-        since,
-      );
-    } catch (error) {
-      this.logger.warn(
-        `Could not read branch policy for '${this.workspace}', leaving ` +
-          `repositories untagged: ${(error as Error).message}`,
-      );
-      return new Map();
-    }
-  }
-
   private toEntity(
     repository: BitbucketRepository,
     proposed?: StoredOwnershipCandidate,
-    classification?: { type: string; lifecycle: string },
-    policy?: { direct: number; directMerge: number },
+    classification?: { type: string; lifecycle: string; language?: string },
   ): ComponentEntity {
     const location = `url:${repository.url}`;
-    const tag = repository.language ? toTag(repository.language) : undefined;
+    // Bitbucket's own detection first, then the language inferred from
+    // manifests. Bitbucket reports one for only **6 of 96** repositories here,
+    // so on its own it left the catalog's Tags column empty on 94% of rows;
+    // the derived value covers 43. Source data still wins where it exists --
+    // a guess must never overwrite a fact.
+    const tag = toTag(repository.language ?? classification?.language ?? '');
 
     const annotations: Record<string, string> = {
       [ANNOTATION_LOCATION]: location,
@@ -454,12 +450,9 @@ export class BitbucketRepositoryEntityProvider implements EntityProvider {
     const proposedRef = proposed?.email
       ? toUserEntityRef(proposed.email)
       : undefined;
-    const bypassed = (policy?.direct ?? 0) + (policy?.directMerge ?? 0) > 0;
-    const tags = [
-      tag,
-      ownerTag(proposedRef, proposed),
-      bypassed ? TAG_DIRECT_COMMITS : undefined,
-    ].filter((value): value is string => Boolean(value));
+    const tags = [tag, ownerTag(proposedRef, proposed)].filter(
+      (value): value is string => Boolean(value),
+    );
 
     if (proposedRef && proposed) {
       annotations[ANNOTATION_OWNERSHIP_SOURCE] = proposed.source;
@@ -485,7 +478,52 @@ export class BitbucketRepositoryEntityProvider implements EntityProvider {
         type: classification?.type ?? 'service',
         lifecycle: classification?.lifecycle ?? 'unknown',
         owner: proposedRef ?? DEFAULT_OWNER,
+        // The Bitbucket project this repository belongs to. Every one of the
+        // 96 has one, so the catalog's System column and filter -- blank on
+        // every row until now -- become usable at no API cost.
+        ...(repository.projectKey
+          ? { system: toSystemName(repository.projectKey) }
+          : {}),
       },
     };
+  }
+
+  /**
+   * One System per Bitbucket project.
+   *
+   * A Bitbucket project is the closest thing this estate has to a Backstage
+   * System: a named group of repositories that ship together. Six of them
+   * cover all 96 repositories with no gaps.
+   *
+   * Owned by `unowned` rather than inferred. A project's components have
+   * several different owners between them, and picking the commonest would
+   * assert a responsibility nobody agreed to -- the same reason a derived
+   * repository owner earns no points on the scorecard.
+   */
+  private toSystemEntities(
+    repositories: BitbucketRepository[],
+  ): SystemEntity[] {
+    const keys = new Map<string, string>();
+    for (const repository of repositories) {
+      if (!repository.projectKey) continue;
+      keys.set(toSystemName(repository.projectKey), repository.projectKey);
+    }
+
+    return [...keys.entries()].map(([name, projectKey]) => ({
+      apiVersion: 'backstage.io/v1alpha1',
+      kind: 'System',
+      metadata: {
+        name,
+        title: projectKey,
+        description: `Bitbucket project ${projectKey} in workspace ${this.workspace}.`,
+        annotations: {
+          [ANNOTATION_LOCATION]: `${this.getProviderName()}:${name}`,
+          [ANNOTATION_ORIGIN_LOCATION]: `${this.getProviderName()}:${name}`,
+          [ANNOTATION_WORKSPACE]: this.workspace,
+          [ANNOTATION_PROJECT_KEY]: projectKey,
+        },
+      },
+      spec: { owner: DEFAULT_OWNER },
+    }));
   }
 }

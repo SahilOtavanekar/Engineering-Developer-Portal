@@ -83,7 +83,17 @@ export interface Config {
         people?: {
           [key: string]: {
             name: string;
-            email: string;
+            /**
+             * Canonical address, when they have one. **Optional**, because
+             * reviewing is not committing: a person can appear in the estate
+             * without ever having committed, and there is then no address to
+             * key them on -- `/2.0/users/{account_id}` is 403 for this token,
+             * so a pull request supplies a display name and nothing more.
+             * Requiring it would silently erase a real contributor, and
+             * inventing one would later attribute somebody else's commits to
+             * them. Mirrors `RegisteredEngineer.email`.
+             */
+            email?: string;
             aliases?: string[];
           };
         };

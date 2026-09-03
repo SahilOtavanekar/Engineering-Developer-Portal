@@ -6,14 +6,43 @@ import useAsync from 'react-use/esm/useAsync';
 import { formatHours, timeAgo } from '../../format';
 import { buildPeriods, findPeriod, type PeriodId } from '../../periods';
 import { CommitTrend } from '../CommitTrend';
+import {
+  cell,
+  chip,
+  fixedTable,
+  headerCell,
+  numericCell as numeric,
+  numericHeaderCell,
+  recessed,
+  select as selectStyle,
+  tablePanel,
+  tableScroll,
+} from '../../surfaces';
 
-const cell: CSSProperties = {
-  padding: '0.5rem 0.75rem',
-  borderBottom: '1px solid var(--bui-border-soft, #e2e7f0)',
-  verticalAlign: 'top',
-};
-
-const numeric: CSSProperties = { ...cell, textAlign: 'right' };
+/**
+ * Column widths, totalling 100.
+ *
+ * The same fixed layout the fleet table uses, and for the same reason -- see
+ * `fixedTable`. Here it also stops `Engineer` swallowing every spare pixel: the
+ * automatic algorithm gave the one text column the entire slack left over by
+ * eight numeric ones, so a name sat in a 330px cell while `Avg merge` had
+ * barely room for "3.5 hours".
+ */
+const COLUMNS: ReadonlyArray<{
+  heading: string;
+  width: string;
+  numeric?: true;
+}> = [
+  { heading: 'Engineer', width: '22%' },
+  { heading: 'Commits', width: '8%', numeric: true },
+  { heading: 'Repos', width: '7%', numeric: true },
+  { heading: 'PRs opened', width: '10%', numeric: true },
+  { heading: 'Reviewed', width: '9%', numeric: true },
+  { heading: 'Approved', width: '9%', numeric: true },
+  { heading: 'Merged', width: '8%', numeric: true },
+  { heading: 'Avg merge', width: '11%', numeric: true },
+  { heading: 'Last commit', width: '16%' },
+];
 
 /** Grid so repository names line up in columns rather than a ragged list. */
 const repositoryGrid: CSSProperties = {
@@ -36,33 +65,6 @@ const disclosure: CSSProperties = {
   alignItems: 'center',
   gap: '0.35rem',
   textAlign: 'left',
-};
-
-const chip = (active: boolean): CSSProperties => ({
-  appearance: 'none',
-  cursor: 'pointer',
-  font: 'inherit',
-  fontSize: '0.75rem',
-  padding: '0.15rem 0.5rem',
-  borderRadius: '2px',
-  border: `1px solid ${active ? 'var(--bui-fg-primary)' : 'var(--bui-border)'}`,
-  background: active ? 'var(--bui-bg-surface-2)' : 'transparent',
-  color: 'inherit',
-});
-
-/**
- * Matches the chips beside it rather than the browser default, which ignores
- * the surrounding type scale and looks pasted in.
- */
-const selectStyle: CSSProperties = {
-  font: 'inherit',
-  fontSize: '0.8125rem',
-  padding: '0.25rem 0.5rem',
-  border: '1px solid var(--bui-border)',
-  borderRadius: '2px',
-  background: 'transparent',
-  color: 'inherit',
-  maxWidth: '20rem',
 };
 
 function useProductivity(since: Date, until: Date | undefined, repo?: string) {
@@ -145,7 +147,19 @@ export function ProductivityPage() {
 
   return (
     <Flex direction="column" gap="5">
-      <Flex direction="column" gap="2">
+      {/*
+        Period and repository sit on one row: both filter the same table, and
+        stacking them spent a line of vertical space on a grouping that carries
+        no meaning.
+
+        Two nested groups rather than one flat row, because the gap has to say
+        which controls belong together -- `5` between the groups against `3`
+        inside them is what stops "Repository" reading as a sixth chip. Every
+        level wraps, so a narrow viewport drops the repository filter onto its
+        own line and degrades to the previous stacked layout instead of
+        overflowing.
+      */}
+      <Flex gap="5" align="center" style={{ flexWrap: 'wrap' }}>
         <Flex gap="3" align="center" style={{ flexWrap: 'wrap' }}>
           {periods.map(p => (
             <button
@@ -168,7 +182,14 @@ export function ProductivityPage() {
           // fleet filters.
           <Flex gap="3" align="center" style={{ flexWrap: 'wrap' }}>
             <label htmlFor="productivity-repository">
-              <Text variant="body-x-small" color="secondary">
+              {/*
+                `body-small`, a step up from the `body-x-small` used for table
+                microcopy. On its own row this label sat above the control and
+                read as a caption; inline beside the chips it is the only thing
+                naming the control next to it, so it takes the same size as the
+                chip text rather than shrinking away from it.
+              */}
+              <Text variant="body-small" color="secondary">
                 Repository
               </Text>
             </label>
@@ -196,144 +217,147 @@ export function ProductivityPage() {
           Nobody committed or opened a pull request in this period.
         </Text>
       ) : (
-        <div style={{ overflowX: 'auto' }}>
-          <table
-            style={{
-              borderCollapse: 'collapse',
-              width: '100%',
-              minWidth: '54rem',
-            }}
-          >
-            <thead>
-              <tr>
-                <th style={{ ...cell, textAlign: 'left' }}>Engineer</th>
-                <th style={numeric}>Commits</th>
-                <th style={numeric}>Repos</th>
-                <th style={numeric}>PRs opened</th>
-                <th style={numeric}>Reviewed</th>
-                <th style={numeric}>Approved</th>
-                <th style={numeric}>Merged</th>
-                <th style={numeric}>Avg merge</th>
-                <th style={{ ...cell, textAlign: 'left' }}>Last commit</th>
-              </tr>
-            </thead>
-            <tbody>
-              {engineers.map(e => (
-                <Fragment key={e.key}>
-                  <tr>
-                    <td style={cell}>
-                      {/* `Text` is display:inline-block, so two of them in a
+        // Given a card of its own, matching the fleet table. See `tablePanel`
+        // for why this surface is opaque where the rest of the portal's are
+        // translucent.
+        <div style={tablePanel}>
+          <div style={tableScroll}>
+            <table style={fixedTable('56rem')}>
+              <colgroup>
+                {COLUMNS.map(column => (
+                  <col key={column.heading} style={{ width: column.width }} />
+                ))}
+              </colgroup>
+              <thead>
+                <tr>
+                  {COLUMNS.map(column => (
+                    <th
+                      key={column.heading}
+                      style={column.numeric ? numericHeaderCell : headerCell}
+                    >
+                      {column.heading}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {engineers.map(e => (
+                  <Fragment key={e.key}>
+                    <tr>
+                      <td style={cell}>
+                        {/* `Text` is display:inline-block, so two of them in a
                         bare cell flow side by side -- the name and address ran
                         together as one string. A column forces the stack. */}
-                      <Flex direction="column" gap="1">
-                        <button
-                          type="button"
-                          onClick={() => toggleExpanded(e.key)}
-                          aria-expanded={expanded.has(e.key)}
-                          style={disclosure}
-                        >
-                          <span aria-hidden style={{ fontSize: '0.7rem' }}>
-                            {expanded.has(e.key) ? '▾' : '▸'}
-                          </span>
-                          {e.name}
-                        </button>
-                        {e.email && (
-                          <Text variant="body-x-small" color="secondary">
-                            {e.email}
-                          </Text>
-                        )}
-                      </Flex>
-                    </td>
-                    <td style={numeric}>{e.commits}</td>
-                    <td style={numeric}>{e.activeRepositories}</td>
-                    <td style={numeric}>{e.pullRequestsCreated}</td>
-                    <td style={numeric}>{e.pullRequestsReviewed}</td>
-                    <td style={numeric}>{e.pullRequestsApproved}</td>
-                    <td style={numeric}>{e.pullRequestsMerged}</td>
-                    <td style={numeric}>
-                      {formatHours(e.averageMergeHours) ?? '—'}
-                    </td>
-                    <td style={cell}>
-                      <Text variant="body-x-small" color="secondary">
-                        {timeAgo(e.lastCommitAt) ?? '—'}
-                      </Text>
-                    </td>
-                  </tr>
-                  {expanded.has(e.key) && (
-                    <tr>
-                      {/* One cell spanning the table: a detail panel laid out in
-                        the parent's columns would be forced into shapes that
-                        suit the summary, not the detail. */}
-                      <td
-                        colSpan={9}
-                        style={{
-                          ...cell,
-                          background: 'var(--bui-bg-surface-2, #f5f7fa)',
-                        }}
-                      >
-                        <Flex direction="column" gap="4">
-                          <Flex
-                            direction="column"
-                            gap="2"
-                            style={{ minWidth: 0 }}
+                        <Flex direction="column" gap="1">
+                          <button
+                            type="button"
+                            onClick={() => toggleExpanded(e.key)}
+                            aria-expanded={expanded.has(e.key)}
+                            style={disclosure}
                           >
+                            <span aria-hidden style={{ fontSize: '0.7rem' }}>
+                              {expanded.has(e.key) ? '▾' : '▸'}
+                            </span>
+                            {e.name}
+                          </button>
+                          {e.email && (
                             <Text variant="body-x-small" color="secondary">
-                              Repositories ({e.repositories.length})
+                              {e.email}
                             </Text>
-                            {e.repositories.length > 0 ? (
-                              <div style={repositoryGrid}>
-                                {e.repositories.map(r => (
-                                  <Flex
-                                    key={r.slug}
-                                    gap="2"
-                                    align="baseline"
-                                    style={{
-                                      justifyContent: 'space-between',
-                                      minWidth: 0,
-                                    }}
-                                  >
-                                    <Text
-                                      variant="body-small"
-                                      style={{ overflowWrap: 'anywhere' }}
-                                    >
-                                      {r.slug}
-                                    </Text>
-                                    <Text
-                                      variant="body-x-small"
-                                      color="secondary"
-                                      style={{
-                                        fontVariantNumeric: 'tabular-nums',
-                                        whiteSpace: 'nowrap',
-                                      }}
-                                    >
-                                      {r.commits}
-                                    </Text>
-                                  </Flex>
-                                ))}
-                              </div>
-                            ) : (
-                              <Text variant="body-x-small" color="secondary">
-                                No commits in this period. Their pull request
-                                figures above may still be non-zero — reviewing
-                                is not committing.
-                              </Text>
-                            )}
-                          </Flex>
-
-                          <div style={{ maxWidth: '32rem' }}>
-                            <CommitTrend
-                              trend={e.commitTrend}
-                              bucket={trendBucket}
-                            />
-                          </div>
+                          )}
                         </Flex>
                       </td>
+                      <td style={numeric}>{e.commits}</td>
+                      <td style={numeric}>{e.activeRepositories}</td>
+                      <td style={numeric}>{e.pullRequestsCreated}</td>
+                      <td style={numeric}>{e.pullRequestsReviewed}</td>
+                      <td style={numeric}>{e.pullRequestsApproved}</td>
+                      <td style={numeric}>{e.pullRequestsMerged}</td>
+                      <td style={numeric}>
+                        {formatHours(e.averageMergeHours) ?? '—'}
+                      </td>
+                      <td style={cell}>
+                        <Text variant="body-x-small" color="secondary">
+                          {timeAgo(e.lastCommitAt) ?? '—'}
+                        </Text>
+                      </td>
                     </tr>
-                  )}
-                </Fragment>
-              ))}
-            </tbody>
-          </table>
+                    {expanded.has(e.key) && (
+                      <tr>
+                        {/* One cell spanning the table: a detail panel laid out in
+                        the parent's columns would be forced into shapes that
+                        suit the summary, not the detail. */}
+                        <td
+                          colSpan={COLUMNS.length}
+                          style={{
+                            ...cell,
+                            ...recessed,
+                          }}
+                        >
+                          <Flex direction="column" gap="4">
+                            <Flex
+                              direction="column"
+                              gap="2"
+                              style={{ minWidth: 0 }}
+                            >
+                              <Text variant="body-x-small" color="secondary">
+                                Repositories ({e.repositories.length})
+                              </Text>
+                              {e.repositories.length > 0 ? (
+                                <div style={repositoryGrid}>
+                                  {e.repositories.map(r => (
+                                    <Flex
+                                      key={r.slug}
+                                      gap="2"
+                                      align="baseline"
+                                      style={{
+                                        justifyContent: 'space-between',
+                                        minWidth: 0,
+                                      }}
+                                    >
+                                      <Text
+                                        variant="body-small"
+                                        style={{ overflowWrap: 'anywhere' }}
+                                      >
+                                        {r.slug}
+                                      </Text>
+                                      <Text
+                                        variant="body-x-small"
+                                        color="secondary"
+                                        style={{
+                                          fontVariantNumeric: 'tabular-nums',
+                                          whiteSpace: 'nowrap',
+                                        }}
+                                      >
+                                        {r.commits}
+                                      </Text>
+                                    </Flex>
+                                  ))}
+                                </div>
+                              ) : (
+                                <Text variant="body-x-small" color="secondary">
+                                  No commits in this period. Their pull request
+                                  figures above may still be non-zero —
+                                  reviewing is not committing.
+                                </Text>
+                              )}
+                            </Flex>
+
+                            <div style={{ maxWidth: '32rem' }}>
+                              <CommitTrend
+                                trend={e.commitTrend}
+                                bucket={trendBucket}
+                              />
+                            </div>
+                          </Flex>
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 

@@ -36,16 +36,20 @@ describe('band tokens', () => {
     });
   });
 
-  describe('BAND_FILL, which is a solid block', () => {
-    it('pairs a background with the foreground meant for it', () => {
+  describe('BAND_FILL, which is a quiet tint', () => {
+    it('pairs the subdued background with the subdued foreground', () => {
+      // Both halves subdued, not one of each. `-fg` is the text colour for the
+      // *saturated* fill -- black or white -- so pairing it with `-bg-subdued`
+      // would put white on a pale tint. The portal theme declares
+      // `-bg-subdued` itself; see `StatusTokens.bgSubdued`.
       for (const band of BANDS) {
         const fill = BAND_FILL[band];
-        expect(fill.background).toMatch(/^var\(--bui-(\w+)-bg\)$/);
-        expect(fill.color).toMatch(/^var\(--bui-(\w+)-fg\)$/);
+        expect(fill.background).toMatch(/^var\(--bui-(\w+)-bg-subdued\)$/);
+        expect(fill.color).toMatch(/^var\(--bui-(\w+)-fg-subdued\)$/);
 
         // Both halves must name the same intent, or the text is unreadable.
         const intentOf = (value: string) =>
-          /--bui-(\w+)-(?:bg|fg)/.exec(value)?.[1];
+          /--bui-(\w+)-(?:bg|fg)-subdued/.exec(value)?.[1];
         expect(intentOf(String(fill.background))).toBe(
           intentOf(String(fill.color)),
         );

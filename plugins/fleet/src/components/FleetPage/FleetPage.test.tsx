@@ -275,12 +275,21 @@ describe('proposed owner column', () => {
     expect(await screen.findByText('Brijesh Gupta')).toBeInTheDocument();
   });
 
-  it('heads the column with a question mark, because none of it is confirmed', async () => {
-    // The catalog still records every one of these as unowned. A column headed
-    // "Owner" would read as settled fact.
+  it('heads the column "Owner", now that most of them are confirmed', async () => {
+    // The question mark was right when every name was a guess and the catalog
+    // recorded all 95 as unowned. 89 of 95 are now confirmed from the
+    // ownership register, so hedging all of them understates it. The 6
+    // remaining guesses are marked by the `unconfirmed-owner` tag instead.
     await render(ok(overview));
 
-    expect(await screen.findByText('Owner?')).toBeInTheDocument();
+    expect(await screen.findByText('Owner')).toBeInTheDocument();
+    expect(screen.queryByText('Owner?')).not.toBeInTheDocument();
+  });
+
+  it('heads the band column "Status"', async () => {
+    await render(ok(overview));
+
+    expect(await screen.findByText('Status')).toBeInTheDocument();
   });
 
   it('dashes a repository nobody clearly owns rather than guessing', async () => {

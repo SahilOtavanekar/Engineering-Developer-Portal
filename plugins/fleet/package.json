@@ -26,10 +26,8 @@
   },
   "dependencies": {
     "@backstage/catalog-model": "^1.9.0",
-    "@backstage/core-components": "^0.18.12",
     "@backstage/frontend-plugin-api": "^0.17.3",
     "@backstage/plugin-catalog-react": "^3.2.0",
-    "@backstage/theme": "^0.7.3",
     "@backstage/ui": "^0.17.0",
     "@internal/backstage-plugin-fleet-common": "workspace:^",
     "@material-ui/icons": "^4.9.1",
@@ -40,14 +38,11 @@
   },
   "devDependencies": {
     "@backstage/cli": "^0.36.4",
-    "@backstage/frontend-defaults": "^0.5.4",
-    "@backstage/frontend-dev-utils": "^0.1.4",
     "@backstage/frontend-test-utils": "^0.6.2",
     "@testing-library/dom": "^9.0.0",
     "@testing-library/jest-dom": "^6.0.0",
     "@testing-library/react": "^14.0.0",
     "@testing-library/user-event": "^14.0.0",
-    "msw": "^1.0.0",
     "react": "^16.13.1 || ^17.0.0 || ^18.0.0"
   },
   "files": [

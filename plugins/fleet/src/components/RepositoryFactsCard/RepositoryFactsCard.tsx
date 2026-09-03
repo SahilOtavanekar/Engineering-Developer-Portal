@@ -1,4 +1,4 @@
-import type { CSSProperties, ReactNode } from 'react';
+import type { ReactNode } from 'react';
 import type { Entity } from '@backstage/catalog-model';
 import {
   Card,
@@ -19,33 +19,21 @@ import {
   type RepositoryFacts,
 } from '@internal/backstage-plugin-fleet-common';
 import { BAND_FILL, BAND_LABEL, BAND_TEXT } from '../../bands';
+import {
+  BORDER_SOFT,
+  NUMERIC,
+  panel,
+  recessed,
+  sectionHeading,
+  sectionPanel,
+  statGrid as STAT_GRID,
+} from '../../surfaces';
 
 import { useRepositoryFacts } from '../../useRepositoryFacts';
 
 const EMPTY = '—';
 
-const BORDER = '1px solid var(--bui-border-soft, #e2e7f0)';
-
-/**
- * Figures line up in a column only if the digits are the same width.
- *
- * Proportional digits make a stack of scores and counts look ragged, which is
- * the single cheapest thing to fix on a card that is mostly numbers.
- */
-const NUMERIC: CSSProperties = { fontVariantNumeric: 'tabular-nums' };
-
-/**
- * A grid rather than a wrapping flex row.
- *
- * Wrapped flex items align to their own content width, so each row of stats
- * started at a different place and the card read as a jumble. A grid puts every
- * label on the same vertical line whatever the value beneath it.
- */
-const STAT_GRID: CSSProperties = {
-  display: 'grid',
-  gridTemplateColumns: 'repeat(auto-fill, minmax(8.5rem, 1fr))',
-  gap: '0.875rem 1.25rem',
-};
+const BORDER = BORDER_SOFT;
 
 /** "34 of 41 commits (83%)" -- the evidence, not just the verdict. */
 function contributionDetail(commits: number, windowCommits: number) {
@@ -105,21 +93,31 @@ function Stat({
  */
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <Flex
-      direction="column"
-      gap="3"
-      style={{ borderTop: BORDER, paddingTop: '1rem' }}
-    >
-      <Text
-        variant="body-x-small"
-        color="secondary"
-        style={{ textTransform: 'uppercase', letterSpacing: '0.06em' }}
-        weight="bold"
-      >
+    <div style={sectionPanel}>
+      {/* A step up from the labels inside the section, not the same size as
+          them.
+          
+          This was `body-x-small` + secondary + bold -- the identical variant
+          and colour that `Stat` gives its own labels, distinguished only by
+          weight and capitals. At 11px muted, that is not a hierarchy step, so
+          "ACTIVITY -- LAST 90 DAYS" and "Commits (90d)" beneath it read as two
+          items in one list. Primary colour and one size up separates them
+          without adding a colour or a rule. */}
+      <Text variant="body-small" weight="bold" style={sectionHeading}>
         {title}
       </Text>
-      {children}
-    </Flex>
+      {/* The panel edge now does the grouping, so the gap above a heading no
+          longer has to be larger than the gap below it to say which section
+          the heading belongs to -- 16px of panel padding above, 12.8px to the
+          content below, and the boundary is drawn rather than implied. */}
+      <Flex
+        direction="column"
+        gap="3"
+        style={{ marginTop: '0.8rem', minWidth: 0 }}
+      >
+        {children}
+      </Flex>
+    </div>
   );
 }
 
@@ -177,7 +175,13 @@ function MetricRow({
         style={{
           height: '4px',
           borderRadius: '2px',
-          background: 'var(--bui-bg-surface-2, #eef1f6)',
+          // NOT `--bui-bg-neutral-2`: that is the fill `sectionPanel` uses, so
+          // on the Scorecard panel the track vanished into its own background
+          // and the bars became floating fragments of no evident scale. A
+          // border token is defined as contrast against its ground -- it
+          // darkens in light mode and lightens in dark -- so it stays visible
+          // nested, where a fixed shade one step deeper did not.
+          background: 'var(--bui-border-2)',
           overflow: 'hidden',
         }}
       >
@@ -294,7 +298,16 @@ export function RepositoryFactsCard({ entity }: { entity: Entity }) {
       (branches !== undefined && branches.total > 0);
 
     body = (
-      <Flex direction="column" gap="5">
+      // gap 4, not the 6 the rules needed. A cascade of space is what groups
+      // sections divided only by a rule -- the gap above a rule has to beat
+      // the padding below it, or the rule floats midway between two sections
+      // and reads as belonging to neither. `sectionPanel` draws the boundary
+      // instead, so the gap is free to be the smaller number: each panel
+      // already carries 16px of its own padding, and 24 between them read as
+      // 40px of dead space that only made the card longer.
+      //
+      //   panel -> 16px -> panel edge -> 16px -> HEADING -> 12.8px -> content
+      <Flex direction="column" gap="4">
         {score && (
           // The headline, given its own panel so the number that matters is
           // not just the first of forty in a flat list.
@@ -303,9 +316,7 @@ export function RepositoryFactsCard({ entity }: { entity: Entity }) {
             align="center"
             style={{
               flexWrap: 'wrap',
-              border: BORDER,
-              borderRadius: '6px',
-              padding: '0.875rem 1rem',
+              ...panel,
             }}
           >
             <Field label="Health score">
@@ -326,7 +337,7 @@ export function RepositoryFactsCard({ entity }: { entity: Entity }) {
                 style={{
                   ...BAND_FILL[score.band],
                   padding: '0.15rem 0.6rem',
-                  borderRadius: '999px',
+                  borderRadius: 'var(--portal-radius-pill)',
                   fontSize: '0.75rem',
                   fontWeight: 600,
                   whiteSpace: 'nowrap',
@@ -371,11 +382,15 @@ export function RepositoryFactsCard({ entity }: { entity: Entity }) {
             gap="3"
             style={{
               borderLeft: `3px solid ${
-                BAND_TEXT[score!.band] ?? 'var(--bui-border)'
+                BAND_TEXT[score!.band] ?? 'var(--bui-border-2)'
               }`,
-              background: 'var(--bui-bg-surface-2, #f5f7fa)',
-              borderRadius: '0 4px 4px 0',
-              padding: '0.75rem 0.875rem',
+              ...recessed,
+              // Square on the left, where the band-coloured rule runs, so the
+              // rule and the fill meet flush. `recessed` supplies the fill and
+              // the medium radius; only the two left corners differ.
+              borderTopLeftRadius: 0,
+              borderBottomLeftRadius: 0,
+              padding: '0.875rem 1rem',
             }}
           >
             {problems.actionable.length > 0 && (

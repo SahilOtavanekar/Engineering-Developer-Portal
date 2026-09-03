@@ -17,7 +17,8 @@ FROM node:24-trixie-slim
 # Set Python interpreter for `node-gyp` to use
 ENV PYTHON=/usr/bin/python3
 
-# Install isolate-vm dependencies, these are needed by the @backstage/plugin-scaffolder-backend.
+# Toolchain for building native modules from source. The scaffolder (and its
+# isolated-vm dependency) is gone, but better-sqlite3 below still needs this.
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && \
@@ -47,9 +48,6 @@ COPY --chown=node:node backstage.json ./
 
 # This switches many Node.js dependencies to production mode.
 ENV NODE_ENV=production
-
-# This disables node snapshot for Node 20 to work with the Scaffolder
-ENV NODE_OPTIONS="--no-node-snapshot"
 
 # Copy repo skeleton first, to avoid unnecessary docker cache invalidation.
 # The skeleton contains the package.json of each package in the monorepo,

@@ -1,4 +1,3 @@
-import type { CSSProperties } from 'react';
 import type { FleetRepositorySummary } from '@internal/backstage-plugin-fleet-common';
 import { Flex, Text } from '@backstage/ui';
 import SearchIcon from '@material-ui/icons/Search';
@@ -9,18 +8,7 @@ import {
   problemCounts,
   type FleetFilters,
 } from '../../filter';
-
-const chip = (active: boolean): CSSProperties => ({
-  appearance: 'none',
-  cursor: 'pointer',
-  font: 'inherit',
-  fontSize: '0.75rem',
-  padding: '0.15rem 0.5rem',
-  borderRadius: '2px',
-  border: `1px solid ${active ? 'var(--bui-fg-primary)' : 'var(--bui-border)'}`,
-  background: active ? 'var(--bui-bg-surface-2)' : 'transparent',
-  color: 'inherit',
-});
+import { chip, input } from '../../surfaces';
 
 export interface FleetFiltersBarProps {
   /** Every repository, before filtering -- the counts describe the whole estate. */
@@ -74,8 +62,11 @@ export function FleetFiltersBar({
           style={{
             display: 'flex',
             height: '1.75rem',
-            border: '1px solid var(--bui-border)',
+            // A pill, and `overflow: hidden` is what clips the three coloured
+            // segments to it -- without it they square off the ends.
+            borderRadius: 'var(--portal-radius-pill)',
             overflow: 'hidden',
+            boxShadow: 'var(--portal-shadow-soft)',
           }}
         >
           {segments.map(segment => {
@@ -176,16 +167,7 @@ export function FleetFiltersBar({
             }
             placeholder="Filter repositories"
             aria-label="Filter repositories by name"
-            style={{
-              font: 'inherit',
-              fontSize: '0.9375rem',
-              padding: '0.5rem 0.75rem 0.5rem 2.1rem',
-              border: '1px solid var(--bui-border)',
-              borderRadius: '3px',
-              background: 'transparent',
-              color: 'inherit',
-              width: '100%',
-            }}
+            style={input}
           />
         </div>
 

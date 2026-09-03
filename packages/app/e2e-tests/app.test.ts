@@ -27,7 +27,20 @@ test('App should render the welcome page', async ({ page }) => {
   await expect(
     nav.getByRole('link', { name: 'Catalog', exact: true }),
   ).toBeVisible();
+
+  // Health Dashboard, not the scaffold's "APIs".
+  //
+  // This assertion was checking for a nav item the portal has never had:
+  // `@backstage/plugin-api-docs` is not a dependency and is absent from the
+  // package manifest at HEAD too, so the check has been failing since before
+  // this test was last looked at. It came from the Backstage scaffold.
+  //
+  // A page of our own is the more valuable thing to pin anyway. `AppNav`
+  // discards a page extension outright -- silently, no warning -- if it lacks a
+  // route ref, a title or an icon, and such a page still routes and still
+  // renders when visited directly. So it disappearing from the sidebar is a
+  // failure mode that nothing else here would catch.
   await expect(
-    page.getByRole('link', { name: 'APIs', exact: true }),
+    nav.getByRole('link', { name: 'Health Dashboard', exact: true }),
   ).toBeVisible();
 });

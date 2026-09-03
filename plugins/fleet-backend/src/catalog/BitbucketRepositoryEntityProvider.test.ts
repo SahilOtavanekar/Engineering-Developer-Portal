@@ -18,7 +18,6 @@ import {
   TAG_DIRECT_COMMITS,
   TAG_UNCONFIRMED_OWNER,
   type ClassificationSource,
-  type BranchPolicySource,
   type ProposedOwnerSource,
 } from './BitbucketRepositoryEntityProvider';
 import { OWNERSHIP_SOURCE_REGISTER } from '../ownership/types';
@@ -85,7 +84,6 @@ function harness(
   repositories: BitbucketRepository[],
   owners?: ProposedOwnerSource,
   classifications?: ClassificationSource,
-  branchPolicy?: BranchPolicySource,
 ) {
   const mutations: EntityProviderMutation[] = [];
   const connection: EntityProviderConnection = {
@@ -100,7 +98,6 @@ function harness(
     client: new FakeBitbucketClient(repositories),
     owners,
     classifications,
-    branchPolicy,
     logger: mockServices.logger.mock(),
     taskRunner: {
       run: async task => {
@@ -112,11 +109,33 @@ function harness(
   return { provider, connection, mutations };
 }
 
-/** The single entity produced from one repository. */
+/**
+ * The Component produced from one repository.
+ *
+ * Selected by kind rather than by index: the mutation also carries a System
+ * per Bitbucket project, and an index would silently start returning one of
+ * those the moment the ordering changed.
+ */
 async function entityFor(overrides: Partial<BitbucketRepository> = {}) {
   const { provider, connection, mutations } = harness([repository(overrides)]);
   await provider.connect(connection);
-  return (mutations[0] as any).entities[0].entity;
+  return (mutations[0] as any).entities
+    .map((e: any) => e.entity)
+    .find((e: any) => e.kind === 'Component');
+}
+
+/** Every entity of a given kind in the first mutation. */
+async function entitiesOfKind(
+  kind: string,
+  repositories: Array<Partial<BitbucketRepository>>,
+) {
+  const { provider, connection, mutations } = harness(
+    repositories.map(r => repository(r)),
+  );
+  await provider.connect(connection);
+  return (mutations[0] as any).entities
+    .map((e: any) => e.entity)
+    .filter((e: any) => e.kind === kind);
 }
 
 describe('toEntityName', () => {
@@ -197,6 +216,72 @@ describe('BitbucketRepositoryEntityProvider', () => {
     );
   });
 
+  describe('Bitbucket projects as Systems', () => {
+    it('puts the component in its project', async () => {
+      // The catalog's System column was blank on all 96 rows until this: the
+      // project key was stored all along, it simply never reached the entity.
+      const entity = await entityFor({ projectKey: 'MDLH' });
+
+      expect(entity.spec.system).toBe('mdlh');
+    });
+
+    it('emits one System per project, not one per repository', async () => {
+      const systems = await entitiesOfKind('System', [
+        { slug: 'a', projectKey: 'MDLH' },
+        { slug: 'b', projectKey: 'MDLH' },
+        { slug: 'c', projectKey: 'DDS' },
+      ]);
+
+      expect(systems.map((sys: any) => sys.metadata.name).sort()).toEqual([
+        'dds',
+        'mdlh',
+      ]);
+    });
+
+    it('emits the System in the same mutation as the components', async () => {
+      // A `spec.system` pointing at an entity the catalog does not hold
+      // renders as a broken link, which reads as a defect rather than a gap.
+      const { provider, connection, mutations } = harness([
+        repository({ projectKey: 'DDS' }),
+      ]);
+      await provider.connect(connection);
+
+      const kinds = (mutations[0] as any).entities.map(
+        (e: any) => e.entity.kind,
+      );
+      expect(kinds).toContain('System');
+      expect(kinds).toContain('Component');
+    });
+
+    it('keeps the project key readable as the System title', async () => {
+      const [system] = await entitiesOfKind('System', [
+        { projectKey: 'DAARWYN' },
+      ]);
+
+      expect(system.metadata.name).toBe('daarwyn');
+      expect(system.metadata.title).toBe('DAARWYN');
+    });
+
+    it('leaves a repository with no project out of any system', async () => {
+      // Every repository in this estate has one, but a new workspace need not.
+      const entity = await entityFor({ projectKey: undefined });
+      const systems = await entitiesOfKind('System', [
+        { projectKey: undefined },
+      ]);
+
+      expect(entity.spec.system).toBeUndefined();
+      expect(systems).toEqual([]);
+    });
+
+    it('does not claim an owner for a project', async () => {
+      // A project's repositories have several owners between them, and
+      // picking the commonest would assert a responsibility nobody agreed to.
+      const [system] = await entitiesOfKind('System', [{ projectKey: 'RES' }]);
+
+      expect(system.spec.owner).toBe('group:default/unowned');
+    });
+  });
+
   it('links back to the source on the default branch', async () => {
     const entity = await entityFor({ defaultBranch: 'main' });
 
@@ -229,10 +314,47 @@ describe('BitbucketRepositoryEntityProvider', () => {
     });
   });
 
-  it('omits tags entirely for the 94% with no detected language', async () => {
-    const entity = await entityFor({ language: undefined });
+  describe('the language tag', () => {
+    /** A classification source reporting one derived language. */
+    const classifier = (language?: string): ClassificationSource => ({
+      classificationForWorkspace: async () =>
+        new Map([
+          ['oxp-backend', { type: 'service', lifecycle: 'unknown', language }],
+        ]),
+    });
 
-    expect(entity.metadata.tags).toBeUndefined();
+    async function tagsWith(
+      repositoryLanguage: string | undefined,
+      derivedLanguage: string | undefined,
+    ) {
+      const { provider, connection, mutations } = harness(
+        [repository({ language: repositoryLanguage })],
+        undefined,
+        classifier(derivedLanguage),
+      );
+      await provider.connect(connection);
+      const entity = (mutations[0] as any).entities
+        .map((e: any) => e.entity)
+        .find((e: any) => e.kind === 'Component');
+      return (entity.metadata.tags ?? []) as string[];
+    }
+
+    it('falls back to the language derived from manifests', async () => {
+      // Bitbucket detects a language for only 6 of 96 repositories here, which
+      // left the catalog's Tags column empty on 94% of rows. The derived value
+      // covers 43.
+      expect(await tagsWith(undefined, 'Python')).toContain('python');
+    });
+
+    it('prefers Bitbucket over the derived guess', async () => {
+      // Source data wins where it exists: a guess must never overwrite a fact.
+      expect(await tagsWith('TypeScript', 'Python')).toContain('typescript');
+      expect(await tagsWith('TypeScript', 'Python')).not.toContain('python');
+    });
+
+    it('omits the tag when neither source knows', async () => {
+      expect(await tagsWith(undefined, undefined)).toEqual([]);
+    });
   });
 
   it('omits description rather than emitting an empty one', async () => {
@@ -625,65 +747,14 @@ describe('ownership evidence', () => {
 });
 
 describe('direct commits to the default branch', () => {
-  const policySource = (
-    bySlug: Record<string, { direct: number; directMerge: number }>,
-  ) => ({
-    branchPolicyForWorkspace: async () => new Map(Object.entries(bySlug)),
-  });
+  it('no longer tags them', async () => {
+    // The `direct-commits-to-main` tag was dropped 2026-09-02. The behaviour
+    // is now the Main branch health metric and a "Changes bypassing pull
+    // requests" problem chip, both of which say more than a tag on 7 of 97
+    // rows. The provider no longer reads the branch policy at all.
+    const entity = await entityFor();
 
-  async function tagsFor(source: any) {
-    const { provider, connection, mutations } = harness(
-      [repository()],
-      undefined,
-      undefined,
-      source,
-    );
-    await provider.connect(connection);
-    return ((mutations[0] as any).entities[0].entity.metadata.tags ??
-      []) as string[];
-  }
-
-  it('tags a repository with a direct commit', async () => {
-    const tags = await tagsFor(
-      policySource({ 'oxp-backend': { direct: 8, directMerge: 0 } }),
-    );
-
-    expect(tags).toContain(TAG_DIRECT_COMMITS);
-  });
-
-  it('tags a repository whose only direct arrivals were merges', async () => {
-    // 600 merge commits against 324 merged pull requests estate-wide, so a
-    // merge with no PR behind it is not an edge case.
-    const tags = await tagsFor(
-      policySource({ 'oxp-backend': { direct: 0, directMerge: 3 } }),
-    );
-
-    expect(tags).toContain(TAG_DIRECT_COMMITS);
-  });
-
-  it('leaves a fully pull-request-driven repository untagged', async () => {
-    const tags = await tagsFor(
-      policySource({ 'oxp-backend': { direct: 0, directMerge: 0 } }),
-    );
-
-    expect(tags).not.toContain(TAG_DIRECT_COMMITS);
-  });
-
-  it('leaves an unclassified repository untagged', async () => {
-    // Absence of evidence is not evidence of a bypassed review.
-    const tags = await tagsFor(policySource({}));
-
-    expect(tags).not.toContain(TAG_DIRECT_COMMITS);
-  });
-
-  it('registers the estate anyway when the policy source throws', async () => {
-    const tags = await tagsFor({
-      branchPolicyForWorkspace: async () => {
-        throw new Error('fleet database unavailable');
-      },
-    });
-
-    expect(tags).not.toContain(TAG_DIRECT_COMMITS);
+    expect(entity.metadata.tags ?? []).not.toContain(TAG_DIRECT_COMMITS);
   });
 });
 
@@ -705,7 +776,16 @@ describe('confirmed versus proposed ownership', () => {
     // answers 'unconfirmed' would make the caveat meaningless everywhere.
     const tags = await tagsFor(OWNERSHIP_SOURCE_REGISTER);
 
-    expect(tags).toContain(TAG_CONFIRMED_OWNER);
+    expect(tags).not.toContain(TAG_UNCONFIRMED_OWNER);
+  });
+
+  it('tags a confirmed owner with nothing at all', async () => {
+    // `confirmed-owner` was on 89 of 95 repositories, so it selected 94% of
+    // the estate as a filter and appeared on nearly every row of the catalog
+    // table. Absence of the caveat is what now means confirmed.
+    const tags = await tagsFor(OWNERSHIP_SOURCE_REGISTER);
+
+    expect(tags).not.toContain(TAG_CONFIRMED_OWNER);
     expect(tags).not.toContain(TAG_UNCONFIRMED_OWNER);
   });
 

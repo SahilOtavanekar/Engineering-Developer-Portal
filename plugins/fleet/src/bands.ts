@@ -27,19 +27,34 @@ export const BAND_TEXT: Record<string, string> = {
   critical: 'var(--bui-negative-fg-subdued)',
 };
 
-/** Solid fill, with the text colour that is legible on it. */
+/**
+ * A quiet tint, with coloured text on it.
+ *
+ * Was the saturated `-bg` fill with `-fg` on top. Three fully saturated blocks
+ * across the width of the page pulled the eye before anything else on it,
+ * including the problems the bar exists to lead you to -- and the bar is
+ * context, not the headline. `-bg-subdued` is the same hue at low saturation,
+ * so a band still reads as green, amber or red at a glance without competing
+ * with the content.
+ *
+ * `-bg-subdued` is a BUI token, but the portal theme has to declare it: the
+ * theme overrides only `bg`, `fg`, `fg-subdued` and `border`, so without a
+ * declaration this fell through to BUI's own palette and picked up a different
+ * hue family. See `StatusTokens.bgSubdued`, and the contrast test covers this
+ * text-on-fill pair in both themes.
+ */
 export const BAND_FILL: Record<string, CSSProperties> = {
   healthy: {
-    background: 'var(--bui-positive-bg)',
-    color: 'var(--bui-positive-fg)',
+    background: 'var(--bui-positive-bg-subdued)',
+    color: 'var(--bui-positive-fg-subdued)',
   },
   'needs-attention': {
-    background: 'var(--bui-warning-bg)',
-    color: 'var(--bui-warning-fg)',
+    background: 'var(--bui-warning-bg-subdued)',
+    color: 'var(--bui-warning-fg-subdued)',
   },
   critical: {
-    background: 'var(--bui-negative-bg)',
-    color: 'var(--bui-negative-fg)',
+    background: 'var(--bui-negative-bg-subdued)',
+    color: 'var(--bui-negative-fg-subdued)',
   },
 };
 

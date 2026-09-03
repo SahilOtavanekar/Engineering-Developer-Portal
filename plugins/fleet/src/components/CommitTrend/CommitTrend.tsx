@@ -102,11 +102,14 @@ export function CommitTrend({ trend, bucket }: CommitTrendProps) {
                   MIN_BAR,
                   Math.round((point.commits / peak) * HEIGHT),
                 )}px`,
+                // The accent for real activity; a hairline in the border
+                // colour for an empty bucket, which keeps the gap visible as a
+                // gap rather than letting the bar disappear entirely.
                 background:
                   point.commits > 0
-                    ? 'var(--bui-fg-primary)'
-                    : 'var(--bui-border)',
-                borderRadius: '1px',
+                    ? 'var(--portal-accent)'
+                    : 'var(--bui-border-2)',
+                borderRadius: '2px 2px 0 0',
               }}
             />
           );

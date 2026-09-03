@@ -262,21 +262,37 @@ export class RepositoryStore {
    */
   async classificationForWorkspace(
     workspace: string,
-  ): Promise<Map<string, { type: string; lifecycle: string }>> {
+  ): Promise<
+    Map<string, { type: string; lifecycle: string; language?: string }>
+  > {
     const rows = (await this.db('repository')
       .where({ workspace, is_live: true })
       .whereNotNull('derived_type')
       .whereNotNull('derived_lifecycle')
-      .select('slug', 'derived_type', 'derived_lifecycle')) as Array<{
+      .select(
+        'slug',
+        'derived_type',
+        'derived_lifecycle',
+        // Carried alongside the classification because it comes from the same
+        // pass and the entity provider needs it for the language tag.
+        // Bitbucket detects a language for only 6 of 96 repositories; this is
+        // inferred from manifests and covers 43.
+        'derived_language',
+      )) as Array<{
       slug: string;
       derived_type: string;
       derived_lifecycle: string;
+      derived_language: string | null;
     }>;
 
     return new Map(
       rows.map(row => [
         row.slug,
-        { type: row.derived_type, lifecycle: row.derived_lifecycle },
+        {
+          type: row.derived_type,
+          lifecycle: row.derived_lifecycle,
+          language: row.derived_language ?? undefined,
+        },
       ]),
     );
   }

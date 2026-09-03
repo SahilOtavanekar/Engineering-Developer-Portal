@@ -1,4 +1,4 @@
-import { useMemo, useState, type CSSProperties } from 'react';
+import { useMemo, useState } from 'react';
 import { useApi, fetchApiRef } from '@backstage/frontend-plugin-api';
 import type { FleetOverview } from '@internal/backstage-plugin-fleet-common';
 import { Flex, Link, Skeleton, Text } from '@backstage/ui';
@@ -7,12 +7,33 @@ import { timeAgo } from '../../format';
 import { BAND_LABEL, BAND_TEXT } from '../../bands';
 import { filterRepositories, type FleetFilters } from '../../filter';
 import { FleetFiltersBar } from './FleetFilters';
+import {
+  NUMERIC,
+  fixedTable,
+  headerCell,
+  nowrapCell,
+  tablePanel,
+  tableScroll,
+  truncatedCell,
+} from '../../surfaces';
 
-const cell: CSSProperties = {
-  padding: '0.5rem 0.75rem',
-  borderBottom: '1px solid var(--bui-border-soft, #e2e7f0)',
-  verticalAlign: 'top',
-};
+/**
+ * The columns, and the width each one gets.
+ *
+ * Percentages total 100. They are deliberately uneven: `Score` holds at most
+ * three characters where `Repository` holds names like
+ * `daarwyn-user-mgmt-services`, and the automatic table layout's instinct to
+ * even them out is exactly the behaviour being replaced here.
+ */
+const COLUMNS: ReadonlyArray<{ heading: string; width: string }> = [
+  { heading: 'Repository', width: '23%' },
+  { heading: 'Score', width: '6%' },
+  { heading: 'Status', width: '11%' },
+  { heading: 'Last commit', width: '11%' },
+  { heading: 'Created by', width: '14%' },
+  { heading: 'Contributors', width: '20%' },
+  { heading: 'Owner', width: '15%' },
+];
 
 /**
  * Contributor names for one table cell.
@@ -95,130 +116,141 @@ export function FleetPage() {
       {visible.length === 0 ? (
         <Text color="secondary">No repositories match these filters.</Text>
       ) : (
-        <div style={{ overflowX: 'auto' }}>
-          <table
-            style={{
-              borderCollapse: 'collapse',
-              width: '100%',
-              minWidth: '62rem',
-            }}
-          >
-            <thead>
-              <tr>
-                {[
-                  'Repository',
-                  'Score',
-                  'Band',
-                  'Last commit',
-                  'Created by',
-                  'Contributors',
-                  'Owner?',
-                  'Stack',
-                ].map(heading => (
-                  <th
-                    key={heading}
-                    style={{
-                      textAlign: 'left',
-                      padding: '0.5rem 0.75rem',
-                      borderBottom: '1px solid var(--bui-border, #d2d9e6)',
-                      whiteSpace: 'nowrap',
-                    }}
-                  >
-                    <Text variant="body-x-small" color="secondary">
-                      {heading}
-                    </Text>
-                  </th>
+        // The table is given a card of its own, so it reads as a dashboard
+        // surface rather than as markup sitting directly on the page. The
+        // scroll lives on the inner wrapper: putting it on the panel would
+        // scroll the rounded corners and the shadow along with the rows.
+        <div style={tablePanel}>
+          <div style={tableScroll}>
+            <table style={fixedTable('64rem')}>
+              {/* Widths live here rather than on the cells: under
+                  `table-layout: fixed` the colgroup is the only thing that
+                  sets them, and keeping all eight in one place is what makes
+                  it obvious that they still total 100. Sized to the estate's
+                  real content -- Score holds two digits, Contributors holds up
+                  to three names. */}
+              <colgroup>
+                {COLUMNS.map(column => (
+                  <col key={column.heading} style={{ width: column.width }} />
                 ))}
-              </tr>
-            </thead>
-            <tbody>
-              {visible.map(repository => (
-                <tr key={repository.entityRef}>
-                  <td style={cell}>
-                    <Link
-                      href={`/catalog/default/component/${repository.slug}`}
-                    >
-                      {repository.slug}
-                    </Link>
-                  </td>
-                  <td style={{ ...cell, fontVariantNumeric: 'tabular-nums' }}>
-                    <Text
-                      style={
-                        repository.score
-                          ? { color: BAND_TEXT[repository.score.band] }
-                          : undefined
+              </colgroup>
+              <thead>
+                <tr>
+                  {COLUMNS.map(column => (
+                    <th key={column.heading} style={headerCell}>
+                      {column.heading}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {visible.map(repository => (
+                  <tr key={repository.entityRef}>
+                    <td style={truncatedCell} title={repository.slug}>
+                      <Link
+                        href={`/catalog/default/component/${repository.slug}`}
+                      >
+                        {repository.slug}
+                      </Link>
+                    </td>
+                    <td style={{ ...nowrapCell, ...NUMERIC }}>
+                      <Text
+                        style={
+                          repository.score
+                            ? { color: BAND_TEXT[repository.score.band] }
+                            : undefined
+                        }
+                      >
+                        {repository.score ? repository.score.total : '—'}
+                      </Text>
+                    </td>
+                    <td style={nowrapCell}>
+                      <Text
+                        variant="body-small"
+                        style={
+                          repository.score
+                            ? { color: BAND_TEXT[repository.score.band] }
+                            : undefined
+                        }
+                      >
+                        {repository.score
+                          ? BAND_LABEL[repository.score.band] ??
+                            repository.score.band
+                          : 'Not scored'}
+                      </Text>
+                    </td>
+                    <td style={nowrapCell}>
+                      <Text variant="body-small" color="secondary">
+                        {timeAgo(repository.lastCommitAt) ?? 'Never'}
+                      </Text>
+                    </td>
+                    <td
+                      style={truncatedCell}
+                      title={
+                        repository.createdBy?.name ??
+                        repository.createdBy?.email ??
+                        undefined
                       }
                     >
-                      {repository.score ? repository.score.total : '—'}
-                    </Text>
-                  </td>
-                  <td style={cell}>
-                    <Text
-                      variant="body-small"
-                      style={
-                        repository.score
-                          ? { color: BAND_TEXT[repository.score.band] }
-                          : undefined
-                      }
-                    >
-                      {repository.score
-                        ? BAND_LABEL[repository.score.band] ??
-                          repository.score.band
-                        : 'Not scored'}
-                    </Text>
-                  </td>
-                  <td style={cell}>
-                    <Text variant="body-small" color="secondary">
-                      {timeAgo(repository.lastCommitAt) ?? 'Never'}
-                    </Text>
-                  </td>
-                  <td style={cell}>
-                    {/* Bitbucket records no creator, so this is the author of
+                      {/* Bitbucket records no creator, so this is the author of
                         the earliest commit. Where history was imported that
                         author may never have touched this repository, which is
                         what the asterisk marks -- the repository page explains
                         it in full. */}
-                    <Text variant="body-small" color="secondary">
-                      {repository.createdBy
-                        ? `${
-                            repository.createdBy.name ??
-                            repository.createdBy.email ??
+                      <Text variant="body-small" color="secondary">
+                        {repository.createdBy
+                          ? `${
+                              repository.createdBy.name ??
+                              repository.createdBy.email ??
+                              '—'
+                            }${
+                              repository.createdBy.importedHistory ? ' *' : ''
+                            }`
+                          : '—'}
+                      </Text>
+                    </td>
+                    <td
+                      style={truncatedCell}
+                      title={repository.contributors?.join(' · ')}
+                    >
+                      <Text variant="body-small" color="secondary">
+                        {repository.contributors &&
+                        repository.contributors.length > 0
+                          ? formatContributors(repository.contributors)
+                          : '—'}
+                      </Text>
+                    </td>
+                    <td
+                      style={truncatedCell}
+                      title={
+                        repository.proposedOwner?.name ??
+                        repository.proposedOwner?.email ??
+                        undefined
+                      }
+                    >
+                      {/* Headed "Owner", not "Owner?".
+                        The question mark was right when every name here was a
+                        guess drawn from commit history and the catalog recorded
+                        all 95 repositories as unowned. Since the ownership
+                        register landed that is no longer true: 89 of 95 owners
+                        are confirmed by a document somebody wrote, and only 6
+                        are inferred. Hedging all of them undersells the
+                        confirmed ones. The 6 guesses are still marked -- they
+                        carry the `unconfirmed-owner` tag, and the repository
+                        page says so in words. */}
+                      <Text variant="body-small" color="secondary">
+                        {repository.proposedOwner
+                          ? repository.proposedOwner.name ??
+                            repository.proposedOwner.email ??
                             '—'
-                          }${repository.createdBy.importedHistory ? ' *' : ''}`
-                        : '—'}
-                    </Text>
-                  </td>
-                  <td style={cell}>
-                    <Text variant="body-small" color="secondary">
-                      {repository.contributors &&
-                      repository.contributors.length > 0
-                        ? formatContributors(repository.contributors)
-                        : '—'}
-                    </Text>
-                  </td>
-                  <td style={cell}>
-                    {/* Deliberately headed "Owner?" -- every name in this
-                        column is a proposal drawn from commit history, and the
-                        catalog still records these repositories as unowned. */}
-                    <Text variant="body-small" color="secondary">
-                      {repository.proposedOwner
-                        ? repository.proposedOwner.name ??
-                          repository.proposedOwner.email ??
-                          '—'
-                        : '—'}
-                    </Text>
-                  </td>
-                  <td style={cell}>
-                    <Text variant="body-small" color="secondary">
-                      {repository.techStack && repository.techStack.length > 0
-                        ? repository.techStack.slice(0, 3).join(' · ')
-                        : repository.projectKey ?? '—'}
-                    </Text>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                          : '—'}
+                      </Text>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
     </Flex>

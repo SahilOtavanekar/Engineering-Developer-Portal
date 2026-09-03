@@ -33,22 +33,13 @@ auth:
     guest: {}
 
 catalog:
-  # Overrides the default list locations from app-config.yaml as these contain example data.
-  # See https://backstage.io/docs/features/software-catalog/#adding-components-to-the-catalog for more details
-  # on how to get entities into the catalog.
+  # Overrides the location list from app-config.yaml, because paths are relative
+  # to the backend process and that is the container root here, not
+  # `packages/backend`.
+  #
+  # Components are not listed: they come from the Bitbucket entity provider, not
+  # from a file. This is only the people and groups.
   locations:
-    # Local example data, replace this with your production config, these are intended for demo use only.
-    # File locations are relative to the backend process, typically in a deployed context, such as in a Docker container, this will be the root
-    - type: file
-      target: ./examples/entities.yaml
-
-    # Local example template
-    - type: file
-      target: ./examples/template/template.yaml
-      rules:
-        - allow: [Template]
-
-    # Local example organizational data
     - type: file
       target: ./examples/org.yaml
       rules:

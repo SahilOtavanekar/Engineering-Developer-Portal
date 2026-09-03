@@ -10,6 +10,7 @@ import {
   useEntity,
 } from '@backstage/plugin-catalog-react';
 import { Card, CardBody, CardHeader, Flex, Link, Text } from '@backstage/ui';
+import { BORDER_SOFT, sectionLabel, tag as TAG } from '../../surfaces';
 
 const EMPTY = '—';
 
@@ -35,23 +36,10 @@ const ROW: CSSProperties = {
   gap: '0.15rem',
 };
 
-const TAG: CSSProperties = {
-  fontSize: '0.6875rem',
-  padding: '0.1rem 0.45rem',
-  borderRadius: '2px',
-  border: '1px solid var(--bui-border)',
-  background: 'var(--bui-bg-surface-2, #f5f7fa)',
-  whiteSpace: 'nowrap',
-};
-
 function Row({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div style={ROW}>
-      <Text
-        variant="body-x-small"
-        color="secondary"
-        style={{ textTransform: 'uppercase', letterSpacing: '0.05em' }}
-      >
+      <Text variant="body-x-small" color="secondary" style={sectionLabel}>
         {label}
       </Text>
       {/* `minWidth: 0` lets a long owner name wrap instead of forcing the
@@ -151,12 +139,7 @@ export function AboutCard({ entity }: { entity: Entity }) {
           </Row>
 
           {href && (
-            <div
-              style={{
-                borderTop: '1px solid var(--bui-border-soft, #e2e7f0)',
-                paddingTop: '0.75rem',
-              }}
-            >
+            <div style={{ borderTop: BORDER_SOFT, paddingTop: '0.75rem' }}>
               <Link href={href} target="_blank" rel="noreferrer">
                 View source
               </Link>
