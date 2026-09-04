@@ -30,6 +30,54 @@ export function bucketLabel(start: string, bucket: TrendBucket): string {
   });
 }
 
+/**
+ * The period a bucket actually covers, for the tooltip.
+ *
+ * **`bucketLabel` names the instant a bucket starts, which on a weekly or
+ * monthly chart is not what the bar measures.** The axis can live with that --
+ * a tick marking where a period begins is the ordinary convention -- but a
+ * tooltip cannot: "3 Aug: 147 commits" states, in as many words, that 147
+ * commits were made on the third of August. The real figure was 147 commits
+ * across the week of 3 to 9 August, and the peak day inside it was nothing
+ * like 147.
+ *
+ * Weeks start on Monday because `date_trunc('week', ...)` in
+ * `ProductivityStore` is Postgres's ISO week, which does. Verified against the
+ * stored data rather than assumed: every bucket start for the productivity
+ * chart came back a Monday.
+ *
+ * A month bucket carries its year. That granularity is only chosen for a window
+ * over 200 days, which is long enough to span a December.
+ */
+export function bucketRangeLabel(start: string, bucket: TrendBucket): string {
+  const from = new Date(start);
+  if (Number.isNaN(from.getTime())) return '';
+
+  if (bucket === 'day') return bucketLabel(start, bucket);
+
+  if (bucket === 'month') {
+    return from.toLocaleDateString('en-GB', {
+      month: 'short',
+      year: 'numeric',
+      timeZone: 'UTC',
+    });
+  }
+
+  // Six days on, not seven: a Monday-to-Sunday week is inclusive at both ends,
+  // and adding a whole week would name the following Monday.
+  const to = new Date(from.getTime() + 6 * 86_400_000);
+  const day = (d: Date) =>
+    d.toLocaleDateString('en-GB', { day: 'numeric', timeZone: 'UTC' });
+  // The month is stated once when the week sits inside one, and twice when it
+  // straddles two -- "31 Aug - 6 Sep" has to name both to be readable at all.
+  return from.getUTCMonth() === to.getUTCMonth()
+    ? `${day(from)}-${bucketLabel(to.toISOString(), 'week')}`
+    : `${bucketLabel(start, 'week')} - ${bucketLabel(
+        to.toISOString(),
+        'week',
+      )}`;
+}
+
 export interface CommitTrendProps {
   /** Oldest bucket first. */
   trend: CommitTrendPoint[];
@@ -83,9 +131,12 @@ export function CommitTrend({ trend, bucket }: CommitTrendProps) {
         }}
       >
         {trend.map(point => {
-          const label = `${bucketLabel(point.start, bucket)}: ${
+          // The range, not the start -- and the singular, because "1 commits"
+          // on the quietest bar of a chart about commit volume is the kind of
+          // sloppiness a reader notices.
+          const label = `${bucketRangeLabel(point.start, bucket)}: ${
             point.commits
-          } commits`;
+          } ${point.commits === 1 ? 'commit' : 'commits'}`;
           return (
             <div
               key={point.start}

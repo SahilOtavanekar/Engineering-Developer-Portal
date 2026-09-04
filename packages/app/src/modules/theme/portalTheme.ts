@@ -1110,6 +1110,13 @@ body {
   --portal-surface-solid: ${t.surface.solid};
   --portal-surface-raised: ${t.surface[3]};
 
+  /* The page title bar's own ground.
+     'PortalPageLayout' paints itself from this, and without it emitted the
+     declaration is invalid at computed-value time -- measured in the running
+     app the header resolved to rgba(0, 0, 0, 0), i.e. no ground at all, which
+     collapses the sidebar/header/page/card ladder at its second step. */
+  --portal-header-bg: ${t.bg.header};
+
   --portal-shadow-soft: ${t.shadow.soft};
   --portal-shadow-card: ${t.shadow.card};
   --portal-shadow-raised: ${t.shadow.raised};
@@ -1217,6 +1224,61 @@ body {
    and :focus:not(:focus-visible) removes the browser default for mouse users
    so the ring means "you are navigating by keyboard" rather than "you clicked
    something". */
+/* Native form controls: the select popup, the scrollbars, the caret.
+
+   'color-scheme' is the whole reason the repository dropdown on the
+   productivity page did not match the portal, and it was declared NOWHERE in
+   this codebase. It is the only channel by which a page tells the browser it is
+   dark, and without it every piece of chrome the browser draws rather than the
+   page comes from the OS default: the select popup and its highlight, the
+   scrollbar track and thumb, the dropdown arrow, autofill backgrounds, date
+   and number spinners. A near-black portal was opening a mid-grey list with the
+   Windows accent blue on the selected row.
+
+   Declared on ':root' as well as 'body' because the document scrollbar and the
+   canvas hang off the root element, not off body -- the same trap as the token
+   block above, in a different guise. Literal rather than token-driven: this
+   stylesheet is emitted once per theme, so the mode is known here. */
+:root,
+body,
+select,
+textarea,
+input {
+  color-scheme: ${mode};
+}
+
+/* The popup list itself, as far as CSS can reach it.
+
+   **Best-effort and engine-dependent, unlike the rule above.** The option list
+   is drawn by the browser, not composited from the page: Blink and Gecko honour
+   a background and a colour on 'option', WebKit ignores both. So 'color-scheme'
+   is what carries Safari to something reasonable, and these rules are what stop
+   Chrome's dark popup reading as neutral grey beside a green-cast portal.
+   Neither can restyle the popup's border, shadow or corner radius, and full
+   control would mean replacing the control with a listbox -- keyboard
+   navigation, ARIA and focus management included.
+
+   **Opaque values only.** The popup is painted over whatever the window manager
+   has behind it rather than over the page, so a translucent surface token would
+   composite against something unknowable. That rules out surface[3], the
+   raised-ground token this would otherwise take. */
+option,
+optgroup {
+  background-color: ${t.surface.solid};
+  color: ${t.fg.primary};
+}
+option:disabled {
+  color: ${t.fg.muted};
+}
+/* The selected row. Chrome overrides this with the system highlight in some
+   versions, which is why the rule above has to stand on its own. The pair is
+   the already contrast-tested one -- note that in dark mode 'accent.on' is
+   near-black, because white on this emerald measures 2.5:1. */
+option:checked {
+  background-color: ${t.accent.base};
+  color: ${t.accent.on};
+}
+
 :focus-visible {
   outline: 2px solid ${t.accent.ring};
   outline-offset: 2px;

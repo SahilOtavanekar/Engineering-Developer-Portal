@@ -21,9 +21,23 @@ import { Link } from '@backstage/core-components';
  * changes -- this reimplements the same contract, which is why every prop below
  * is handled rather than only the ones we happen to use today.
  *
- * The one deliberate behavioural difference is `titleLink`: the stock layout
- * accepts it and never renders it, so a page title is dead text even when the
- * plugin has told the layout where it points. Here it becomes a link.
+ * `titleLink` is accepted and deliberately NOT rendered, which matches the
+ * stock layout. It was briefly turned into a link here, on the reasoning that
+ * the plugin had told the layout where the title points and the stock layout
+ * was throwing that away. The premise was wrong, and it shipped a real defect:
+ * clicking "Productivity" in the header navigated to the Health Dashboard.
+ *
+ * `PageBlueprint` computes it as
+ * `node.spec.plugin.routes.root ?? params.routeRef` -- the route root of the
+ * *plugin*, not of the page. The fleet plugin declares `root: fleetRouteRef`,
+ * so both of its pages receive `/fleet`. A page title is the page's own name
+ * here, so the only two outcomes are a pointless self-link on `/fleet` and a
+ * misleading one everywhere else. There is no third case to preserve.
+ *
+ * It would carry meaning for a plugin whose sub-pages are tabs, where the
+ * title is the plugin's name and the link means "back to the plugin root".
+ * No plugin in this portal is built that way; add the `tabs` condition when
+ * one is, rather than leaving a dormant branch nothing exercises.
  */
 const useStyles = makeStyles(
   theme => ({
@@ -90,11 +104,6 @@ const useStyles = makeStyles(
       textOverflow: 'ellipsis',
       whiteSpace: 'nowrap',
     },
-    titleLink: {
-      color: 'inherit',
-      minWidth: 0,
-      '&:hover': { textDecoration: 'none' },
-    },
     actions: {
       marginLeft: 'auto',
       display: 'flex',
@@ -147,8 +156,8 @@ const useStyles = makeStyles(
 );
 
 export function PortalPageLayout(props: PageLayoutProps) {
-  const { title, icon, noHeader, titleLink, headerActions, tabs, children } =
-    props;
+  // `titleLink` is intentionally not destructured -- see the note above.
+  const { title, icon, noHeader, headerActions, tabs, children } = props;
   const classes = useStyles();
 
   const hasTabs = Boolean(tabs && tabs.length > 0);
@@ -161,17 +170,7 @@ export function PortalPageLayout(props: PageLayoutProps) {
           {title && (
             <div className={classes.titleRow}>
               {icon && <span className={classes.icon}>{icon}</span>}
-              {titleLink ? (
-                <Link
-                  to={titleLink}
-                  className={classes.titleLink}
-                  underline="none"
-                >
-                  <h1 className={classes.title}>{title}</h1>
-                </Link>
-              ) : (
-                <h1 className={classes.title}>{title}</h1>
-              )}
+              <h1 className={classes.title}>{title}</h1>
               {headerActions && headerActions.length > 0 && (
                 <div className={classes.actions}>{headerActions}</div>
               )}

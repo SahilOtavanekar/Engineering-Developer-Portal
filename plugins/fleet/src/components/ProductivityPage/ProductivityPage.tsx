@@ -7,6 +7,13 @@ import { formatHours, timeAgo } from '../../format';
 import { buildPeriods, findPeriod, type PeriodId } from '../../periods';
 import { CommitTrend } from '../CommitTrend';
 import {
+  ariaSort,
+  nextSort,
+  sortEngineers,
+  type Sort,
+  type SortKey,
+} from './sorting';
+import {
   cell,
   chip,
   fixedTable,
@@ -31,18 +38,97 @@ import {
 const COLUMNS: ReadonlyArray<{
   heading: string;
   width: string;
+  sort: SortKey;
   numeric?: true;
 }> = [
-  { heading: 'Engineer', width: '22%' },
-  { heading: 'Commits', width: '8%', numeric: true },
-  { heading: 'Repos', width: '7%', numeric: true },
-  { heading: 'PRs opened', width: '10%', numeric: true },
-  { heading: 'Reviewed', width: '9%', numeric: true },
-  { heading: 'Approved', width: '9%', numeric: true },
-  { heading: 'Merged', width: '8%', numeric: true },
-  { heading: 'Avg merge', width: '11%', numeric: true },
-  { heading: 'Last commit', width: '16%' },
+  { heading: 'Engineer', width: '22%', sort: 'name' },
+  // Four widths moved when the headers became sortable, and it was not
+  // cosmetic. Measured in the running page at two viewports, seven of the nine
+  // headings had zero or negative room left after their cell's 32px of padding
+  // -- 'COMMITS' overflowed by 7px and was spilling into the padding, which
+  // 'nowrap' under a fixed layout hides in silence. There was nowhere to put a
+  // sort caret. The 2% comes from 'Last commit', which had 49px spare against a
+  // longest value of "2 weeks ago".
+  { heading: 'Commits', width: '9%', sort: 'commits', numeric: true },
+  { heading: 'Repos', width: '7%', sort: 'activeRepositories', numeric: true },
+  {
+    heading: 'PRs opened',
+    width: '10.5%',
+    sort: 'pullRequestsCreated',
+    numeric: true,
+  },
+  {
+    heading: 'Reviewed',
+    width: '9%',
+    sort: 'pullRequestsReviewed',
+    numeric: true,
+  },
+  {
+    heading: 'Approved',
+    width: '9.5%',
+    sort: 'pullRequestsApproved',
+    numeric: true,
+  },
+  { heading: 'Merged', width: '8%', sort: 'pullRequestsMerged', numeric: true },
+  {
+    heading: 'Avg merge',
+    width: '11%',
+    sort: 'averageMergeHours',
+    numeric: true,
+  },
+  { heading: 'Last commit', width: '14%', sort: 'lastCommitAt' },
 ];
+
+/**
+ * A column heading that is also its sort control.
+ *
+ * A button rather than a click handler on the cell: a bare 'onClick' on a 'th'
+ * cannot be reached by keyboard and is announced as nothing, which is the usual
+ * way a hand-rolled sortable table becomes mouse-only.
+ *
+ * Inherits alignment from the cell so a numeric heading stays flush right over
+ * its column of figures, and re-declares the letter-spacing and capitals the
+ * user-agent button styles would otherwise drop.
+ */
+const sortButton: CSSProperties = {
+  appearance: 'none',
+  background: 'none',
+  border: 'none',
+  padding: 0,
+  margin: 0,
+  width: '100%',
+  font: 'inherit',
+  color: 'inherit',
+  textAlign: 'inherit',
+  textTransform: 'inherit',
+  letterSpacing: 'inherit',
+  whiteSpace: 'nowrap',
+  cursor: 'pointer',
+};
+
+/**
+ * The sort direction, drawn in the cell's padding rather than beside the label.
+ *
+ * There is no room in the text box -- see the note on the widths above -- so
+ * this is taken out of flow entirely and laid over the padding, which costs the
+ * heading no space at all and cannot reflow a fixed-layout column.
+ *
+ * It sits on the side away from the values: left of a right-aligned numeric
+ * heading, so the heading stays aligned with the digits beneath it, and right of
+ * a left-aligned one.
+ */
+const caret = (rightAligned?: true): CSSProperties => ({
+  position: 'absolute',
+  top: '50%',
+  transform: 'translateY(-50%)',
+  ...(rightAligned ? { left: '5px' } : { right: '5px' }),
+  fontSize: '0.6rem',
+  lineHeight: 1,
+  color: 'var(--portal-accent)',
+  // The label is the click target; an arrow that swallowed the pointer would
+  // make the active column the one header that did not respond.
+  pointerEvents: 'none',
+});
 
 /** Grid so repository names line up in columns rather than a ragged list. */
 const repositoryGrid: CSSProperties = {
@@ -117,6 +203,11 @@ export function ProductivityPage() {
   // A set, not a single key: comparing two engineers side by side is the
   // reason to expand a row rather than open a page.
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
+  // 'undefined' is the server's own ranking -- commits, then pull requests,
+  // then name -- and is what the page opens in. Declared with the other hooks
+  // rather than after the loading guards below: a 'useState' past an early
+  // return is a conditional hook.
+  const [sort, setSort] = useState<Sort | undefined>();
 
   const period = findPeriod(periods, periodId);
   const { value, loading, error } = useProductivity(
@@ -137,6 +228,11 @@ export function ProductivityPage() {
   if (!value) return <Text color="secondary">No figures yet.</Text>;
 
   const { engineers, repositories, unattributed, trendBucket } = value;
+
+  // Not memoised, and not an oversight: the destructure above sits below three
+  // early returns, so a hook here would be conditional. Thirteen rows and a
+  // comparator is nothing next to the render it is part of.
+  const rows = sortEngineers(engineers, sort);
 
   const toggleExpanded = (key: string) =>
     setExpanded(current => {
@@ -230,18 +326,47 @@ export function ProductivityPage() {
               </colgroup>
               <thead>
                 <tr>
-                  {COLUMNS.map(column => (
-                    <th
-                      key={column.heading}
-                      style={column.numeric ? numericHeaderCell : headerCell}
-                    >
-                      {column.heading}
-                    </th>
-                  ))}
+                  {COLUMNS.map(column => {
+                    const active = sort?.key === column.sort;
+                    return (
+                      <th
+                        key={column.heading}
+                        // Read by a screen reader instead of the arrow, which
+                        // is decoration and hidden from one.
+                        aria-sort={ariaSort(sort, column.sort)}
+                        style={{
+                          ...(column.numeric ? numericHeaderCell : headerCell),
+                          // The containing block for the caret, which is taken
+                          // out of flow so that it costs the heading no width.
+                          position: 'relative',
+                          // The active column carries the accent. With no space
+                          // for a permanent arrow on every heading, colour is
+                          // what says which column the order comes from.
+                          ...(active ? { color: 'var(--portal-accent)' } : {}),
+                        }}
+                      >
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setSort(current => nextSort(current, column.sort))
+                          }
+                          style={sortButton}
+                          title={`Sort by ${column.heading.toLowerCase()}`}
+                        >
+                          {column.heading}
+                        </button>
+                        {active && (
+                          <span aria-hidden style={caret(column.numeric)}>
+                            {sort?.direction === 'asc' ? '▲' : '▼'}
+                          </span>
+                        )}
+                      </th>
+                    );
+                  })}
                 </tr>
               </thead>
               <tbody>
-                {engineers.map(e => (
+                {rows.map(e => (
                   <Fragment key={e.key}>
                     <tr>
                       <td style={cell}>

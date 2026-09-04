@@ -831,6 +831,30 @@ connection`, which took `/api/catalog` down to 404 and left every page in the
   these styles. It is also what makes them follow a light/dark switch with no
   React state: the browser resolves them at paint time.
 
+- **`color-scheme` was declared nowhere, and it is the only thing that tells a
+  browser the page is dark.** Without it every piece of chrome the browser draws
+  rather than the page came from the OS default: the `select` popup and its
+  highlight, the scrollbar track and thumb, the dropdown caret, autofill, date
+  and number spinners. The productivity page's repository dropdown opened as a
+  mid-grey list with the Windows accent blue on the selected row, inside a
+  near-black portal. Declared on `:root` as well as `body` -- the document
+  scrollbar and the canvas hang off the root element, and this is the same trap
+  as the token block, in a different guise.
+  **The option list is only partly reachable, and the difference matters.**
+  `color-scheme` is standard and carries every engine; a `background-color` on
+  `option` is honoured by Blink and Gecko and **ignored by WebKit**, so it is a
+  refinement on top rather than the fix. Its border, shadow and radius cannot be
+  reached at all -- that would mean replacing the control with a listbox,
+  keyboard navigation and ARIA included. Values there must be **opaque**: the
+  popup is painted over whatever the window manager has behind it rather than
+  over the page, so `surface[3]`, the raised-ground token it would otherwise
+  take, composites against something unknowable.
+  Verified live 2026-09-03 rather than reasoned about: dark mode computes
+  `color-scheme: dark` on root, body and the select, `option` background
+  `rgb(17, 24, 35)` and colour `rgb(230, 237, 245)`. **A Playwright screenshot
+  cannot show the open popup** -- it is drawn by the OS outside the page's
+  compositing surface -- so the computed values are the evidence, and the open
+  list is the one thing here only a person can confirm.
 - **`globalCss` is a template literal, so a backtick in a CSS comment ends the
   string.** This broke the build three separate times, always the same way:
   writing `` `body` `` or `` `spacing` `` inside an explanatory comment. The
