@@ -20,6 +20,27 @@ export const BAND_LABEL: Record<string, string> = {
   critical: 'Critical',
 };
 
+/**
+ * How bad a band is, for ordering.
+ *
+ * Sorting the labels alphabetically yields critical, healthy, needs-attention,
+ * which is not an ordering of anything -- so the Status column needs a rank
+ * rather than its text. Worst is highest, so that a descending sort puts the
+ * repositories needing attention on top and the column behaves like every
+ * other measure on the table.
+ *
+ * A band absent from this map has no known severity and is treated as missing
+ * rather than as healthy, which is the same rule the rest of the table follows
+ * for data it does not have. `BAND_LABEL` is keyed the same loose way, and for
+ * the same reason: the band arrives as a string from a scoring pass whose
+ * thresholds are configuration.
+ */
+export const BAND_SEVERITY: Record<string, number> = {
+  healthy: 0,
+  'needs-attention': 1,
+  critical: 2,
+};
+
 /** Coloured text on the page background. */
 export const BAND_TEXT: Record<string, string> = {
   healthy: 'var(--bui-positive-fg-subdued)',

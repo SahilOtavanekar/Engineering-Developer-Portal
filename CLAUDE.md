@@ -26,7 +26,7 @@ Target is the organization's **real Bitbucket estate**, not a sandbox.
 | Custom plugins  | `fleet-common`, `fleet-backend`, `fleet` (frontend)          |
 | Scorecard       | 8 metrics, all live — 100 of 100 weight registered           |
 | Branches        | Divergence measured on its own 6h pass, **not scored**       |
-| Progress        | 937 tests, 51 suites, 4 e2e                                  |
+| Progress        | 987 tests, 53 suites, 4 e2e                                  |
 | Theme           | Custom, token-driven — `packages/app/src/modules/theme`      |
 
 ## Measured facts about the estate
@@ -317,6 +317,14 @@ override.
 - **Do not delete `routes.ts` when stripping scaffolder demo code.** The
   generated `routeRef` and the plugin's `routes:` block are load-bearing, not
   part of the demo.
+- **A second suite flakes the same way, and it is Postgres-backed too.**
+  `CommitHistoryOwnershipResolver.test.ts` failed **18 of 18** in a full run
+  that took it 164 seconds, and passed **18 of 18** run alone in a fraction of
+  that. Same signature as the `plugin.test.ts` flake below -- fine in
+  isolation, fails under full-suite concurrency, and the timing points at
+  contention or timeouts rather than logic. **Do not read a full-run failure in
+  a database-backed suite as a regression until it has been run alone.** Two
+  suites now show it, so the cause is more likely shared than local.
 - **Unexplained flake, now worked around:** `plugin.test.ts` used to assert the
   `sync_state` primary key _behaviourally_, by inserting a duplicate and
   expecting a rejection. In the full-repo run that failed roughly one run in
@@ -766,9 +774,16 @@ connection`, which took `/api/catalog` down to 404 and left every page in the
   vanishes: `catalog-filter:catalog/kind` and friends attach to it.
   Deleting the module restores the stock page exactly.
   It also unlocks `columns`, `emptyContent` and `actions`, which the positional
-  column-hiding CSS in the theme is a workaround for -- **that CSS could now be
-  replaced with a real `columns` function**, and should be, next time it needs
-  touching.
+  column-hiding CSS in the theme is a workaround for. **That has now been
+  done**: the module passes a `columns` array naming Name, Project, Owner and
+  Tags, plus `actions={[]}` to drop the Actions column, and the positional
+  `thead th:nth-child(n + 4):not(:last-child):not(:nth-last-child(2))` rule is
+  gone from the theme along with the standing warning that an upstream reorder
+  would silently hide the wrong columns.
+  **Removing Actions moved a second rule onto the wrong column.** The theme
+  shrank the last two columns to `width: 1%` because Tags sat beside Actions;
+  with Actions gone, `nth-last-child(2)` was Owner, which holds the longest
+  values on the page. One rule now, on the last child only.
 - **Passing no `pagination` to `CatalogIndexPage` silently reorders the table.**
   Found by diffing row order after the override above. The stock extension
   passes `config.pagination`, which defaults to `true` and means cursor mode --
@@ -819,6 +834,169 @@ connection`, which took `/api/catalog` down to 404 and left every page in the
   than a heading and its content. Headings are `body-small` in the primary
   colour now, and `sectionHeading` exists beside `sectionLabel` rather than
   reusing it because 0.06em tracking is tuned for 11px and reads gappy at 14px.
+- **`spec.lifecycle` is REQUIRED by the Component schema, so "remove
+  lifecycle" can only ever mean the UI.** `Component.v1alpha1.schema.json` has
+  `required: ["type", "lifecycle", "owner"]` -- an entity without it fails
+  validation and is never ingested, so deleting it from
+  `BitbucketRepositoryEntityProvider` would empty the catalog of all 98
+  components. It is removed from the About card, the "Repositories" table, the
+  catalog column and the catalog filter, and it stays in `spec`.
+  The entity header is the one place it could not be removed: `EntityHeaderBui`
+  pushes it only `if (lifecycle)`, so blanking `entityLabels.lifecycleLabel`
+  would leave the value with no label, and the header is neither an extension
+  nor a swappable component -- `EntityLayoutBui` imports it directly.
+- **"System" reads as "Project" through three separate surfaces, and one of
+  them had to be hidden instead.** `entityTableColumnTitle.system` on
+  `catalogReactTranslationRef` renames the catalog column;
+  `entityLabels.systemLabel` on `catalogTranslationRef` renames the entity
+  header's metadata row; `AboutCard` owns its own label. **The kind tag above an
+  entity's title is not translatable** -- `EntityHeaderBui` renders
+  `entity.kind` raw -- so `bui-HeaderTags` is hidden in `globalCss`, which is
+  defensible on every kind because the About card states the kind, the
+  breadcrumb states the section and the title states the entity.
+  The `kind` itself stays `System` in the model, in refs and in URLs; renaming
+  it would invalidate every stored `spec.system` and every link. `AboutCard`
+  maps it for display only.
+- **A row is hidden when a field does not APPLY, never merely because it is
+  empty.** Reclaiming height on the About card by dropping empty rows reversed
+  a decision the card's own test records -- "says so plainly when a field is
+  absent rather than leaving a gap" -- and the full suite caught it. An em-dash
+  says the portal looked and found nothing; a missing row says nothing at all,
+  and the reader cannot tell absent data from an inapplicable field. What was
+  actually wrong is narrower: `Project` and `Type` are Component `spec` fields,
+  so on a Project's own page they are meaningless rather than absent, and
+  "PROJECT --" there invited a hunt for data that cannot exist. Gate on the
+  kind, keep the em-dash everywhere it means something.
+- **Table sorting is one comparator in `plugins/fleet/src/sorting.ts`, and the
+  absent case is the whole of it.** Both hand-rolled tables sort client-side --
+  each endpoint sends every row in one response, so a server sort would add a
+  query parameter and a round trip per click to reorder data already in the
+  browser. Each page supplies only its keys, how to read a cell, and a
+  tiebreaker; the generic core was extracted rather than written twice, and the
+  refactor is provably behaviour-preserving because the 19 productivity tests
+  passed unchanged.
+  **Absent values sort last whichever way the column points**, and the check
+  sits _outside_ the direction flip -- folding it in sends blanks to whichever
+  end the arrow happens to point at. Every sortable column has them: a
+  repository never scored, one with no commit (48 of them), one nobody owns; an
+  engineer with no merged pull requests, or who reviews and has never committed.
+  Treating those as zero opens an ascending sort with a screen of em-dashes, and
+  on a merge-time column **zero is a real value that must outrank "no data"** --
+  a test pins exactly that.
+  **Status sorts on a rank, never on its text.** Alphabetical gives critical,
+  healthy, needs-attention, which orders nothing. `BAND_SEVERITY` in `bands.ts`
+  runs worst-highest so descending puts Critical on top like every other
+  measure, and a band absent from the map sorts as missing rather than as
+  healthy -- thresholds are configuration, so an unknown name is possible and
+  ranking it 0 would present it as the healthiest thing on the estate.
+  **There was no room for the sort carets.** Measured in the running page,
+  seven of the productivity table's nine headings had zero or negative headroom
+  after their 32px of padding -- `COMMITS` overflowed by 7px and was spilling
+  into it, which `nowrap` under a fixed layout hides in silence. The caret is
+  taken out of flow and laid over the padding, so it costs the heading no width
+  and cannot reflow a fixed-layout column, and it sits on the side away from the
+  values so a numeric heading stays aligned with its digits. Every header is a
+  real `<button>` with `aria-sort` on the `th`; an `onClick` on the cell is how
+  a hand-rolled sortable table ends up mouse-only.
+- **The dashboard's default order buckets by ISO week, not by day, and the day
+  bucket was too fine to work.** The rule was always "newest build first, worst
+  score within it", and it was implemented correctly -- but 49 repositories have
+  pipeline runs across **24 distinct days, 14 of which hold exactly one
+  repository**, so for those the score half had nothing to rank. The newest day
+  held one healthy repository, which put a 95 at the top of a dashboard whose
+  stated job is to lead with what needs attention. The same runs fall into 14
+  weeks, one holding 17, and `daarwyn-bo-ui` at 53 moved from row 8 to row 3.
+  `utcWeek` in the router is Monday-start, matching `date_trunc('week', ...)` in
+  `ProductivityStore` and the commit trend -- three places deciding
+  independently when a week starts is how a dashboard and a report disagree.
+  **A test would have rotted silently.** `orders by build day, newest first`
+  used timestamps two hours and one calendar day apart that are the **same ISO
+  week**, so after the widening it kept passing while being decided entirely by
+  score, which happened to agree. It is a genuine week apart now with the newer
+  repository the healthier one, so it fails if recency stops dominating.
+- **The commit trend's tooltip named an instant for a period.** It read
+  "3 Aug: 147 commits" on a weekly chart, which states that 147 commits landed
+  on one day; the real figure was 147 across 3-9 August. `bucketRangeLabel`
+  names both ends. **The chart has a second, unfixed problem:**
+  `commitTrendByAuthor` is a `GROUP BY` with no zero-fill and
+  `ProductivityService` just sorts the map, so a week with no commits produces
+  no row and **no slot** -- bars that look adjacent may not be adjacent weeks,
+  and the axis starts at first activity rather than at the window start.
+  `CommitTrend` even has a dead branch giving zero buckets a hairline, with a
+  comment explaining why, that `point.commits > 0` makes unreachable. See open
+  decision 10.
+- **`initialKind` and `initiallySelectedFilter` are INERT once you pass
+  `filters`, and the failure is a catalog with no rows in it.**
+  `DefaultCatalogPage` reads both only to construct its own `DefaultFilters`, in
+  a `filters ?? <DefaultFilters initialKind initiallySelectedFilter ... />`. Our
+  module **must** pass `filters` to host the filter extensions, so both props
+  are discarded -- they typecheck, they read correctly, and they do nothing.
+  It matters because the pickers, not the page, were setting those filters. With
+  `catalog-filter:catalog/kind` and `.../list` disabled, nothing set them:
+  the kind went unconstrained (Systems, Users and Groups joining the
+  Components), and the user-list filter fell to its **`'owned'` default**, which
+  on this estate matches nothing. The catalog rendered `0-0 of 0`.
+  **The fix is two pickers mounted but not rendered**, in the `filters` slot:
+  `<EntityKindPicker initialFilter="component" hidden />` and
+  `<UserListPicker initialFilter="all" hidden />`. `hidden` is safe for this and
+  it was checked rather than assumed -- both call `updateFilters` from an effect
+  and only then test it, so `hidden ? null : <Select/>` gates the render and
+  never the filter.
+- **The catalog filter extensions are not named after what they show.** There
+  are eight, declared in `plugin-catalog/dist/alpha/filters.esm.js`: `kind`,
+  `type`, `lifecycle`, `tag`, `namespace`, `processing-status`, **`list`** (the
+  Personal / Owned / Starred block, `UserListPicker`) and **`mode`** (the Owner
+  dropdown, `EntityOwnerPicker`). **There is no
+  `catalog-filter:catalog/owner`** -- an earlier note here said there was.
+  `catalog-filter:catalog/list` also carries an `initialFilter` config key
+  (`owned` | `starred` | `all`), so the Personal block can be retuned rather
+  than removed.
+- **There is no stock filter for the Bitbucket project, and
+  `EntityAutocompletePicker` is how you build one.** None of the eight covers
+  the System an entity belongs to, which this portal renders as Project.
+  `packages/app/src/modules/catalog/EntityProjectPicker.tsx` is a filter class
+  over `spec.system` plus that generic picker -- the same primitive the Tag and
+  Owner pickers are themselves built from. `AllowedEntityFilters` requires the
+  class expose `values: string[]`, and `DefaultEntityFilters` is generic, which
+  is the documented way to add a key. Implement **both** halves:
+  `getCatalogFilters` pushes the work to the backend, which offset pagination
+  needs -- the page fetches 20 rows at a time, so a frontend-only filter would
+  filter one page and report a wrong total.
+- **The catalog's `search` table lowercases every value, and reading it as
+  ground truth is a trap.** It exists for case-insensitive matching, so querying
+  it for the System titles returned `am`, `mdlh` when the entities actually
+  carry `AM`, `MDLH`. Read `final_entities` and parse the JSON when the exact
+  value matters. What is genuinely lower-case is `spec.system` itself: it holds
+  the System's **name**, which `toSystemName` lowercases, while the Project
+  column renders the **title**. The filter therefore offers `mdlh (37)` where
+  the column shows `MDLH`, and that is deliberate --
+  `EntityAutocompletePicker`'s `getOptionLabel` reaches the input text only, not
+  the option rows, and a custom `renderOption` receives `(option, state)` with
+  **no access to the counts**. Upper-casing costs the "(37)" on every row, which
+  is worth more.
+- **Two tables on a page are not necessarily a duplicate, and reading a
+  concatenated header list as one cost a wrong diagnosis here.** Dumping every
+  `thead th` on a project's page returned
+  `[Name, Owner, Type, Lifecycle, Description, Name, Owner, Description]`, which
+  looks exactly like a failed extension override rendering the stock card
+  alongside its replacement -- and that is what it was written up as, wrongly.
+  The first table was `entity-card:catalog/has-resources`, showing "No resource
+  is part of this system" under the Resource column preset; the second was the
+  replacement, with 37 rows. **Enumerate tables individually -- title, header
+  set and body row count -- before concluding anything from a flattened list.**
+  Overriding an entity card under the stock name does work; the disable in
+  `app-config.yaml` is kept because naming the two separately is clearer, not
+  because the override failed.
+- **`HasComponentsCard` is not exported from anywhere public** -- only
+  `HasComponentsCardProps` is, and the stock extension reaches the component
+  through a deep dynamic import. So its `columns`/`columnConfig` props are
+  unreachable. `packages/app/src/modules/catalog/hasComponentsCard.tsx`
+  recomposes it from `EntityTable` + `useRelatedEntities`, both public and both
+  what the stock card is built from, and overrides the extension by registering
+  under the same `has-components` name. Keep its `filter: { kind: 'system' }`,
+  or the card renders on every kind. It needs `tableLayout: 'fixed'`: measured
+  on the MDLH project, the automatic algorithm laid the table out at **937px
+  inside a 654px card**, pushing Description off the edge.
 - **Our tables are hand-rolled HTML, so theme table rules do not reach them.**
   The shared styles live in `plugins/fleet/src/surfaces.ts` -- `cell`,
   `headerCell`, `chip`, `input`, `panel`, `tag` and friends -- and both Fleet
@@ -856,7 +1034,9 @@ connection`, which took `/api/catalog` down to 404 and left every page in the
   compositing surface -- so the computed values are the evidence, and the open
   list is the one thing here only a person can confirm.
 - **`globalCss` is a template literal, so a backtick in a CSS comment ends the
-  string.** This broke the build three separate times, always the same way:
+  string.** This has now broken the build **four** separate times -- the fourth
+  by the author of this very note, in this very file's neighbour, while
+  documenting a CSS change. Always the same way:
   writing `` `body` `` or `` `spacing` `` inside an explanatory comment. The
   failure is a swc parse error pointing at the comment, not at anything CSS.
   Use plain quotes inside that string.
@@ -895,6 +1075,32 @@ connection`, which took `/api/catalog` down to 404 and left every page in the
   **Do not "fix" a wrapping column by adding `nowrap` to its neighbours**: that
   was tried, and it moved the problem rather than solving it -- the short
   columns took the space and Contributors went from two lines to three.
+- **The catalog's filters are a band above the table, not a column beside it,
+  and the height came from four places at once.** Two filters down the left of a
+  1900px page left that column empty while squeezing the table into 83% of the
+  width. `CatalogFilterLayout` is a bare `Grid` with the filters at `lg={2}` and
+  the content at `lg={10}`, so giving both `flex-basis: 100%` and
+  `max-width: 100%` makes the table wrap below -- **the wrap used to be the
+  hazard and is now the mechanism**. Both need `max-width`: MUI pins
+  16.666667% and 83.333333% on those classes and a flex-basis alone is clamped.
+  Behind `@media (min-width: 1280px)` because below it `Filters` renders a
+  button and a drawer rather than a grid item, and that path must stay
+  untouched.
+  Getting it from **136px to 64px** took four changes and only one was padding:
+  32px of card padding, 16px on each picker's own Box, another 16px of margin
+  inside it, and **`margin-top: 24px` on the input** -- Material UI's
+  reservation for a label sitting above a control.
+  **That 24px and the label's `position: absolute` are a pair.** The picker
+  absolutely positions its label INTO the space the margin reserves, so zeroing
+  the margin without also setting `position: static` left the label out of flow,
+  overlapping the input and invisible behind its background -- a 64px band with
+  no "Owner" or "Tags" on it. Out of flow it also ignored every flex property,
+  which is why setting `flex` on it alone changed nothing.
+  **And a label and its control are not interchangeable flex items.** One
+  `label > *` rule giving both `flex: 1 1 auto; min-width: 0` let the text span
+  shrink to zero against a control that wanted more width, which is what erased
+  the labels in the first place. The text is `flex: 0 0 auto`; only the control
+  flexes, and only it takes `min-width: 0`.
 - **Reserved secondary-action gutters clip labels, twice now.** MUI reserves
   48px of right padding on any `ListItem` carrying a secondary action, sized for
   an icon button. In the catalog's 134px filter column, where the action is a
@@ -998,7 +1204,7 @@ connection`, which took `/api/catalog` down to 404 and left every page in the
   underperforming**. Ranking metrics by points lost and showing the worst would
   print "no commits in 90 days" 48 times, 42 of them about scaffolds -- which is
   how a warning gets trained out of people.
-  So `plugins/fleet/src/problems.ts` folds `active-commits`,
+  So `plugins/fleet-common/src/problems.ts` folds `active-commits`,
   `active-contributors` and `branch-hygiene` into a single dormancy statement
   whenever the activity metric is zero: they are one fact wearing three hats,
   and a dormant repository scores zero on all three by construction. Dormancy is
@@ -1255,15 +1461,16 @@ docker exec -it backstage-postgres psql -U backstage -c "\l"
 
 ### Open
 
-|     | Question                                                          | Blocks                            |
-| --- | ----------------------------------------------------------------- | --------------------------------- |
-| 2   | Score band thresholds (Healthy / Needs Attention / Critical)      | Ship provisional values in config |
-| 3   | Is §6 health and §7 scorecard one score or two?                   | Scoring design                    |
-| 5   | Keep or drop lines added/deleted                                  | Productivity dashboards           |
-| 6   | Who may see whose productivity data                               | Productivity dashboards           |
-| 7   | Business Owner / Business Unit source of record; retention period | Ownership fields                  |
-| 8   | Should branch divergence be scored? Needs a weight rebalance      | The 8 metrics total exactly 100   |
-| 9   | Filter deliberate long-lived branches out of divergence           | ~750 of 2,699 stranded commits    |
+|     | Question                                                               | Blocks                                                 |
+| --- | ---------------------------------------------------------------------- | ------------------------------------------------------ |
+| 2   | Score band thresholds (Healthy / Needs Attention / Critical)           | Ship provisional values in config                      |
+| 3   | Is §6 health and §7 scorecard one score or two?                        | Scoring design                                         |
+| 5   | Keep or drop lines added/deleted                                       | Productivity dashboards                                |
+| 6   | Who may see whose productivity data                                    | Productivity dashboards                                |
+| 7   | Business Owner / Business Unit source of record; retention period      | Ownership fields                                       |
+| 8   | Should branch divergence be scored? Needs a weight rebalance           | The 8 metrics total exactly 100                        |
+| 9   | Filter deliberate long-lived branches out of divergence                | ~750 of 2,699 stranded commits                         |
+| 10  | Commit trend: zero-fill from the window start, or from first activity? | The per-engineer chart's x-axis is not continuous time |
 
 ### Deferred as later add-ons
 
@@ -1311,7 +1518,16 @@ blocking before anyone outside the team sees per-person figures.
   Verify pinned _and_ unpinned, and at least one narrow viewport. The current
   sweep is 6 viewports x 3 pages, asserting `scrollWidth === clientWidth` --
   sideways scroll is the specific failure that has bitten this repo twice.
-- Test coverage is no longer thin -- 937 tests across 51 suites -- but it is
+  **Distrust the instrument before the result, and two of these cost real
+  time.** Creating a Playwright page at a given `viewportSize` and then
+  navigating does **not** re-evaluate `useMediaQuery`: a sweep reported
+  identical geometry at 1600, 1000 and 900px, including a 1008px element inside
+  a 900px viewport, which is impossible. `page.setViewportSize` on a live page
+  is what actually re-lays-out. And `netstat` prints the port **before** the
+  state, so `grep "LISTENING.*:7007"` can never match -- that pattern produced
+  a confident diagnosis that the backend was down while it was serving 200s.
+  If a measurement is impossible, the measurement is wrong.
+- Test coverage is no longer thin -- 987 tests across 53 suites -- but it is
   uneven: `ProductivityStore` still has no test file (see below), and nothing in
   the suite loads a real `app-config`. New modules ship with tests.
 - The Bitbucket credential in use belongs to an individual, not a service

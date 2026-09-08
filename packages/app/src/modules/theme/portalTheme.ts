@@ -545,53 +545,17 @@ function tableComponents(tokens: PortalTokens) {
           overflowX: 'auto' as const,
 
           /**
-           * Hides the Type, Lifecycle and Description columns.
+           * The Type, Lifecycle and Description columns were hidden here by
+           * position, with a rule reading
+           * `thead th:nth-child(n + 4):not(:last-child):not(:nth-last-child(2))`
+           * and a standing warning that a Backstage upgrade reordering the
+           * columns would silently hide the wrong ones.
            *
-           * **This is positional, and it is the only route there is.** The
-           * columns come from `defaultCatalogTableColumnsFunc` inside
-           * `CatalogTable`; the page's config exposes only `pagination` and
-           * `exportSettings`; `columnConfig` exists but only on card props;
-           * and material-table emits no `data-` attribute or class per column,
-           * so nothing can be targeted by identity.
-           *
-           * Passing `DefaultCatalogPage`'s `columns` prop would be the proper
-           * fix, but that needs replacing `page:catalog`, and its route ref is
-           * exported by nothing while `EntityLayout`, `EntityOrphanWarning`
-           * and `plugin-org`'s ownership grid all resolve it -- `useRouteRef`
-           * would throw on every entity page and on the Ownership card.
-           *
-           * The rule is "after the third, except the **last two**" rather
-           * than `nth-child(4,5,6)`: `Type` disappears from the DOM when a
-           * Type filter is applied, so fixed positions would then hide the
-           * wrong columns. The last two are protected because material-table
-           * appends an actions column at `actionsColumnIndex: -1`
-           * unconditionally, so Actions is always last and Tags always
-           * second-to-last. Protecting only the last cost Tags on the first
-           * attempt. Verified against every branch of
-           * `defaultCatalogTableColumnsFunc`:
-           *
-           * | kind                    | visible                                   |
-           * | ----------------------- | ----------------------------------------- |
-           * | component / api / resource | Name, System, Owner, **Type, Lifecycle, Description**, Tags, Actions |
-           * | ...with a Type filter   | Name, System, Owner, **Lifecycle, Description**, Tags, Actions |
-           * | user                    | Name, Description, Tags, Actions (matches nothing) |
-           * | system / domain         | Name, Owner, Description, Tags, Actions (matches nothing) |
-           *
-           * So it is exact on the kinds that have those columns and inert on
-           * the kinds that do not -- Description survives on User and System,
-           * where there is no width pressure and only three or four columns.
-           *
-           * **If a Backstage upgrade reorders the columns this hides the wrong
-           * ones silently.** Check this rule when upgrading `plugin-catalog`.
+           * **Gone, because the catalog page now names its columns.**
+           * `packages/app/src/modules/catalog` overrides `page:catalog` and
+           * passes `columns`, which is the proper fix the old note here called
+           * unreachable. Nothing positional is left to break.
            */
-          '& thead th:nth-child(n + 4):not(:last-child):not(:nth-last-child(2))':
-            {
-              display: 'none',
-            },
-          '& tbody td:nth-child(n + 4):not(:last-child):not(:nth-last-child(2))':
-            {
-              display: 'none',
-            },
 
           /**
            * Column widths.
@@ -655,17 +619,20 @@ function tableComponents(tokens: PortalTokens) {
             whiteSpace: 'nowrap' as const,
           },
 
-          // Tags and Actions hug their content instead of taking an equal
-          // share. `width: 1%` is the standard idiom for "shrink to
-          // max-content" in an auto-laid-out table; the freed space goes to
-          // the columns that have something to show. Actions is three icons
-          // and was being given 180px.
+          // Tags hugs its content instead of taking an equal share.
+          // `width: 1%` is the standard idiom for "shrink to max-content" in an
+          // auto-laid-out table; the freed space goes to Name, Project and
+          // Owner, which have something to show.
+          //
+          // **One rule where there were two, and dropping the second matters.**
+          // It targeted `nth-last-child(2)` because Tags sat beside an Actions
+          // column. `actions={[]}` on the page removed Actions, so Tags is now
+          // the last column and `nth-last-child(2)` is Owner -- which must NOT
+          // be shrunk to its content, since it holds the longest values on the
+          // page.
           '& thead th:last-child, & tbody td:last-child': {
             width: '1% !important',
             whiteSpace: 'nowrap' as const,
-          },
-          '& thead th:nth-last-child(2), & tbody td:nth-last-child(2)': {
-            width: '1% !important',
           },
         },
       },
@@ -1365,6 +1332,44 @@ option:checked {
   display: none;
 }
 
+/* The kind tag above an entity's title -- and it is two problems in one row.
+
+   bui-HeaderTop holds a single tag rendered from 'entity.kind', so a project's
+   page opened with the word "System" in 14px grey above "MDLH". Every other
+   surface in this portal calls that a Project, and this one could not be made
+   to agree: the tag is the raw kind string, not a translated label, so there is
+   nothing to rename -- 'entityLabels.systemLabel' reaches the metadata row
+   below it and not this.
+
+   Hidden rather than renamed, because on every kind it is redundant as well as
+   wrong: the About card states the kind, the breadcrumb states the section, and
+   the title states the entity. It was 20px spent contradicting the rest of the
+   page.
+
+   Scoped to the tag row, so bui-HeaderTop keeps working anywhere it holds
+   something else. */
+[class*="bui-HeaderTags"] {
+  display: none;
+}
+
+/* Height reclaimed above an entity page's content.
+
+   Measured on a project page: the header ran from y=85 to y=250, and 165px to
+   introduce a title and one line of metadata is generous. The tag row above
+   accounts for 20 of it; the rest is padding either side of the title and a
+   20px margin under a tab row that, on a single-tab page, is already mostly
+   air.
+
+   The tab row itself is left alone -- component pages carry several tabs and
+   collapsing it would cost navigation to buy whitespace. */
+[class*="bui-HeaderContent"] {
+  padding-top: 2px;
+  padding-bottom: 6px;
+}
+[class*="bui-HeaderBottom"] {
+  margin-bottom: 8px;
+}
+
 /* Page gutters, matched across the portal.
 
    bui-Container adds 20px of its own horizontal padding inside the 24px that
@@ -1383,25 +1388,37 @@ option:checked {
   padding-right: 0;
 }
 
-/* Separation between the filter column and the results table.
+/* The filters sit ABOVE the table, not in a column beside it.
 
-   CatalogFilterLayout renders a bare <Grid container> with no 'spacing', so the
-   two columns are flush: the filter card ended at x=456 and the table card
-   began at exactly x=456. Two bordered surfaces touching read as one badly
-   drawn box.
+   Two filters remain -- Owner and Tags -- and a two-item column down the left
+   of a 1900px page left most of that column empty while squeezing the table
+   into 83% of the width.
 
-   Applied as padding on the wider column rather than a gap on the container:
-   the two items are sized by percentage flex-basis totalling 100%, so any
-   margin or gap between them overflows the row and wraps the table underneath
-   the filters. Padding shrinks the content box and leaves the grid arithmetic
-   alone -- which is exactly the mechanism MUI's own 'spacing' prop uses.
+   **The wrap is the mechanism, and it used to be the hazard.** The note that
+   stood here explained that the two grid items are sized by percentage
+   flex-basis totalling 100%, so any margin between them overflows the row and
+   drops the table underneath the filters. That is now the goal: giving the
+   filters the whole row makes the table wrap below them, which is precisely the
+   layout wanted. So the old 24px left inset on the table is gone -- there is no
+   longer a column to its left to be separated from -- and the gap is a
+   margin under the filter card instead.
 
-   Behind the lg breakpoint because that is where the columns sit side by side;
-   below it they stack, and a left inset would just make the table look
-   misaligned against everything above it. */
+   Both items need a max-width as well as a flex-basis: MUI pins
+   'max-width: 16.666667%' and '83.333333%' on these classes, and a flex-basis
+   alone is clamped by it.
+
+   Behind the lg breakpoint because that is the only place the column exists.
+   Below 1280px CatalogFilterLayout.Filters renders a button and a drawer
+   rather than a grid item, so none of this applies and the drawer is
+   untouched. */
 @media (min-width: 1280px) {
+  [class*="MuiGrid-grid-lg-2"],
   [class*="MuiGrid-grid-lg-10"] {
-    padding-left: 24px;
+    flex-basis: 100%;
+    max-width: 100%;
+  }
+  [class*="MuiGrid-grid-lg-10"] {
+    padding-left: 0;
   }
 }
 
@@ -1414,13 +1431,98 @@ option:checked {
    entity pages use a CSS grid. */
 [class*="MuiGrid-grid-lg-2"] {
   align-self: flex-start;
-  padding: 16px 18px;
+  padding: 8px 14px;
   border: 1px solid ${divider};
   border-radius: ${t.radius.lg}px;
   background: ${t.surface[1]};
   box-shadow: ${t.shadow.card};
   backdrop-filter: ${t.blur};
   -webkit-backdrop-filter: ${t.blur};
+
+  /* A single compact band now that the card spans the page. */
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 18px;
+  /* The separation the table's left padding used to provide. */
+  margin-bottom: 12px;
+}
+
+/* Each filter takes a readable width and no more.
+
+   'flex: 0 1' rather than '1 1': two filters allowed to grow would take half a
+   1900px page each, which makes a one-line dropdown read as a form field on a
+   sign-up page. They keep their size and sit left, and 'flex-wrap' above means
+   a third filter -- or a narrow window -- moves to a second line instead of
+   crushing them. The hidden Kind and user-list pickers render null and so are
+   not children here at all. */
+[class*="MuiGrid-grid-lg-2"] > * {
+  flex: 0 1 17rem;
+  min-width: 12rem;
+}
+
+/* Reclaiming the vertical space the stacked column used to justify.
+
+   Measured before this: a 136px band holding two one-line dropdowns. It came
+   from four places, none of them the control itself -- 32px of card padding,
+   16px on each picker's own outer Box, another 16px of margin on the Box
+   inside it, and a label set ABOVE its control rather than beside it.
+
+   The pickers are laid out for a narrow left-hand column, where stacking a
+   label over its input is right. In a horizontal band it is what makes two
+   dropdowns 136px tall, so the label element becomes a flex row and the text
+   sits alongside. */
+[class*="MuiGrid-grid-lg-2"] > [class*="MuiBox-root"] {
+  padding: 0;
+}
+[class*="MuiGrid-grid-lg-2"] [class*="MuiBox-root"] [class*="MuiBox-root"] {
+  margin: 0;
+}
+[class*="MuiGrid-grid-lg-2"] label[class*="MuiTypography-root"] {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  /* A label that wraps would reintroduce the second line this removes. */
+  white-space: nowrap;
+}
+/* The label text and its control are NOT interchangeable flex items, and
+   treating them as one rule erased the labels.
+
+   A single 'label > *' selector gave both 'flex: 1 1 auto; min-width: 0'. The
+   control wants more width than 17rem leaves, so the text span -- now
+   shrinkable to nothing -- collapsed to zero and "Owner" and "Tags" simply
+   disappeared, leaving two unlabelled dropdowns.
+
+   The text is sized by its content and never shrinks; only the control flexes.
+   'min-width: 0' belongs on the control alone, because a flex item otherwise
+   refuses to go below its content's minimum, which for a select with two icons
+   is wider than the space available. */
+[class*="MuiGrid-grid-lg-2"] label[class*="MuiTypography-root"] > span {
+  /* **'position: static' is the other half of removing the 24px offset.** The
+     picker's label is absolutely positioned INTO the space that the input's
+     'margin-top: 24px' reserves -- the two are a pair. Zeroing the margin
+     without releasing the label left it out of flow, overlapping the input and
+     hidden behind its background: the band was 64px tall with no visible
+     "Owner" or "Tags" at all. Out of flow it also ignored every flex property
+     set on it, which is why 'flex: 0 0 auto' alone changed nothing. */
+  position: static;
+  flex: 0 0 auto;
+}
+[class*="MuiGrid-grid-lg-2"] label[class*="MuiTypography-root"] > div {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* **The 24px that made the band 70px tall.** Material UI offsets an input by
+   'margin-top: 24px' to leave room for a label sitting ABOVE it -- the
+   'InputLabel' shrink position. Measured here: a 46px control inside a 70px
+   box. With the label alongside instead, that reservation is empty space, and
+   it was the single largest contributor once the padding and margins were out.
+
+   Scoped to the filter band, because everywhere else in the portal the label
+   genuinely is above its input and the offset is doing its job. */
+[class*="MuiGrid-grid-lg-2"] [class*="MuiInputBase-root"] {
+  margin-top: 0;
 }
 
 /* The pagination captions: "Rows per page:" and "1-20 of 96".

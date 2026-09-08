@@ -962,45 +962,97 @@ describe('createRouter', () => {
           .expect(200)
       ).body.repositories.map((r: any) => r.slug);
 
-    it('orders by build day, newest first', async () => {
+    it('orders by build week, newest first', async () => {
+      // Deliberately a WEEK apart, and the newer one is the healthier. The
+      // earlier version of this test used 26 and 27 August, which are two
+      // hours and one calendar day apart but the same ISO week -- so once the
+      // bucket widened it would have passed while being decided entirely by
+      // score, testing nothing it claimed to.
       await seedEstate([
         {
-          slug: 'built-today',
-          total: 40,
-          band: 'critical',
-          runAt: '2026-08-27T01:00:00.000Z',
-        },
-        {
-          slug: 'built-yesterday',
+          slug: 'built-this-week',
           total: 95,
           band: 'healthy',
+          runAt: '2026-09-01T01:00:00.000Z',
+        },
+        {
+          slug: 'built-last-week',
+          total: 40,
+          band: 'critical',
           runAt: '2026-08-26T23:00:00.000Z',
         },
       ]);
 
-      expect(await slugs()).toEqual(['built-today', 'built-yesterday']);
+      expect(await slugs()).toEqual(['built-this-week', 'built-last-week']);
     });
 
-    it('ranks by worst score within a build day', async () => {
-      // Two things at once. The weaker repository built LATER the same day, so
+    it('ranks by worst score within a build week', async () => {
+      // Two things at once. The weaker repository built LATER in the week, so
       // ordering on the instant would put it first for the wrong reason -- and
-      // it must still come first, for the right one: worst score leads the day.
+      // it must still come first, for the right one: worst score leads.
       await seedEstate([
         {
           slug: 'weak',
           total: 40,
           band: 'critical',
-          runAt: '2026-08-27T18:00:00.000Z',
+          runAt: '2026-08-28T18:00:00.000Z',
         },
         {
           slug: 'strong',
           total: 95,
           band: 'healthy',
-          runAt: '2026-08-27T06:00:00.000Z',
+          runAt: '2026-08-24T06:00:00.000Z',
         },
       ]);
 
       expect(await slugs()).toEqual(['weak', 'strong']);
+    });
+
+    it('ranks by score across different days inside one week', async () => {
+      // The reason the bucket widened. These are four calendar days apart, so
+      // under the old day bucket the healthy repository led purely because it
+      // built more recently -- which is what put a 95 at the top of the real
+      // dashboard while 43 repositories sat critical below it.
+      await seedEstate([
+        {
+          slug: 'healthy-and-recent',
+          total: 95,
+          band: 'healthy',
+          runAt: '2026-08-28T09:00:00.000Z',
+        },
+        {
+          slug: 'critical-and-older',
+          total: 17,
+          band: 'critical',
+          runAt: '2026-08-24T09:00:00.000Z',
+        },
+      ]);
+
+      expect(await slugs()).toEqual([
+        'critical-and-older',
+        'healthy-and-recent',
+      ]);
+    });
+
+    it('puts a Sunday and the Monday after it in different weeks', async () => {
+      // The ISO boundary, which is the one thing a Monday-start week can get
+      // wrong: 30 August 2026 is a Sunday, 31 August the Monday after.
+      await seedEstate([
+        {
+          slug: 'monday',
+          total: 99,
+          band: 'healthy',
+          runAt: '2026-08-31T00:30:00.000Z',
+        },
+        {
+          slug: 'sunday-before',
+          total: 10,
+          band: 'critical',
+          runAt: '2026-08-30T23:30:00.000Z',
+        },
+      ]);
+
+      expect(await slugs()).toEqual(['monday', 'sunday-before']);
     });
 
     it('sorts a repository that has never run a pipeline last', async () => {

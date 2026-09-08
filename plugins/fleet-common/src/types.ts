@@ -401,10 +401,15 @@ export interface FleetRepositorySummary {
   /**
    * When this repository's most recent pipeline run started.
    *
-   * The estate listing is ordered by the *day* of this, newest first, then by
-   * score within the day. Absent means the repository has never run a pipeline
-   * -- 47 of 96 here -- which is not the same as a run that failed, and sorts
-   * to the bottom rather than to the top.
+   * The estate listing is ordered by the ISO *week* of this, newest first, then
+   * by score within the week -- worst leading. A week rather than a day
+   * because 14 of this estate's 24 distinct build days hold a single
+   * repository, so at day granularity the score had nothing to rank and the
+   * newest day put a healthy 95 at the top of the dashboard.
+   *
+   * Absent means the repository has never run a pipeline -- 47 of 96 here --
+   * which is not the same as a run that failed, and sorts to the bottom rather
+   * than to the top.
    */
   lastPipelineRunAt?: string;
   /**

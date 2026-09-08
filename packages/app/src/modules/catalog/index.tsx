@@ -7,6 +7,13 @@ import {
 import catalogPlugin, {
   CatalogIndexPage,
 } from '@backstage/plugin-catalog/alpha';
+import { CatalogTable } from '@backstage/plugin-catalog';
+import {
+  EntityKindPicker,
+  UserListPicker,
+} from '@backstage/plugin-catalog-react';
+import { EntityProjectPicker } from './EntityProjectPicker';
+import { hasComponentsCard } from './hasComponentsCard';
 import CategoryIcon from '@material-ui/icons/Category';
 
 /**
@@ -64,11 +71,89 @@ const catalogPage = PageBlueprint.makeWithOverrides({
         <CatalogIndexPage
           filters={
             <>
+              {/**
+               * Two filters mounted but not rendered, and they are the whole
+               * reason this page shows any rows at all.
+               *
+               * **`initialKind` and `initiallySelectedFilter` on this component
+               * are inert here.** `DefaultCatalogPage` reads them only to build
+               * its own `DefaultFilters`, in a
+               * `filters ?? <DefaultFilters ... />` -- so passing `filters`, as
+               * this module must in order to host the filter extensions,
+               * discards both. Setting them looked right, typechecked, and did
+               * nothing; the catalog rendered `0-0 of 0`.
+               *
+               * The pickers themselves are what set those two filters. With
+               * `catalog-filter:catalog/kind` and `.../list` disabled, nothing
+               * did:
+               *
+               * - no kind filter, so Systems, Users and Groups join the
+               *   Components;
+               * - the user-list filter falls to its `'owned'` default, and
+               *   nothing here is owned by the signed-in user -- 98 rows became
+               *   none.
+               *
+               * `hidden` is safe for this because both pickers call
+               * `updateFilters` from an effect and only then check it --
+               * `hidden ? null : <Select/>` gates the render, never the filter.
+               * Verified in `EntityKindPicker.esm.js` and
+               * `UserListPicker.esm.js` rather than assumed.
+               */}
+              <EntityKindPicker initialFilter="component" hidden />
+              <UserListPicker initialFilter="all" hidden />
+              {/**
+               * Project, which no stock filter provides -- see
+               * `EntityProjectPicker`. Rendered here rather than registered as
+               * a `catalog-filter:` extension because this module already owns
+               * the slot those extensions feed, so adding one would be a longer
+               * route to the same place.
+               *
+               * Before the extension-provided filters, so Project leads the row
+               * and Owner follows: the project partitions the estate, where the
+               * owner narrows within it.
+               */}
+              <EntityProjectPicker />
               {inputs.filters.map(filter =>
                 filter.get(coreExtensionData.reactElement),
               )}
             </>
           }
+          /**
+           * The four columns this portal has data for, declared rather than
+           * hidden with CSS.
+           *
+           * **This replaces a positional CSS rule in the portal theme** --
+           * `thead th:nth-child(n + 4):not(:last-child):not(:nth-last-child(2))`
+           * -- which existed only because the stock `page:catalog` gave no way
+           * to reach the table's `columns`. Overriding the page does, and the
+           * old rule carried a warning that a Backstage upgrade reordering the
+           * columns would silently hide the wrong ones. This cannot: it names
+           * what it wants.
+           *
+           * The factories rather than hand-built column objects, because each
+           * one carries its own header text through `catalogTranslationRef` --
+           * which is what lets `packages/app/src/modules/i18n/catalogReact.ts`
+           * rename System to "Project" without touching this file.
+           *
+           * Dropped, and why: Type and Lifecycle are `service` and `unknown`
+           * for most of the estate, Description is absent on nearly all of it,
+           * and Namespace is `default` on all 124 entities.
+           */
+          columns={[
+            CatalogTable.columns.createNameColumn({ defaultKind: 'component' }),
+            CatalogTable.columns.createSystemColumn(),
+            CatalogTable.columns.createOwnerColumn(),
+            CatalogTable.columns.createTagsColumn(),
+          ]}
+          /**
+           * No row actions, so material-table renders no Actions column.
+           *
+           * The three icons were "view in source", "edit" and "star". The first
+           * two duplicate what the entity page offers a click away, and
+           * starring is only useful with the Starred filter, which this page no
+           * longer shows.
+           */
+          actions={[]}
           /**
            * Offset paging, and **omitting this is a real bug, not a default**.
            *
@@ -121,5 +206,5 @@ const catalogPage = PageBlueprint.makeWithOverrides({
  */
 export const catalogModule = createFrontendModule({
   pluginId: 'catalog',
-  extensions: [catalogPage],
+  extensions: [catalogPage, hasComponentsCard],
 });

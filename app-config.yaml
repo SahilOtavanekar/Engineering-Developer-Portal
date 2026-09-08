@@ -39,11 +39,57 @@ app:
     - catalog-filter:catalog/namespace: false
     - catalog-filter:catalog/processing-status: false
 
+    # Classification is by Owner and Tag only, at the product owner's
+    # direction. The four below are removed rather than left as controls that
+    # narrow the list in ways nobody asked for:
+    #
+    # - kind: every row is a Component. `initialKind` in
+    #   `packages/app/src/modules/catalog` pins it now -- WITHOUT that the kind
+    #   is unconstrained and Systems, Users and Groups appear in the table.
+    # - type: `spec.type` is `service` or `unknown` across nearly the estate,
+    #   because nothing distinguishes a library from an abandoned service.
+    # - lifecycle: `spec.lifecycle` is `unknown` for the same reason.
+    # - list: the Personal block -- Owned 0, Starred 0. **Removing it requires
+    #   `initiallySelectedFilter="all"`** on the page, which is set alongside
+    #   `initialKind`: the prop defaults to 'owned' and the picker was the only
+    #   thing rescuing that. Without both, the catalog renders zero rows.
+    #   (This filter also has an `initialFilter` config key, so it could be
+    #   configured to open on "All" instead of being removed.)
+    #
+    # The Owner filter's extension is named `mode`, NOT `owner` -- it is
+    # `EntityOwnerPicker`, and `catalog-filter:catalog/owner` does not exist.
+    # It and `catalog-filter:catalog/tag` are the two deliberately left on.
+    - catalog-filter:catalog/kind: false
+    - catalog-filter:catalog/type: false
+    - catalog-filter:catalog/lifecycle: false
+    - catalog-filter:catalog/list: false
+    # Tag: replaced by Project. Tags carry a derived language and are absent on
+    # most rows -- of 98 components only the 32 with a detected language have
+    # one -- so the filter offered a handful of values that between them
+    # matched a third of the estate. Project is on every row and the six values
+    # partition the catalog cleanly (MDLH 37, AM 21, DDS 20, DAARWYN 12,
+    # DAIWEB 4, RES 4). The Tags COLUMN stays; only the filter goes.
+    - catalog-filter:catalog/tag: false
+
     # Replaced by entity-card:fleet/about. The stock card's field grid uses
     # viewport breakpoints ({1, sm 2, lg 3}) while the card sits in the entity
     # layout's narrow 1fr sidebar, so on a wide screen it rendered three columns
     # into a ~350px card and overflowed sideways.
     - entity-card:catalog/about: false
+
+    # Replaced by entity-card:catalog/project-repositories, which drops the
+    # Lifecycle and Type columns. **Registering an override under the stock
+    # name did NOT replace it** -- both cards rendered, so a project's page
+    # carried two tables and Lifecycle survived in the second. Disabling the
+    # stock one and registering ours under its own name is unambiguous.
+    - entity-card:catalog/has-components: false
+
+    # Zero Resource entities exist -- the catalog holds 98 Components, 20
+    # Users, 6 Systems, 3 Groups and 1 Location -- so this card can only ever
+    # render "No resource is part of this system", with a Lifecycle column
+    # heading above nothing. It was the sole remaining source of the word
+    # Lifecycle on a project's page.
+    - entity-card:catalog/has-resources: false
 
     - entity-card:catalog/depends-on-components: false
     - entity-card:catalog/depends-on-resources: false

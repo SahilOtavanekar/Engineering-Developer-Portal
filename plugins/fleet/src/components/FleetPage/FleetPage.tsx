@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type CSSProperties } from 'react';
 import { useApi, fetchApiRef } from '@backstage/frontend-plugin-api';
 import type { FleetOverview } from '@internal/backstage-plugin-fleet-common';
 import { Flex, Link, Skeleton, Text } from '@backstage/ui';
@@ -7,6 +7,13 @@ import { timeAgo } from '../../format';
 import { BAND_LABEL, BAND_TEXT } from '../../bands';
 import { filterRepositories, type FleetFilters } from '../../filter';
 import { FleetFiltersBar } from './FleetFilters';
+import {
+  ariaSort,
+  nextSort,
+  sortRepositories,
+  type Sort,
+  type SortKey,
+} from './sorting';
 import {
   NUMERIC,
   fixedTable,
@@ -25,15 +32,66 @@ import {
  * `daarwyn-user-mgmt-services`, and the automatic table layout's instinct to
  * even them out is exactly the behaviour being replaced here.
  */
-const COLUMNS: ReadonlyArray<{ heading: string; width: string }> = [
+const COLUMNS: ReadonlyArray<{
+  heading: string;
+  width: string;
+  /** Absent means the header is plain text, not a control. */
+  sort?: SortKey;
+}> = [
   { heading: 'Repository', width: '23%' },
-  { heading: 'Score', width: '6%' },
-  { heading: 'Status', width: '11%' },
-  { heading: 'Last commit', width: '11%' },
-  { heading: 'Created by', width: '14%' },
-  { heading: 'Contributors', width: '20%' },
-  { heading: 'Owner', width: '15%' },
+  { heading: 'Score', width: '7%', sort: 'score' },
+  { heading: 'Status', width: '12%', sort: 'band' },
+  { heading: 'Last commit', width: '11%', sort: 'lastCommitAt' },
+  { heading: 'Created by', width: '13%' },
+  { heading: 'Contributors', width: '19%' },
+  { heading: 'Owner', width: '15%', sort: 'owner' },
 ];
+
+/**
+ * A column heading that is also its sort control.
+ *
+ * A button rather than a click handler on the cell: a bare `onClick` on a `th`
+ * cannot be reached by keyboard and is announced as nothing, which is the usual
+ * way a hand-rolled sortable table becomes mouse-only. Re-declares the capitals
+ * and letter-spacing that user-agent button styles drop.
+ */
+const sortButton: CSSProperties = {
+  appearance: 'none',
+  background: 'none',
+  border: 'none',
+  padding: 0,
+  margin: 0,
+  width: '100%',
+  font: 'inherit',
+  color: 'inherit',
+  textAlign: 'inherit',
+  textTransform: 'inherit',
+  letterSpacing: 'inherit',
+  whiteSpace: 'nowrap',
+  cursor: 'pointer',
+};
+
+/**
+ * The sort direction, laid over the cell's padding rather than set beside the
+ * heading.
+ *
+ * Measured on the productivity table first, where seven of nine headings had
+ * no room left after their padding and one was already overflowing. Taking the
+ * arrow out of flow costs the heading no width and cannot reflow a
+ * fixed-layout column, so it works whatever the label happens to be.
+ */
+const caret: CSSProperties = {
+  position: 'absolute',
+  top: '50%',
+  right: '5px',
+  transform: 'translateY(-50%)',
+  fontSize: '0.6rem',
+  lineHeight: 1,
+  color: 'var(--portal-accent)',
+  // The label is the click target; an arrow that swallowed the pointer would
+  // make the active column the one header that stopped responding.
+  pointerEvents: 'none',
+};
 
 /**
  * Contributor names for one table cell.
@@ -74,13 +132,23 @@ function useFleet() {
 export function FleetPage() {
   const { value: fleet, loading, error } = useFleet();
   const [filters, setFilters] = useState<FleetFilters>({});
+  // `undefined` is the API's own ordering -- newest build week, then worst
+  // score -- which is what the page opens in and what a third click returns to.
+  const [sort, setSort] = useState<Sort | undefined>();
 
   // Memoised so the empty-array fallback does not produce a fresh reference
   // on every render, which would defeat the filter memo below.
   const repositories = useMemo(() => fleet?.repositories ?? [], [fleet]);
-  const visible = useMemo(
+  const filtered = useMemo(
     () => filterRepositories(repositories, filters),
     [repositories, filters],
+  );
+  // Sorting after filtering, not before: the order of a list the reader cannot
+  // see is not worth computing, and re-sorting on every filter keystroke would
+  // be.
+  const visible = useMemo(
+    () => sortRepositories(filtered, sort),
+    [filtered, sort],
   );
 
   if (loading) {
@@ -136,11 +204,47 @@ export function FleetPage() {
               </colgroup>
               <thead>
                 <tr>
-                  {COLUMNS.map(column => (
-                    <th key={column.heading} style={headerCell}>
-                      {column.heading}
-                    </th>
-                  ))}
+                  {COLUMNS.map(column => {
+                    const key = column.sort;
+                    const active = key !== undefined && sort?.key === key;
+                    return (
+                      <th
+                        key={column.heading}
+                        // Announced instead of the arrow, which is decoration
+                        // and hidden from a screen reader.
+                        aria-sort={key ? ariaSort(sort, key) : undefined}
+                        style={{
+                          ...headerCell,
+                          // The containing block for the caret.
+                          position: 'relative',
+                          // With no room for a permanent arrow on every
+                          // heading, colour is what says where the order comes
+                          // from.
+                          ...(active ? { color: 'var(--portal-accent)' } : {}),
+                        }}
+                      >
+                        {key ? (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setSort(current => nextSort(current, key))
+                            }
+                            style={sortButton}
+                            title={`Sort by ${column.heading.toLowerCase()}`}
+                          >
+                            {column.heading}
+                          </button>
+                        ) : (
+                          column.heading
+                        )}
+                        {active && (
+                          <span aria-hidden style={caret}>
+                            {sort?.direction === 'asc' ? '▲' : '▼'}
+                          </span>
+                        )}
+                      </th>
+                    );
+                  })}
                 </tr>
               </thead>
               <tbody>

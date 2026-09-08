@@ -155,15 +155,35 @@ function summariseContributors(
 }
 
 /**
- * The UTC calendar day of an ISO timestamp, or undefined.
+ * The ISO week an instant falls in, as the date of its Monday.
  *
- * UTC rather than local: a day boundary that moved with the reader's timezone
- * would reorder the estate listing depending on who is looking at it.
- * `iso()` always emits `toISOString()`, so the first ten characters are the
- * UTC date and no parsing is needed.
+ * **A week rather than the day it used to be, because the day bucket was too
+ * fine to let score do anything.** Measured on this estate: 49 repositories
+ * have pipeline runs spread over 24 distinct days, and **14 of those days hold
+ * exactly one repository** -- so for 14 of them the worst-score half of the
+ * ordering had nothing to rank, and the newest day in particular held a single
+ * healthy repository, which put a 95 at the top of a dashboard whose stated job
+ * is to lead with what needs attention. The same runs fall into 14 weeks, one
+ * of which holds 18 repositories, so the ranking now bites where it did not.
+ *
+ * Monday, matching `date_trunc('week', ...)` in `ProductivityStore` and the
+ * commit trend's buckets -- three places deciding independently when a week
+ * starts is how a dashboard and a report come to disagree.
+ *
+ * UTC rather than local: a boundary that moved with the reader's timezone would
+ * reorder the estate listing depending on who was looking at it. Returned as a
+ * `YYYY-MM-DD` string, which orders lexicographically, so the comparator below
+ * needs no date arithmetic of its own.
  */
-function utcDay(value: string | undefined): string | undefined {
-  return value ? value.slice(0, 10) : undefined;
+function utcWeek(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const at = new Date(value);
+  if (Number.isNaN(at.getTime())) return undefined;
+  // getUTCDay is 0 for Sunday; shifting by 6 makes Monday 0 and Sunday 6.
+  const offset = (at.getUTCDay() + 6) % 7;
+  return new Date(at.getTime() - offset * 86_400_000)
+    .toISOString()
+    .slice(0, 10);
 }
 
 export async function createRouter(
@@ -327,17 +347,19 @@ export async function createRouter(
       };
     });
 
-    // Newest build day first, WORST score within the day.
+    // Newest build WEEK first, WORST score within the week.
     //
     // Recency decides which repositories are in play; the score then puts the
-    // ones needing attention at the top of each day -- the question the
+    // ones needing attention at the top of each bucket -- the question the
     // requirements document opens with, asked of the repositories that are
     // actually being worked on.
     //
-    // The *day* rather than the instant: all 49 pipeline timestamps in this
+    // A bucket rather than the instant: all 49 pipeline timestamps in this
     // estate are distinct, so ordering on the instant would make score a
     // tiebreak that never fires and would bury a failing repository under a
-    // healthy one that finished its build four minutes later.
+    // healthy one that finished its build four minutes later. The bucket is a
+    // *week* rather than a day for the same reason one step out -- see
+    // `utcWeek` for the measurement that forced it.
     //
     // Both absences sort last rather than first, and this is the subtle one --
     // with worst-first scoring, an unscored repository placed first would read
@@ -345,12 +367,12 @@ export async function createRouter(
     // bad result, and the same goes for one that has never run a pipeline
     // (47 of 96).
     summaries.sort((a, b) => {
-      const dayA = utcDay(a.lastPipelineRunAt);
-      const dayB = utcDay(b.lastPipelineRunAt);
-      if (dayA !== dayB) {
-        if (!dayA) return 1;
-        if (!dayB) return -1;
-        return dayB.localeCompare(dayA);
+      const weekA = utcWeek(a.lastPipelineRunAt);
+      const weekB = utcWeek(b.lastPipelineRunAt);
+      if (weekA !== weekB) {
+        if (!weekA) return 1;
+        if (!weekB) return -1;
+        return weekB.localeCompare(weekA);
       }
 
       const scoreA = a.score?.total;
