@@ -26,7 +26,7 @@ Target is the organization's **real Bitbucket estate**, not a sandbox.
 | Custom plugins  | `fleet-common`, `fleet-backend`, `fleet` (frontend)          |
 | Scorecard       | 8 metrics, all live — 100 of 100 weight registered           |
 | Branches        | Divergence measured on its own 6h pass, **not scored**       |
-| Progress        | 987 tests, 53 suites, 4 e2e                                  |
+| Progress        | 992 tests, 53 suites, 4 e2e                                  |
 | Theme           | Custom, token-driven — `packages/app/src/modules/theme`      |
 
 ## Measured facts about the estate
@@ -126,6 +126,15 @@ Other findings:
   **107 author-repository pairs** across the estate in 90 days. Small enough
   that the whole per-engineer breakdown ships with the productivity overview --
   about 4KB -- rather than needing an endpoint per engineer.
+- **Bitbucket carries a human name for each project, and half of them say
+  nothing.** Probed 2026-09-08, one request: `AM` is `Amplifye`, `DDS` is
+  `DAI Delivery Systems`, `RES` is `Research` -- but `DAARWYN` and `MDLH` are
+  their own keys and `DAIWEB` is `DAI-WEB`. **MDLH, the largest project at 37
+  repositories, expands to itself.** So a "full project name" feature reaches
+  three of six, which is worth knowing before spending surface on it.
+  `values.project.name` costs **zero extra requests** -- it rides the same
+  projection that lists all 98 repositories in one call, the same lesson as
+  `merge_commit.hash` and PR participants.
 - **Every repository has a Bitbucket project**, and they map onto Backstage
   Systems with no gaps: MDLH 36, AM 21, DDS 20, DAARWYN 12, RES 4, DAIWEB 3.
   The provider now emits a `System` per project and sets `spec.system`, which
@@ -679,6 +688,27 @@ connection`, which took `/api/catalog` down to 404 and left every page in the
   penalised the 16 repositories that cancel superseded builds -- 27 of the
   estate's 637 finished runs. `PipelineSummary.judged` is the honest
   denominator; `completed` includes cancellations.
+- **The dev backend's watcher does not always pick up an edit, and the symptom
+  is a pass that runs and changes nothing.** Changing
+  `BitbucketRepositoryEntityProvider` and triggering the provider task produced
+  "Registered 98 repositories" in the log and entities built by the **old**
+  code. Nothing in the log says so. It was only detectable by inspecting what
+  the pass emitted -- the previous version prefixed a System's description with
+  the project name and the new one does not, so reading
+  `final_entities` settled it in one query. A backend restart fixed it.
+  So: after editing backend code, do not conclude anything from a task running.
+  Check a value that differs between the two versions.
+- **A task's schedule survives a restart, so `initialDelayDuration` does not
+  re-fire.** `next_run_start_at` is persisted in
+  `backstage_backend_tasks__tasks`, per plugin database -- so restarting to pick
+  up a code change does **not** pull the next pass forward, and a change that
+  depends on ingestion can sit invisible for up to the full cadence (30 minutes
+  for the repository passes). Verified 2026-09-08: after three restarts the next
+  run was still 21 minutes out. To make a pass land now,
+  `update backstage_backend_tasks__tasks set next_run_start_at = now() where
+id = '<task>'` -- which is the scheduler's own next action, just sooner, and
+  it reschedules normally afterwards. Do that rather than polling; **do not**
+  read "the code is deployed" as "the data has changed".
 - **Never derive a measurement window from `Date.now()`.** The ownership
   resolver did, so the window it _reported_ drifted from the window it
   _queried_ whenever the caller's `now` was not that instant. It passed for a
@@ -841,10 +871,23 @@ connection`, which took `/api/catalog` down to 404 and left every page in the
   `BitbucketRepositoryEntityProvider` would empty the catalog of all 98
   components. It is removed from the About card, the "Repositories" table, the
   catalog column and the catalog filter, and it stays in `spec`.
-  The entity header is the one place it could not be removed: `EntityHeaderBui`
-  pushes it only `if (lifecycle)`, so blanking `entityLabels.lifecycleLabel`
-  would leave the value with no label, and the header is neither an extension
-  nor a swappable component -- `EntityLayoutBui` imports it directly.
+  **The entity header needs two changes together, and each alone makes things
+  worse.** `EntityHeaderBui` pushes the item only `if (lifecycle)` and is
+  neither an extension nor a swappable component -- `EntityLayoutBui` imports it
+  directly -- so there is no React route to it. Blanking
+  `entityLabels.lifecycleLabel` alone leaves the VALUE ("experimental") in the
+  row with no label. Hiding by position alone is unsafe: lifecycle is first when
+  present, but a System has none, so a `:first-child` rule hides its Owner.
+  Do both. Blank the label, then hide any `bui-HeaderMetaItem` whose label
+  element is `:empty` -- after the blanking that is exactly the lifecycle one,
+  since Owner and Project both carry text. Matching emptiness rather than
+  position is what makes it correct on every kind, and it is the same
+  `:has()` + `:empty` technique the catalog header collapse already uses.
+  Verified: a Component shows Owner and Project with the lifecycle item hidden;
+  a Project shows Owner, with nothing hidden.
+  **An earlier version of this note said the header was the one place lifecycle
+  could not be removed. That was wrong** -- it was a conclusion drawn from the
+  React side alone, without checking what the DOM offered.
 - **"System" reads as "Project" through three separate surfaces, and one of
   them had to be hidden instead.** `entityTableColumnTitle.system` on
   `catalogReactTranslationRef` renames the catalog column;
@@ -867,6 +910,45 @@ connection`, which took `/api/catalog` down to 404 and left every page in the
   so on a Project's own page they are meaningless rather than absent, and
   "PROJECT --" there invited a hunt for data that cannot exist. Gate on the
   kind, keep the em-dash everywhere it means something.
+- **`BitbucketRepositoryEntityProvider` reads the API, not the store**, and
+  assuming otherwise sends you to the wrong database. It calls
+  `client.listRepositories(this.workspace)` directly, so anything it emits comes
+  from the live listing and needs no fleet column at all -- `repository.project_name`
+  was added for other consumers and is **not** on the path that fills a System's
+  description. Two separate scheduled tasks matter here and they live in
+  different plugin databases: `bitbucket-repositories:demandai` (the provider,
+  in `backstage_plugin_catalog`) and `repositories:demandai` (fleet ingestion,
+  in `backstage_plugin_fleet`).
+- **The full project name is the System's `title`, and that is the single lever
+  for all of it.** Everything that renders a System title picks it up at once:
+  the catalog's PROJECT column, the About card, the relations graph and the
+  project's own page heading. **This supersedes an earlier note here saying the
+  key stays the label and the name belongs in the description** -- that was the
+  first plan, and the product owner changed it. `describeProject` is gone with
+  it; the description is plain workspace context, because with the name in the
+  title, leading the description with it too made a page read
+  "DAI Delivery Systems / DAI Delivery Systems. Bitbucket project ...".
+  **It fits, and that was measured before committing to it.** In the catalog
+  column, less 40px of cell padding and a 20px icon, 138px was usable against
+  the longest name's 130px -- and once the column reflowed it had 267px, so
+  there is real slack. Verified at 1600px and 1280px: no truncated cell.
+  The entity **name** is untouched (`dds`), so refs, URLs and the Project
+  filter's facet values do not move. Falling back to the key covers the three
+  projects whose name is their key or nearly (DAARWYN, MDLH, DAIWEB/DAI-WEB).
+- **The entity header can never show a System's title, and the asymmetry is in
+  Backstage's own code.** `HierarchyLinks` renders `ref.name` -- the lowercased
+  key -- and never loads the System, so `metadata.title` is unreachable. Two
+  fields along, the **Owner** line does resolve one
+  (`owner?.metadata.title ?? owner?.metadata.name ?? ref.name`), because it
+  fetches the owner entity. So the header could only ever disagree with the
+  About card beside it.
+  An earlier version of this note upper-cased that link to "DDS", which fixed
+  the casing and left one field spelled two ways. **The line is now hidden**
+  instead -- `bui-HeaderMetaItem:has(dd ul)`, matched by markup rather than
+  position, since a hierarchy value is a list where an Owner's anchor is a
+  direct child of `dd`. The alternative was replacing the entity page, which
+  `EntityLayoutBui` forces by importing the header directly, and that trade was
+  declined for one label.
 - **Table sorting is one comparator in `plugins/fleet/src/sorting.ts`, and the
   absent case is the whole of it.** Both hand-rolled tables sort client-side --
   each endpoint sends every row in one response, so a server sort would add a
@@ -962,6 +1044,21 @@ connection`, which took `/api/catalog` down to 404 and left every page in the
   `getCatalogFilters` pushes the work to the backend, which offset pagination
   needs -- the page fetches 20 rows at a time, so a frontend-only filter would
   filter one page and report a wrong total.
+- **A custom `renderOption` CAN keep the counts -- you just have to source them
+  yourself. This corrects an earlier note here saying the two were mutually
+  exclusive.** `EntityAutocompletePicker` applies `getOptionLabel` to the input
+  text only, and hands a custom `renderOption` just `(option, state)`, so the
+  counts it holds internally are out of reach. That much was right. The wrong
+  conclusion was that labelling the options therefore costs the "(37)".
+  `EntityProjectPicker` supplies **both** callbacks, backed by one request:
+  `getEntities({ filter: { kind: 'System' } })` with `relations` in `fields`
+  yields the title _and_ the count, because `hasPart` on a System lists its
+  components -- 21/12/20/4/37/4, matching the facet exactly. A second
+  `getEntityFacets` call was the first implementation and was removed as
+  redundant; the guard against it drifting is a `component:` prefix test on the
+  relation, since a future Resource would otherwise inflate the number.
+  It degrades to the raw value while in flight or on failure, so the filter
+  never breaks.
 - **The catalog's `search` table lowercases every value, and reading it as
   ground truth is a trap.** It exists for case-insensitive matching, so querying
   it for the System titles returned `am`, `mdlh` when the entities actually
@@ -1009,6 +1106,43 @@ connection`, which took `/api/catalog` down to 404 and left every page in the
   these styles. It is also what makes them follow a light/dark switch with no
   React state: the browser resolves them at paint time.
 
+- **Starring is gone, and it existed in exactly one place.** Swept before
+  touching anything: the catalog, search, fleet, productivity and settings pages
+  had no star control at all, and nothing in this repo's own code renders one --
+  the table's star action left with the Actions column and the Starred filter
+  with `catalog-filter:catalog/list`, which had already made
+  `starredEntitiesApiRef` write-only. What remained was
+  `FavoriteEntityButton` in `EntityHeaderBui`, neither an extension nor
+  swappable, sharing `bui-HeaderControls` with the context menu -- so hiding the
+  container was not an option.
+  Matched on **`aria-label*="favorite" i`**, the only thing distinguishing it
+  from the menu button, with the substring covering both states because the
+  label toggles between "Add to" and "Remove from". Both spellings are listed
+  since the wording comes from `catalogReactTranslationRef`. **The failure mode
+  to expect: if a future Backstage renames those keys the rule stops matching
+  and the star returns.**
+  Verify this kind of change by computed style, not by DOM presence --
+  `querySelector` finds a `display: none` element perfectly well, and a first
+  check that way reported the star still there.
+- **The source tree carries no dead code, and the second audit agreed with the
+  first.** Re-audited 2026-09-08 across 114 source files: the only ones nothing
+  imports are the five entry points and three `setupTests.ts`. No knip,
+  ts-prune or depcheck is installed, and on this evidence that is no loss --
+  both symbols that _looked_ removable were load-bearing. `techStack` reads as
+  dead because the dashboard's Stack column went, and is still rendered by
+  `RepositoryFactsCard`; `unmeasuredScorer` is unused in production and
+  deliberately kept.
+  **The one real find was CSS, and it was orphaned by this repo's own
+  changes**: 78 lines styling the Owned/Starred filter rows, dead since
+  `catalog-filter:catalog/list` was disabled. Proven before deleting by counting
+  its three selector families against the live DOM over seven pages -- zero
+  matches. A note in its place records the remedy it held, because the clipping
+  it solved was not obvious.
+- **The catalog page is the one page with no request-count assertion**, which is
+  how two avoidable requests got added to it unnoticed. `performance.test.ts`
+  pins the fleet endpoint at exactly 1 call and the entity page at 1; the
+  catalog is only timed. Measured by hand at 19 API calls, 17 after collapsing
+  the project picker's two lookups into one. Worth an assertion.
 - **`color-scheme` was declared nowhere, and it is the only thing that tells a
   browser the page is dark.** Without it every piece of chrome the browser draws
   rather than the page came from the OS default: the `select` popup and its
@@ -1044,6 +1178,37 @@ connection`, which took `/api/catalog` down to 404 and left every page in the
   comment **naming** a deprecated token warns exactly as a declaration using it
   does -- the note explaining why those tokens are deliberately absent has to
   describe them without spelling them.
+- **`BackstageTable` is EVERY core-components table in the portal, so a
+  positional rule under it reaches tables you were not thinking about.** The
+  catalog's `th:last-child { width: 1% !important }` exists to make Tags hug its
+  chips, and unscoped it crushed the last column of every other table too: the
+  Repositories card on a project page rendered Owner at **7px**, exactly 1% of
+  its 654px card. It was misdiagnosed twice on the way -- first as
+  material-table's equal split, then as an unfixable narrow card, and a useful
+  Description column was deleted to work around it before the real cause
+  surfaced. **A column at exactly 1% of its container is a stylesheet claiming
+  it, not a layout algorithm failing.** The rule is scoped to
+  `[class*="MuiGrid-grid-lg-10"]` now -- `CatalogFilterLayout`'s content column,
+  which no other page has.
+- **Backstage UI sets `align-items` and `gap` on elements that are
+  `display: inline-block`, where both are inert.** The owner's avatar and name
+  in an entity header declared `gap: 8px` and centring, and had neither:
+  measured, the avatar ended at x=321 and the name began at x=321, with vertical
+  position coming from inline baseline metrics. `display: inline-flex` on that
+  link -- inline, so it does not claim the row -- activates BUI's own values and
+  needs none of ours. Gap became 8px and the vertical offset −0.3px.
+  Worth checking whenever a BUI row looks a pixel or two out: the properties may
+  be declared and doing nothing.
+- **`[class*="MTableToolbar"]` matches four elements, not one** -- the toolbar,
+  its title, its spacer and its actions -- so padding applied through it lands
+  four times. Adding 20px to align a card title with its own first column inset
+  the title by 41px instead of 21. `BackstageTableToolbar-root` is the precise
+  key. The rule exists because material-table's toolbar carries
+  `padding: 4px 0px 12px`, no horizontal padding at all, so a card title sat 1px
+  from the border while its header row sat at 21px. **Only one table in the
+  portal has that toolbar** -- the catalog renders its own heading outside the
+  table, measured as no `MTableToolbar` on the page, and the fleet tables are
+  hand-rolled.
 - **Duplicate object keys in a `styleOverrides` block silently replace, not
   merge.** `BackstageTable` had two `'& th, & td'` entries and the second threw
   away the first's `width: auto !important`, taking the catalog straight back to
@@ -1527,7 +1692,7 @@ blocking before anyone outside the team sees per-person figures.
   state, so `grep "LISTENING.*:7007"` can never match -- that pattern produced
   a confident diagnosis that the backend was down while it was serving 200s.
   If a measurement is impossible, the measurement is wrong.
-- Test coverage is no longer thin -- 987 tests across 53 suites -- but it is
+- Test coverage is no longer thin -- 992 tests across 53 suites -- but it is
   uneven: `ProductivityStore` still has no test file (see below), and nothing in
   the suite loads a real `app-config`. New modules ship with tests.
 - The Bitbucket credential in use belongs to an individual, not a service
