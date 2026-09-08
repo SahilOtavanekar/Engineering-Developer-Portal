@@ -545,6 +545,35 @@ function tableComponents(tokens: PortalTokens) {
           overflowX: 'auto' as const,
 
           /**
+           * The table's own title, brought into line with everything under it.
+           *
+           * material-table's toolbar carries `padding: 4px 0px 12px` -- no
+           * horizontal padding at all -- so on the project page's Repositories
+           * card the word "Repositories" sat **1px from the card's border**
+           * while its own `NAME` header text sat at 21px and every other card
+           * title in the portal is inset 20px. The title looked detached from
+           * the table it belongs to.
+           *
+           * 20px matches `MuiTableCell`'s left padding, so the title lands on
+           * the same vertical line as the first column's heading and its cells.
+           *
+           * **Scoped to `-root`, and the looser selector double-counted.**
+           * `[class*="MTableToolbar"]` matches four elements -- the toolbar,
+           * its title, its spacer and its actions -- so every one of them took
+           * the 20px and the title ended up inset 41px instead of 21.
+           *
+           * **Only one table in the portal has this toolbar.** The catalog
+           * renders its own "All Components (98)" heading outside the table --
+           * measured: no `MTableToolbar` element on that page at all -- and the
+           * fleet and productivity tables are hand-rolled HTML that material-UI
+           * never touches. So this cannot reach anything else.
+           */
+          '& [class*="BackstageTableToolbar-root"]': {
+            paddingLeft: 20,
+            paddingRight: 20,
+          },
+
+          /**
            * The Type, Lifecycle and Description columns were hidden here by
            * position, with a rule reading
            * `thead th:nth-child(n + 4):not(:last-child):not(:nth-last-child(2))`
@@ -624,16 +653,23 @@ function tableComponents(tokens: PortalTokens) {
           // auto-laid-out table; the freed space goes to Name, Project and
           // Owner, which have something to show.
           //
-          // **One rule where there were two, and dropping the second matters.**
-          // It targeted `nth-last-child(2)` because Tags sat beside an Actions
-          // column. `actions={[]}` on the page removed Actions, so Tags is now
-          // the last column and `nth-last-child(2)` is Owner -- which must NOT
-          // be shrunk to its content, since it holds the longest values on the
-          // page.
-          '& thead th:last-child, & tbody td:last-child': {
-            width: '1% !important',
-            whiteSpace: 'nowrap' as const,
-          },
+          // **Scoped to the catalog's own content column, and it has to be.**
+          // `BackstageTable` is every core-components `Table` in the portal,
+          // not just the catalog's -- so an unscoped `:last-child` rule shrinks
+          // whatever column happens to be last in any of them. It did: the
+          // Repositories card on a project page rendered Owner at **7px**,
+          // which is 1% of its 654px card, and the column read as a heading
+          // above nothing. `MuiGrid-grid-lg-10` is `CatalogFilterLayout`'s
+          // content column and appears on no other page.
+          //
+          // **One rule where there were two.** The second targeted
+          // `nth-last-child(2)` because Tags sat beside an Actions column;
+          // `actions={[]}` removed Actions, so that selector became Owner.
+          '[class*="MuiGrid-grid-lg-10"] & thead th:last-child, [class*="MuiGrid-grid-lg-10"] & tbody td:last-child':
+            {
+              width: '1% !important',
+              whiteSpace: 'nowrap' as const,
+            },
         },
       },
     },
@@ -1352,6 +1388,89 @@ option:checked {
   display: none;
 }
 
+/* The project line in an entity header, removed rather than corrected.
+
+   'HierarchyLinks' renders 'ref.name' -- the System's entity name, which
+   'toSystemName' lowercases -- and never loads the System, so it cannot reach
+   'metadata.title'. Backstage's own code is asymmetric here: the Owner line
+   two fields along DOES resolve a title, because it fetches the owner entity,
+   while a 'partOf' relation gets the bare ref.
+
+   So the header could only ever say "dds" where the About card beside it and
+   the relations graph below both say "DAI Delivery Systems". A previous version
+   of this rule upper-cased it to "DDS", which fixed the casing and left the
+   page showing one field two ways.
+
+   The About card is the surface that gets this right, so the header's copy
+   goes. Targeted by markup, not position: a hierarchy value is a list, so its
+   item is the one containing 'dd ul', where an Owner's anchor is a direct child
+   of 'dd'. That is what keeps this off Owner.
+
+   Reaching the full name here instead would mean replacing the entity page --
+   'EntityLayoutBui' imports the header directly, so nothing smaller gets at
+   it -- and that trade was declined: a copied upstream factory to maintain for
+   one label. */
+[class*="bui-HeaderMetaItem"]:has(dd ul) {
+  display: none;
+}
+
+/* The favourite (star) control on entity pages.
+
+   Nothing in this portal uses starring. The catalog's Starred filter went with
+   'catalog-filter:catalog/list', the star action went with the table's Actions
+   column, and no page reads 'starredEntitiesApiRef' -- so the button could set
+   a preference that nothing would ever read back.
+
+   'FavoriteEntityButton' is rendered inside 'EntityHeaderBui' and is neither an
+   extension nor a swappable component, so CSS is the only route. It cannot be
+   done by hiding 'bui-HeaderControls', which also holds the context menu.
+
+   **Matched on the aria-label, which is the only thing that distinguishes it**
+   from the menu button beside it -- the substring covers both states, since the
+   label toggles between "Add to favorites" and "Remove from favorites". Both
+   spellings are listed because the wording comes from
+   'catalogReactTranslationRef' and a locale could use either. If a future
+   Backstage renames those keys this rule stops matching and the star returns,
+   which is the failure mode to expect. */
+[class*="bui-HeaderControls"] [aria-label*="favorite" i],
+[class*="bui-HeaderControls"] [aria-label*="favourite" i] {
+  display: none;
+}
+
+/* The owner's avatar and name, which were never actually laid out.
+
+   Backstage UI gives that link 'align-items: center' and 'gap: 8px' -- and
+   sets 'display: inline-block', on which **both are inert**. They only take
+   effect on a flex or grid container. So the declared 8px never existed: the
+   name butted straight against the 24px avatar, and its vertical position came
+   from inline baseline metrics rather than from being centred against it.
+   Measured: avatar at x=297 w=24, name starting at x=321.
+
+   'inline-flex' rather than 'flex' so the link stays inline inside its 'dd'
+   instead of becoming a block and taking the full row width. Nothing else is
+   added -- the gap and the centring are BUI's own values, finally applying.
+
+   Scoped to a direct link in a header metadata value, which is the Owner. A
+   hierarchy value is a list and is hidden by the rule above. */
+[class*="bui-HeaderMetaItem"] dd > [class*="bui-Link"] {
+  display: inline-flex;
+}
+
+/* The Lifecycle item in an entity header's metadata row.
+
+   Paired with a blanked 'entityLabels.lifecycleLabel' in
+   'packages/app/src/modules/i18n/catalog.ts' -- see there for why neither half
+   works alone. This matches the item by its label being EMPTY rather than by
+   its position, which is what makes it safe on every kind: lifecycle is pushed
+   first when present, but a System has none, so its first item is Owner and a
+   ':first-child' rule would hide the wrong thing.
+
+   An earlier note claimed this could not be removed at all. It can; the route
+   is a translation ref and ':empty', both of which this portal already uses. */
+[class*="bui-HeaderMetaItem"]:has(dt [class*="bui-Text"]:empty) {
+  display: none;
+}
+
 /* Height reclaimed above an entity page's content.
 
    Measured on a project page: the header ran from y=85 to y=250, and 165px to
@@ -1598,83 +1717,20 @@ nav [class*="BackstageSidebarDivider"] {
   background: ${t.nav.border};
 }
 
-/* The Owned / Starred rows in that column, which rendered as "Owne" and
-   "Starre".
+/* The catalog's Owned / Starred filter rows were styled here -- about 80 lines
+   relaying out MuiListItem's absolutely positioned secondary action so the
+   labels stopped clipping to "Owne" and "Starre".
 
-   Material UI positions a ListItem's secondary action absolutely and reserves
-   right padding on the row to clear it -- 48px by default, sized for an icon
-   button. Here the secondary action is a one-character count.
+   **Removed as dead**, not as tidying: that block belonged to
+   'UserListPicker', which went with 'catalog-filter:catalog/list'. Proven
+   before deleting rather than assumed -- its three selector families were
+   counted against the live DOM over seven pages (catalog, component, project,
+   fleet, productivity, search, settings) and matched **zero** elements.
 
-   **Trimming that reservation is not enough, and the first attempt at this
-   only looked fixed.** Cutting 48px to 30px bought twelve pixels and the labels
-   fitted at 1440; measured across widths afterwards, 1366 landed exactly on the
-   boundary at 52px of 52 needed, and 1280 clipped again. Any fixed reservation
-   is a guess about how wide the column will be, and the column is a percentage
-   of the viewport.
-
-   So the row is laid out properly instead: the container becomes a flex row,
-   the label takes whatever is left, and the count is pulled out of absolute
-   positioning to sit after it in normal flow. Nothing is reserved, so nothing
-   has to be guessed. Measured at 1280 the label goes from 38px of the 50 it
-   needs to about 60.
-
-   Scoped to the catalog's filter column so no other list in the portal is
-   affected. */
-[class*="MuiGrid-grid-lg-2"] li[class*="MuiListItem-container"] {
-  display: flex;
-  align-items: center;
-}
-
-[class*="MuiGrid-grid-lg-2"]
-  li[class*="MuiListItem-container"]
-  > [class*="MuiListItem-secondaryAction"] {
-  flex: 1 1 auto;
-  min-width: 0;
-  padding-left: 12px;
-  padding-right: 4px;
-}
-
-[class*="MuiGrid-grid-lg-2"]
-  li[class*="MuiListItem-container"]
-  > [class*="MuiListItemSecondaryAction-root"] {
-  position: static;
-  transform: none;
-  flex: 0 0 auto;
-  padding-right: 12px;
-}
-
-/* The icon gutter, which reserves 30px for a 20px glyph. */
-[class*="MuiGrid-grid-lg-2"] [class*="MuiListItemIcon-root"] {
-  min-width: 26px;
-}
-
-/* The selected row's highlight has to move with the layout above.
-
-   Material UI paints it on the ListItem, which used to span the whole row
-   because the count sat inside its padding. Now that the count is a sibling in
-   normal flow, the ListItem is 114px of a 141px row -- so the fill covered the
-   label and stopped short of the number, which read as a rendering fault.
-   Painting the container instead puts it back around the whole row.
-
-   Also retinted: stock is a flat rgba(0,0,0,0.08) that goes muddy on the dark
-   theme and matches nothing else here. */
-[class*="MuiGrid-grid-lg-2"]
-  li[class*="MuiListItem-container"]:has([class*="Mui-selected"]) {
-  background: ${t.accent.subtle};
-  border-radius: ${t.radius.sm}px;
-}
-
-[class*="MuiGrid-grid-lg-2"]
-  li[class*="MuiListItem-container"]
-  > [class*="Mui-selected"] {
-  background: transparent;
-}
-
-/* Hover follows the same rule, for the same reason. */
-[class*="MuiGrid-grid-lg-2"]
-  li[class*="MuiListItem-container"]:hover:not(:has([class*="Mui-selected"])) {
-  background: ${t.border.soft};
-  border-radius: ${t.radius.sm}px;
-}
+   If the Personal filter is ever re-enabled the clipping returns, and the
+   remedy is in this file's history: make the row a flex container and pull the
+   count out of absolute positioning, rather than trimming the 48px reservation,
+   which is a guess about a column whose width is a percentage of the viewport.
+*/
 `;
 }

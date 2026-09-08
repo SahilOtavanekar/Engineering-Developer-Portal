@@ -15,6 +15,14 @@ export interface BitbucketRepository {
   url: string;
   /** Bitbucket project the repo belongs to, e.g. 'PORTAL'. */
   projectKey?: string;
+  /**
+   * The project's human name, e.g. 'DAI Delivery Systems' for DDS.
+   *
+   * Often just the key repeated -- measured on this workspace, three of six
+   * are (DAARWYN, MDLH) or as near as makes no difference (DAIWEB / DAI-WEB).
+   * Consumers should expect it to add nothing.
+   */
+  projectName?: string;
   defaultBranch?: string;
   isPrivate: boolean;
   /** Absent when Bitbucket has not detected one, which is common. */

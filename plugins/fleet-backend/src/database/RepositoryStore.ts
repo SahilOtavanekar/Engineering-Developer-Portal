@@ -14,6 +14,7 @@ export interface RepositoryRecord {
   description: string | null;
   url: string;
   project_key: string | null;
+  project_name: string | null;
   default_branch: string | null;
   is_private: boolean;
   language: string | null;
@@ -62,6 +63,7 @@ const MUTABLE_COLUMNS = [
   'description',
   'url',
   'project_key',
+  'project_name',
   'default_branch',
   'is_private',
   'language',
@@ -129,6 +131,7 @@ export class RepositoryStore {
         description: repository.description ?? null,
         url: repository.url,
         project_key: repository.projectKey ?? null,
+        project_name: repository.projectName ?? null,
         default_branch: repository.defaultBranch ?? null,
         is_private: repository.isPrivate,
         language: repository.language ?? null,

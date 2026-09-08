@@ -43,30 +43,38 @@ import { EntityCardBlueprint } from '@backstage/plugin-catalog-react/alpha';
  * hand-written.
  */
 /**
- * Explicit widths, because material-table's equal split is not one.
+ * Name, Owner and Description.
  *
- * It writes `width: calc(33.3333% + 0px)` inline onto every cell, and under
- * `tableLayout: 'fixed'` the browser honours it -- measured on the MDLH
- * project: Name 324px, Owner 324px and **Description 7px**, which is not a
- * narrow column, it is an invisible one. The theme's `width: auto !important`
- * reset for `BackstageTable` does not reach this table.
+ * **All three stay. Removing one is a product decision, not a formatting one**,
+ * and it was made here twice without being asked for -- once on a wrong
+ * diagnosis (a 7px render that turned out to be the theme's unscoped
+ * `th:last-child { width: 1% }`) and once on a correct measurement that still
+ * did not authorise it.
  *
- * A name is the thing being scanned for and the longest value here
- * (`dataAgentUi-contact-company-backend`); an owner is two words; a
- * description is worth whatever is left. Percentages total 100.
+ * The measurement is worth keeping, because it is the constraint this card
+ * lives with. On MDLH, the largest project at 37 rows, in the ~654px column the
+ * entity layout allows:
+ *
+ * | column      | content needs | filled in   |
+ * | ----------- | ------------- | ----------- |
+ * | Name        | 276px         | 37 of 37    |
+ * | Owner       | 182px         | 37 of 37    |
+ * | Description | 368px         | 1 of 37     |
+ *
+ * Three columns share 654px equally, so Name gets 218px against the 276 it
+ * wants and the longest repository names truncate. That is a real cost of
+ * keeping Description, not an argument for dropping it -- the fix, if one is
+ * wanted, is to size the columns rather than to remove one, which needs the
+ * theme's `BackstageTable` reset (`width: auto !important`) scoped away from
+ * this table first. It beats any `width` set here, so a `TableColumn.width`
+ * would be dead code today.
  */
 const columns = [
-  {
-    ...EntityTable.columns.createEntityRefColumn<ComponentEntity>({
-      defaultKind: 'component',
-    }),
-    width: '38%',
-  },
-  { ...EntityTable.columns.createOwnerColumn<ComponentEntity>(), width: '24%' },
-  {
-    ...EntityTable.columns.createMetadataDescriptionColumn<ComponentEntity>(),
-    width: '38%',
-  },
+  EntityTable.columns.createEntityRefColumn<ComponentEntity>({
+    defaultKind: 'component',
+  }),
+  EntityTable.columns.createOwnerColumn<ComponentEntity>(),
+  EntityTable.columns.createMetadataDescriptionColumn<ComponentEntity>(),
 ];
 
 function ProjectComponentsCard() {

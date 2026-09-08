@@ -1,5 +1,12 @@
+import { useEffect, useState } from 'react';
 import type { Entity } from '@backstage/catalog-model';
+import { useApi } from '@backstage/core-plugin-api';
+import Checkbox from '@material-ui/core/Checkbox';
+import FormControlLabel from '@material-ui/core/FormControlLabel';
+import CheckBoxIcon from '@material-ui/icons/CheckBox';
+import CheckBoxOutlineBlankIcon from '@material-ui/icons/CheckBoxOutlineBlank';
 import {
+  catalogApiRef,
   EntityAutocompletePicker,
   type DefaultEntityFilters,
   type EntityFilter,
@@ -61,36 +68,113 @@ type ProjectEntityFilters = DefaultEntityFilters & {
 };
 
 /**
- * **The options are entity names, and the Project column shows titles -- so the
- * dropdown reads "mdlh (37)" where the column reads "MDLH". That is deliberate,
- * after trying the alternative.**
+ * The dropdown's options, labelled with the project's real name.
  *
- * `spec.system` holds the System's *name*, which `toSystemName` in the
- * Bitbucket entity provider lowercases, so the facet returns `mdlh`, `am`,
- * `dds`. The column renders the System's `title`, which is the project key as
- * Bitbucket has it.
+ * **`getOptionLabel` cannot do this and a bare `renderOption` loses the
+ * counts.** `EntityAutocompletePicker` applies `getOptionLabel` to the input
+ * text only; the option rows go through a default renderer that is handed the
+ * facet counts internally, and a `renderOption` of our own receives
+ * `(option, state)` and nothing else. So supplying one means sourcing both the
+ * titles and the counts here.
  *
- * `getOptionLabel` looks like the fix and is not: `EntityAutocompletePicker`
- * applies it to the input text only. The option rows go through a default
- * `renderOption` that renders the raw value beside its count, and passing a
- * `renderOption` of our own is the only way past it -- but that callback
- * receives `(option, state)` and **not the counts**, which the picker holds
- * internally. Upper-casing the list therefore costs the "(37)" on every row.
+ * **One request, not two.** The first version fetched the Systems for their
+ * titles and then `getEntityFacets` for the counts. The second call is
+ * unnecessary: a System's `relations` already list its components, so
+ * `hasPart` gives the count in the same response as the title. Verified
+ * against the stored entities -- `hasPart` per System is 21 / 12 / 20 / 4 / 37
+ * / 4, matching the facet exactly, and every part is a Component because this
+ * catalog holds no Resources.
  *
- * The counts are worth more than the casing: they say how much of the estate a
- * project accounts for, which is the reason to filter by it. So the values are
- * left as they are, and `getOptionLabel` is deliberately NOT passed -- upper-
- * casing the chip alone would leave the control disagreeing with its own
- * dropdown, which is worse than both being lower-case.
+ * If Resources are ever ingested, `hasPart` will exceed the component count
+ * and the filter would advertise the wrong number. The guard is the
+ * `component:` prefix test below rather than a comment.
+ *
+ * Falls back to the raw value whenever either is missing, so the control still
+ * works while the requests are in flight, if a System has no title, or if a
+ * project appears in `spec.system` with no System entity behind it.
  */
+function useProjectLabels() {
+  const catalog = useApi(catalogApiRef);
+  const [titles, setTitles] = useState<Record<string, string>>({});
+  const [counts, setCounts] = useState<Record<string, number>>({});
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const systems = await catalog.getEntities({
+        filter: { kind: 'System' },
+        fields: ['metadata.name', 'metadata.title', 'relations'],
+      });
+      if (cancelled) return;
+      setTitles(
+        Object.fromEntries(
+          systems.items
+            .filter(e => e.metadata.title)
+            .map(e => [e.metadata.name, e.metadata.title as string]),
+        ),
+      );
+      setCounts(
+        Object.fromEntries(
+          systems.items.map(e => [
+            e.metadata.name,
+            (e.relations ?? []).filter(
+              r => r.type === 'hasPart' && r.targetRef.startsWith('component:'),
+            ).length,
+          ]),
+        ),
+      );
+    })().catch(() => {
+      // A failed lookup must not break the filter -- it degrades to the raw
+      // `spec.system` value, which is what the picker showed before this.
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [catalog]);
+
+  return (value: string) => {
+    const label = titles[value] ?? value;
+    const count = counts[value];
+    return count === undefined ? label : `${label} (${count})`;
+  };
+}
+
+const icon = <CheckBoxOutlineBlankIcon fontSize="small" />;
+const checkedIcon = <CheckBoxIcon fontSize="small" />;
+
 export function EntityProjectPicker(props: { hidden?: boolean }) {
+  const labelFor = useProjectLabels();
+
   return (
     <EntityAutocompletePicker<ProjectEntityFilters, 'system'>
       label="Project"
       name="system"
       path="spec.system"
       Filter={EntityProjectFilter}
-      showCounts
+      /**
+       * `getOptionLabel` covers the input text -- the chip left behind after a
+       * selection -- and `renderOption` covers the list. Both are needed, or
+       * the control disagrees with its own dropdown.
+       */
+      getOptionLabel={option => labelFor(option)}
+      renderOption={(option, { selected }) => (
+        <FormControlLabel
+          control={
+            <Checkbox
+              icon={icon}
+              checkedIcon={checkedIcon}
+              checked={selected}
+            />
+          }
+          label={labelFor(option)}
+          /**
+           * The stock option does this too: the label is inside the listbox's
+           * own click target, so letting the control handle the event as well
+           * toggles the selection twice and it appears not to respond.
+           */
+          onClick={event => event.preventDefault()}
+        />
+      )}
       hidden={props.hidden}
     />
   );

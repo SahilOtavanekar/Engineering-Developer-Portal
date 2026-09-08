@@ -817,3 +817,56 @@ describe('confirmed versus proposed ownership', () => {
     expect(tags).not.toContain(TAG_UNCONFIRMED_OWNER);
   });
 });
+
+describe('System entities', () => {
+  const systems = (repositories: Array<Partial<BitbucketRepository>>) =>
+    entitiesOfKind('System', repositories);
+
+  it('titles a project with its full name, which is what the catalog shows', async () => {
+    const [system] = await systems([
+      { slug: 'a', projectKey: 'DDS', projectName: 'DAI Delivery Systems' },
+    ]);
+    expect(system.metadata.title).toBe('DAI Delivery Systems');
+  });
+
+  it('falls back to the key when Bitbucket carries no name', async () => {
+    // The column is nullable: until an ingestion pass has run there is no
+    // name, and the title still has to be something.
+    const [system] = await systems([{ slug: 'a', projectKey: 'DDS' }]);
+    expect(system.metadata.title).toBe('DDS');
+  });
+
+  it('keeps the key in the description, so it is never only implied', async () => {
+    // The title carries the name now, so the description must not repeat it --
+    // a project page read "DAI Delivery Systems / DAI Delivery Systems.
+    // Bitbucket project ..." while it did. The key belongs here because
+    // nothing else on that page shows it.
+    const [system] = await systems([
+      { slug: 'a', projectKey: 'DDS', projectName: 'DAI Delivery Systems' },
+    ]);
+    expect(system.metadata.description).toBe(
+      'Bitbucket project DDS in workspace demandai.',
+    );
+  });
+
+  it('still names the entity from the key, so refs and URLs do not move', async () => {
+    // `spec.system` on every Component points at this name, and so does the
+    // catalog's Project filter. Renaming it would break both.
+    const [system] = await systems([
+      { slug: 'a', projectKey: 'DDS', projectName: 'DAI Delivery Systems' },
+    ]);
+    expect(system.metadata.name).toBe('dds');
+  });
+
+  it('emits one System per project, not one per repository', async () => {
+    const found = await systems([
+      { slug: 'a', projectKey: 'DDS', projectName: 'DAI Delivery Systems' },
+      { slug: 'b', projectKey: 'DDS', projectName: 'DAI Delivery Systems' },
+      { slug: 'c', projectKey: 'AM', projectName: 'Amplifye' },
+    ]);
+    expect(found.map((s: any) => s.metadata.title).sort()).toEqual([
+      'Amplifye',
+      'DAI Delivery Systems',
+    ]);
+  });
+});

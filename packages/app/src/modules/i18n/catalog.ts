@@ -37,6 +37,24 @@ export const catalogMessages = createTranslationMessages({
   messages: {
     'indexPage.title': '',
     'entityLabels.systemLabel': 'Project',
+    /**
+     * Blanked so the entity header's Lifecycle item can be removed at all.
+     *
+     * `EntityHeaderBui` pushes the item only `if (lifecycle)` and the header is
+     * neither an extension nor a swappable component, so there is no React
+     * route to it -- and `spec.lifecycle` cannot simply go, because the
+     * Component schema requires it. Blanking alone is not enough either: it
+     * leaves the VALUE ("experimental") sitting in the row with no label, which
+     * is worse than the label was.
+     *
+     * It is half of a pair. `globalCss` hides any `bui-HeaderMetaItem` whose
+     * label element is `:empty`, which after this is exactly the lifecycle one
+     * -- Owner and Project both carry text. Matching emptiness rather than
+     * position is what makes it safe across kinds: a System has no lifecycle,
+     * so its first metadata item is Owner, and a `:first-child` rule would have
+     * hidden that instead.
+     */
+    'entityLabels.lifecycleLabel': '',
   },
 });
 

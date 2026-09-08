@@ -39,6 +39,11 @@ const REPOSITORY_FIELDS = [
   'values.description',
   'values.links.html.href',
   'values.project.key',
+  // Free: the same request, one more field. Bitbucket's project object carries
+  // a human name beside the key, and three of this workspace's six differ
+  // meaningfully -- AM is Amplifye, DDS is DAI Delivery Systems, RES is
+  // Research. The other three repeat their key.
+  'values.project.name',
   'values.mainbranch.name',
   'values.is_private',
   'values.language',
@@ -197,6 +202,7 @@ function toRepository(workspace: string, raw: any): BitbucketRepository {
       optional(raw.links?.html?.href) ??
       `https://bitbucket.org/${workspace}/${raw.slug}`,
     projectKey: optional(raw.project?.key),
+    projectName: optional(raw.project?.name),
     defaultBranch: optional(raw.mainbranch?.name),
     isPrivate: Boolean(raw.is_private),
     language: optional(raw.language),

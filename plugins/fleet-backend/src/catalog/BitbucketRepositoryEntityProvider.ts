@@ -503,24 +503,43 @@ export class BitbucketRepositoryEntityProvider implements EntityProvider {
   private toSystemEntities(
     repositories: BitbucketRepository[],
   ): SystemEntity[] {
-    const keys = new Map<string, string>();
+    const keys = new Map<string, { key: string; label?: string }>();
     for (const repository of repositories) {
       if (!repository.projectKey) continue;
-      keys.set(toSystemName(repository.projectKey), repository.projectKey);
+      keys.set(toSystemName(repository.projectKey), {
+        key: repository.projectKey,
+        label: repository.projectName,
+      });
     }
 
-    return [...keys.entries()].map(([name, projectKey]) => ({
+    return [...keys.entries()].map(([name, project]) => ({
       apiVersion: 'backstage.io/v1alpha1',
       kind: 'System',
       metadata: {
         name,
-        title: projectKey,
-        description: `Bitbucket project ${projectKey} in workspace ${this.workspace}.`,
+        // The full name is the title, so every surface rendering a System's
+        // title shows it: the catalog's PROJECT column, the About card, the
+        // relations graph and the project's own page heading.
+        //
+        // **Measured first, because fitting was the open question.** At the
+        // catalog column's 198px, less 40px of cell padding and a 20px icon,
+        // 138px is usable and the longest name -- "DAI Delivery Systems" --
+        // renders at 130px. It fits at 1600px and at 1280px. Eight pixels of
+        // headroom, so a project named longer than any in the workspace today
+        // would truncate rather than wrap.
+        //
+        // Falls back to the key, which is also what the three projects whose
+        // name IS their key get (DAARWYN, MDLH) or nearly (DAIWEB / DAI-WEB).
+        title: project.label ?? project.key,
+        // Plain context. The name is the title now, and leading the
+        // description with it as well made a project's page read
+        // "DAI Delivery Systems / DAI Delivery Systems. Bitbucket project ...".
+        description: `Bitbucket project ${project.key} in workspace ${this.workspace}.`,
         annotations: {
           [ANNOTATION_LOCATION]: `${this.getProviderName()}:${name}`,
           [ANNOTATION_ORIGIN_LOCATION]: `${this.getProviderName()}:${name}`,
           [ANNOTATION_WORKSPACE]: this.workspace,
-          [ANNOTATION_PROJECT_KEY]: projectKey,
+          [ANNOTATION_PROJECT_KEY]: project.key,
         },
       },
       spec: { owner: DEFAULT_OWNER },
