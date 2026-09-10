@@ -8,11 +8,62 @@ export interface StaleBranch {
   lastCommitAt: Date | null;
 }
 
+/**
+ * Branch names that are stale by design and must not be counted against a
+ * repository.
+ *
+ * The specification says stale branches "should be removed **or explicitly
+ * exempted**", and this list is that exemption. It is needed because a real
+ * part of this estate's stale-branch count is deliberate: `stage` is a
+ * long-lived branch on 12 repositories carrying 355 commits, `staging` on 2
+ * carrying 156, `dev` on 6 carrying 139 and `dev-stage` on 1 carrying 100 --
+ * roughly 750 of the estate's 2,699 stranded commits, none of which will ever
+ * merge to main and none of which anybody should delete. Counting them as
+ * neglect would tell 20-odd teams to destroy their release process.
+ *
+ * Matched case-insensitively, because this estate is already demonstrably
+ * inconsistent about case in branch and environment names.
+ */
+export interface StaleBranchOptions {
+  /** Branch names never counted as stale. Case-insensitive, exact names. */
+  exempt?: string[];
+}
+
 export interface BranchSummary {
   total: number;
   /** Branches with a commit inside the staleness window. */
   active: number;
   stale: number;
+  /**
+   * Stale branches somebody ought to delete.
+   *
+   * `stale` minus the default branch and minus anything exempt. This is the
+   * figure the score is built on: the default branch cannot be "a stale branch
+   * that should be removed" whatever its age, and an exempt branch has already
+   * been accounted for by a human.
+   */
+  staleActionable: number;
+  /**
+   * Stale branches spared by the exemption list.
+   *
+   * Reported rather than silently dropped so a repository can say "3 stale, 2
+   * exempt" instead of a number that quietly disagrees with what somebody sees
+   * in Bitbucket.
+   */
+  staleExempt: number;
+  /**
+   * The newest commit on **any** branch, the default one included.
+   *
+   * Repository-wide activity, which is a different question from whether main
+   * is up to date: measured 2026-09-09, 22 of 98 repositories have branch
+   * activity more than a week ahead of their default branch. Returned here
+   * because this query already reads every branch's timestamp to count the
+   * stale ones, so it costs nothing.
+   *
+   * Null for a repository with no branches, or whose branches all lack a
+   * timestamp.
+   */
+  lastCommitAt: Date | null;
 }
 
 /** A branch the divergence pass should measure. */
@@ -32,6 +83,11 @@ export interface DivergenceSummary {
   capped: boolean;
   /** Worst first. */
   worst: Array<{ name: string; commits: number; capped: boolean }>;
+}
+
+/** Lower-cased exemption set. Empty when nothing is exempt. */
+function exemptSet(exempt: string[] | undefined): Set<string> {
+  return new Set((exempt ?? []).map(name => name.trim().toLowerCase()));
 }
 
 /**
@@ -182,18 +238,48 @@ export class BranchStore {
   async summary(
     repositoryId: number,
     staleBefore: Date,
+    options: StaleBranchOptions = {},
   ): Promise<BranchSummary> {
-    const rows = await this.db('branch')
+    const exempt = exemptSet(options.exempt);
+    const rows = (await this.db('branch')
       .where({ repository_id: repositoryId })
-      .select('last_commit_at');
+      .select('name', 'is_default', 'last_commit_at')) as Array<{
+      name: string;
+      is_default: boolean | number;
+      last_commit_at: Date | null;
+    }>;
 
     let active = 0;
-    for (const row of rows as Array<{ last_commit_at: Date | null }>) {
+    let staleActionable = 0;
+    let staleExempt = 0;
+    let newest: Date | null = null;
+
+    for (const row of rows) {
       const at = row.last_commit_at ? new Date(row.last_commit_at) : null;
-      if (at && at.getTime() >= staleBefore.getTime()) active++;
+      if (at) {
+        if (at.getTime() >= staleBefore.getTime()) active++;
+        if (!newest || at.getTime() > newest.getTime()) newest = at;
+      }
+
+      // A branch with no timestamp at all counts as stale: it is either empty
+      // or was never measured, and neither is evidence of recent work.
+      const isStale = !at || at.getTime() < staleBefore.getTime();
+      // `is_default` is a boolean on Postgres and 0/1 on the SQLite the unit
+      // suite runs, so it is tested for truthiness rather than compared.
+      if (!isStale || row.is_default) continue;
+
+      if (exempt.has(row.name.toLowerCase())) staleExempt++;
+      else staleActionable++;
     }
 
-    return { total: rows.length, active, stale: rows.length - active };
+    return {
+      total: rows.length,
+      active,
+      stale: rows.length - active,
+      staleActionable,
+      staleExempt,
+      lastCommitAt: newest,
+    };
   }
 
   /**
@@ -206,14 +292,32 @@ export class BranchStore {
     repositoryId: number,
     staleBefore: Date,
     limit = 5,
+    options: StaleBranchOptions = {},
   ): Promise<StaleBranch[]> {
-    const rows = (await this.db('branch')
+    const exempt = exemptSet(options.exempt);
+    const query = this.db('branch')
       .where({ repository_id: repositoryId, is_default: false })
       .where(builder =>
         builder
           .where('last_commit_at', '<', staleBefore)
           .orWhereNull('last_commit_at'),
-      )
+      );
+
+    // The same exemptions the count applies, or the card would name branches
+    // as neglect that the score has already forgiven -- and a reader would
+    // reasonably conclude one of the two was broken.
+    //
+    // `lower(name)` rather than a case-insensitive collation: it is the one
+    // spelling that works on both Postgres and the SQLite the unit suite runs.
+    if (exempt.size > 0) {
+      const names = [...exempt];
+      query.whereRaw(
+        `lower(name) not in (${names.map(() => '?').join(', ')})`,
+        names,
+      );
+    }
+
+    const rows = (await query
       .orderBy('last_commit_at', 'asc')
       .limit(limit)
       .select('name', 'last_commit_at')) as Array<{

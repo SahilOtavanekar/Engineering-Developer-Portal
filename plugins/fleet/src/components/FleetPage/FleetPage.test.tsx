@@ -11,7 +11,13 @@ import { FleetPage } from './FleetPage';
 const overview: FleetOverview = {
   generatedAt: '2026-08-21T12:00:00.000Z',
   nominalWeight: 100,
-  counts: { healthy: 1, needsAttention: 1, critical: 2, unscored: 1 },
+  counts: {
+    excellent: 0,
+    healthy: 1,
+    needsAttention: 1,
+    atRisk: 2,
+    unscored: 1,
+  },
   repositories: [
     {
       entityRef: 'component:default/dead-repo',
@@ -20,7 +26,7 @@ const overview: FleetOverview = {
       projectKey: 'DDS',
       score: {
         total: 4,
-        band: 'critical',
+        band: 'at-risk',
         availableWeight: 45,
         computedAt: '2026-08-21T11:00:00.000Z',
       },
@@ -32,7 +38,7 @@ const overview: FleetOverview = {
       projectKey: 'DDS',
       score: {
         total: 6,
-        band: 'critical',
+        band: 'at-risk',
         availableWeight: 45,
         computedAt: '2026-08-21T11:00:00.000Z',
       },
@@ -135,7 +141,7 @@ describe('FleetPage', () => {
     // The bar segments carry the counts and double as the band filter.
     expect(
       await screen.findByRole('button', {
-        name: 'Critical (2)',
+        name: 'At risk (2)',
         pressed: false,
       }),
     ).toBeInTheDocument();
@@ -160,7 +166,13 @@ describe('FleetPage', () => {
     await render(
       ok({
         ...overview,
-        counts: { healthy: 0, needsAttention: 0, critical: 0, unscored: 0 },
+        counts: {
+          excellent: 0,
+          healthy: 0,
+          needsAttention: 0,
+          atRisk: 0,
+          unscored: 0,
+        },
         repositories: [],
       }),
     );
@@ -191,11 +203,11 @@ describe('FleetPage', () => {
 
     it('narrows to a band when its segment is clicked', async () => {
       await render(ok(overview));
-      const critical = await screen.findByRole('button', {
-        name: 'Critical (2)',
+      const atRisk = await screen.findByRole('button', {
+        name: 'At risk (2)',
       });
 
-      await userEvent.click(critical);
+      await userEvent.click(atRisk);
 
       expect(
         screen.getByText('Showing 2 of 5 repositories'),
@@ -208,12 +220,12 @@ describe('FleetPage', () => {
 
     it('clears a band filter when its segment is clicked again', async () => {
       await render(ok(overview));
-      const critical = await screen.findByRole('button', {
-        name: 'Critical (2)',
+      const atRisk = await screen.findByRole('button', {
+        name: 'At risk (2)',
       });
 
-      await userEvent.click(critical);
-      await userEvent.click(critical);
+      await userEvent.click(atRisk);
+      await userEvent.click(atRisk);
 
       expect(screen.getByText('5 repositories')).toBeInTheDocument();
     });

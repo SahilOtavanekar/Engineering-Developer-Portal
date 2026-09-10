@@ -199,6 +199,26 @@ describe('FleetRepositoryCollatorFactory', () => {
     expect(document.title).toBe('oxp-backend · 88 Healthy');
   });
 
+  /**
+   * Score rows are append-only, so a repository last scored before At Risk was
+   * renamed from `critical` still carries the old name. Indexing it raw would
+   * put a band in the facet list that no filter in the portal offers, and
+   * label the result with a word the specification does not use.
+   */
+  it('indexes a pre-rename band under its current name', async () => {
+    const id = await seed();
+    await scores.record(
+      id,
+      { total: 20, band: 'critical', availableWeight: 85, breakdown: [] },
+      NOW,
+    );
+
+    const [document] = await collect();
+
+    expect(document.band).toBe('at-risk');
+    expect(document.title).toBe('oxp-backend · 20 At risk');
+  });
+
   it('says so in the text when a repository has never been scored', async () => {
     await seed();
 

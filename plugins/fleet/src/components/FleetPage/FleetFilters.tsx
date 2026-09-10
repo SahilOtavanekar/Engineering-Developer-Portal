@@ -1,7 +1,7 @@
 import type { FleetRepositorySummary } from '@internal/backstage-plugin-fleet-common';
 import { Flex, Text } from '@backstage/ui';
 import SearchIcon from '@material-ui/icons/Search';
-import { BAND_FILL, BAND_LABEL } from '../../bands';
+import { bandFill, bandLabel } from '../../bands';
 import {
   bandCounts,
   dormancyCounts,
@@ -23,7 +23,7 @@ export interface FleetFiltersBarProps {
  * Filters for the fleet.
  *
  * The band bar doubles as the band filter: the most common question is "show
- * me the critical ones", and the segment already showing that count is the
+ * me the ones at risk", and the segment already showing that count is the
  * obvious thing to click.
  *
  * Built from plain controls rather than the BUI form components, which wrap
@@ -41,10 +41,13 @@ export function FleetFiltersBar({
   const dormancy = dormancyCounts(repositories);
   const total = repositories.length;
 
+  // Worst on the left, so the bar reads as a severity scale rather than as an
+  // arbitrary arrangement of colours.
   const segments = [
-    { band: 'critical', n: counts.critical },
+    { band: 'at-risk', n: counts.atRisk },
     { band: 'needs-attention', n: counts.needsAttention },
     { band: 'healthy', n: counts.healthy },
+    { band: 'excellent', n: counts.excellent },
   ].filter(segment => segment.n > 0);
 
   const toggle = <K extends keyof FleetFilters>(key: K, value: string) =>
@@ -69,7 +72,7 @@ export function FleetFiltersBar({
             boxShadow: 'var(--portal-shadow-soft)',
           }}
         >
-          {segments.map(segment => {
+          {segments.map((segment, index) => {
             const active = filters.band === segment.band;
             return (
               <button
@@ -79,8 +82,8 @@ export function FleetFiltersBar({
                 aria-pressed={active}
                 // A screen reader announcing a bare "2" is useless; label it
                 // the same way the other filter chips are labelled.
-                aria-label={`${BAND_LABEL[segment.band]} (${segment.n})`}
-                title={`${BAND_LABEL[segment.band]} (${segment.n})`}
+                aria-label={`${bandLabel(segment.band)} (${segment.n})`}
+                title={`${bandLabel(segment.band)} (${segment.n})`}
                 style={{
                   flex: segment.n,
                   appearance: 'none',
@@ -89,7 +92,18 @@ export function FleetFiltersBar({
                   font: 'inherit',
                   fontSize: '0.75rem',
                   fontWeight: 500,
-                  ...BAND_FILL[segment.band],
+                  ...bandFill(segment.band),
+                  // Excellent and Healthy share the positive intent, by the
+                  // specification's own colour choice, so without a divider
+                  // those two segments merge into one green block and there is
+                  // nothing to show where either begins. An inset shadow rather
+                  // than a border, which would consume width and reflow the
+                  // flex sizing that carries the counts. `--bui-border-2` is
+                  // defined as contrast against whatever it sits on, so it
+                  // reads on all three tints in both themes.
+                  ...(index > 0
+                    ? { boxShadow: 'inset 1px 0 0 var(--bui-border-2)' }
+                    : {}),
                   opacity: !filters.band || active ? 1 : 0.45,
                 }}
               >

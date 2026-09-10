@@ -2,6 +2,18 @@ import { OWNERSHIP_SOURCE_REGISTER } from '../../ownership/types';
 import type { Scorer } from '../types';
 
 /**
+ * **NOT REGISTERED.** Dropped from the scorecard on 2026-09-09 at the product
+ * owner's direction: the specification's seven rules do not include it. Kept
+ * rather than deleted -- it works and it is tested.
+ *
+ * **The ownership register itself is untouched**, and that is the important
+ * part: `spec.owner`, the catalog's Owner column and filter, the
+ * `confirmed-owner` tag and the About card all still work exactly as before.
+ * Only the ten points stopped. `ScoringService` still resolves ownership and
+ * populates `ScorerContext.ownership`, including the sync-state check that
+ * separates "no pass has ever run" from "a pass found nobody", so reinstating
+ * this is one line in `plugin.ts`.
+ *
  * Whether anybody is actually accountable for this repository.
  *
  * **A derived owner earns nothing.** The portal can name a likely owner for

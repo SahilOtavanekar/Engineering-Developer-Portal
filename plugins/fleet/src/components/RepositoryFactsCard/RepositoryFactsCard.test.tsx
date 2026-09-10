@@ -159,25 +159,132 @@ describe('RepositoryFactsCard', () => {
     );
 
     expect(
-      await screen.findByText(/nothing to measure yet/),
+      await screen.findByText(/Scored over 30 of 100/),
     ).toBeInTheDocument();
     expect(screen.getByText('30 of 100 weight')).toBeInTheDocument();
   });
 
-  it('blames the repository, not the portal, for a short denominator', async () => {
-    // Every metric has a data source now. Saying they are "not yet wired up"
-    // would send a team looking for a portal gap that does not exist.
-    await render(
+  /**
+   * A short denominator has two unrelated causes and they need opposite things
+   * said about them: a metric the **portal** cannot measure at all, and a
+   * metric this **repository** has no data for. One sentence about both is
+   * what made the old text wrong -- reporting the portal's own gap as "this
+   * repository has nothing to measure" sends a team hunting data that exists
+   * and that nothing has asked Bitbucket for.
+   *
+   * `pull-request-size` was the example of the first until the diffstat
+   * ingestion landed; nothing is in that category today, which is why the
+   * first case below asserts an absence.
+   */
+  describe('the two reasons a metric goes unmeasured', () => {
+    const withUnmeasured = (
+      entries: Array<{ id: string; title: string; weight: number }>,
+    ) =>
       ok({
         ...facts,
-        score: { ...facts.score, availableWeight: 70, nominalWeight: 100 },
-      }),
-    );
+        score: {
+          ...facts.score,
+          availableWeight: 100 - entries.reduce((a, e) => a + e.weight, 0),
+          nominalWeight: 100,
+          breakdown: entries.map(e => ({
+            ...e,
+            detail: 'Not measured yet',
+            available: false,
+          })),
+        },
+      });
 
-    expect(
-      await screen.findByText(/this repository has data for/),
-    ).toBeInTheDocument();
-    expect(screen.queryByText(/not yet wired up/)).not.toBeInTheDocument();
+    /**
+     * **No metric is the portal's gap any more**, and that is the good
+     * outcome: `pull-request-size` was the last one and left when the diffstat
+     * ingestion landed. So the card's portal-gap sentence is currently
+     * unreachable, and this pins that rather than pretending otherwise -- a
+     * test that faked membership would assert nothing about the real estate.
+     *
+     * The branch is deliberately kept for the next deferred requirement. If
+     * one is added to `PORTAL_CANNOT_MEASURE`, restore a test that renders it
+     * and asserts the wording, because the two absences must never be
+     * conflated again.
+     */
+    it('attributes nothing to the portal, because nothing is unmeasurable', async () => {
+      await render(
+        withUnmeasured([
+          { id: 'pull-request-size', title: 'Pull request size', weight: 10 },
+        ]),
+      );
+
+      expect(
+        await screen.findByText(/Scored over 90 of 100/),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByText(/cannot be measured by the portal/),
+      ).not.toBeInTheDocument();
+      // It is the repository's own gap now: no merged pull requests to size.
+      expect(
+        screen.getByText(
+          /Pull request size has nothing to measure in this repository/,
+        ),
+      ).toBeInTheDocument();
+    });
+
+    it('blames the repository for what the repository lacks', async () => {
+      await render(
+        withUnmeasured([
+          {
+            id: 'code-review-completed',
+            title: 'Code review completed',
+            weight: 15,
+          },
+        ]),
+      );
+
+      expect(
+        await screen.findByText(
+          /Code review completed has nothing to measure in this repository/,
+        ),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByText(/cannot be measured by the portal/),
+      ).not.toBeInTheDocument();
+    });
+
+    it('lists several of the repository’s own gaps in one sentence', async () => {
+      await render(
+        withUnmeasured([
+          { id: 'pull-request-size', title: 'Pull request size', weight: 10 },
+          {
+            id: 'code-review-completed',
+            title: 'Code review completed',
+            weight: 15,
+          },
+        ]),
+      );
+
+      expect(
+        await screen.findByText(
+          /Pull request size, Code review completed have nothing to measure/,
+        ),
+      ).toBeInTheDocument();
+      expect(screen.getByText(/Scored over 75 of 100/)).toBeInTheDocument();
+    });
+
+    /**
+     * The product owner specified the four bands, so the caveat that used to
+     * end this sentence became simply false.
+     */
+    it('no longer calls the band thresholds placeholders', async () => {
+      await render(
+        withUnmeasured([
+          { id: 'pull-request-size', title: 'Pull request size', weight: 10 },
+        ]),
+      );
+
+      expect(
+        await screen.findByText(/Scored over 90 of 100/),
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/placeholders/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/pending sign-off/)).not.toBeInTheDocument();
+    });
   });
 
   it('names metrics that could not be measured, with their forfeited weight', async () => {
@@ -276,7 +383,7 @@ describe('RepositoryFactsCard', () => {
     });
   });
   describe('problems on a low-scoring repository', () => {
-    const lowScore = (breakdown: any[], band = 'critical'): any => ({
+    const lowScore = (breakdown: any[], band = 'at-risk'): any => ({
       total: 30,
       band,
       availableWeight: breakdown
@@ -649,6 +756,100 @@ describe('RepositoryFactsCard', () => {
       ).not.toBeInTheDocument();
     });
   });
+  describe('stale branches', () => {
+    /**
+     * The card must show the figure the score is built on. `stale` counts the
+     * default branch and every deliberate long-lived branch, so showing it made
+     * the card read "1 of 14" beside a scorecard saying "No stale branches to
+     * delete" -- which reads as a defect in one of the two.
+     */
+    it('counts only the branches somebody ought to delete', async () => {
+      await render(
+        ok({
+          ...facts,
+          branches: {
+            total: 14,
+            active: 2,
+            stale: 12,
+            staleActionable: 9,
+            staleExempt: 3,
+            stalest: [],
+          },
+        }),
+      );
+
+      expect(await screen.findByText('Stale branches')).toBeInTheDocument();
+      expect(screen.getByText('9 of 14')).toBeInTheDocument();
+      expect(screen.getByText('3 exempt as deliberate')).toBeInTheDocument();
+    });
+
+    it('says nothing about exemptions when there are none', async () => {
+      await render(
+        ok({
+          ...facts,
+          branches: {
+            total: 5,
+            active: 4,
+            stale: 1,
+            staleActionable: 1,
+            staleExempt: 0,
+            stalest: [],
+          },
+        }),
+      );
+
+      expect(await screen.findByText('1 of 5')).toBeInTheDocument();
+      expect(screen.queryByText(/exempt/)).not.toBeInTheDocument();
+    });
+  });
+
+  describe('peer review', () => {
+    /**
+     * A self-approval is not a review, and this card used to say otherwise:
+     * measured across the estate it reported 265 of 365 pull requests
+     * "reviewed" where a second person had looked at 85. It must agree with
+     * the scorecard, which scores peer approvals.
+     */
+    it('counts approvals by somebody other than the author', async () => {
+      await render(
+        ok({
+          ...facts,
+          reviews: { merged: 10, approved: 8, peerApproved: 3, open: 0 },
+        }),
+      );
+
+      expect(
+        await screen.findByText('Peer reviewed (90d)'),
+      ).toBeInTheDocument();
+      expect(screen.getByText('3 of 10')).toBeInTheDocument();
+    });
+
+    it('names the self-approvals, because that is the gap to close', async () => {
+      await render(
+        ok({
+          ...facts,
+          reviews: { merged: 10, approved: 8, peerApproved: 3, open: 0 },
+        }),
+      );
+
+      expect(
+        await screen.findByText('merged PRs · 5 self-approved only'),
+      ).toBeInTheDocument();
+    });
+
+    it('says nothing about self-approval when there was none', async () => {
+      await render(
+        ok({
+          ...facts,
+          reviews: { merged: 10, approved: 10, peerApproved: 10, open: 0 },
+        }),
+      );
+
+      expect(await screen.findByText('10 of 10')).toBeInTheDocument();
+      expect(screen.queryByText(/self-approved/)).not.toBeInTheDocument();
+    });
+  });
+
   describe('review time', () => {
     it('shows review time alongside merge duration, as two measurements', async () => {
       await render(
@@ -657,6 +858,7 @@ describe('RepositoryFactsCard', () => {
           reviews: {
             merged: 53,
             approved: 25,
+            peerApproved: 25,
             open: 0,
             medianReviewHours: 4.5,
             medianMergeHours: 20,
@@ -677,6 +879,7 @@ describe('RepositoryFactsCard', () => {
           reviews: {
             merged: 10,
             approved: 0,
+            peerApproved: 0,
             open: 0,
             medianMergeHours: 3,
           },

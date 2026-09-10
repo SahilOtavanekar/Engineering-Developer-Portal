@@ -14,20 +14,75 @@ Target is the organization's **real Bitbucket estate**, not a sandbox.
 
 ## Current state
 
-|                 |                                                              |
-| --------------- | ------------------------------------------------------------ |
-| Backstage       | 1.53.0                                                       |
-| Frontend system | **New** — `createApp` from `@backstage/frontend-defaults`    |
-| Backend system  | **New** — `createBackend()`                                  |
-| Node / Yarn     | 24.x / 4.13.0                                                |
-| Dev database    | PostgreSQL 16 via `docker-compose.yml`                       |
-| Auth            | GitHub OAuth + guest (**placeholder** — Entra ID comes last) |
-| Permissions     | `allow-all-policy` — nothing is enforced yet                 |
-| Custom plugins  | `fleet-common`, `fleet-backend`, `fleet` (frontend)          |
-| Scorecard       | 8 metrics, all live — 100 of 100 weight registered           |
-| Branches        | Divergence measured on its own 6h pass, **not scored**       |
-| Progress        | 992 tests, 53 suites, 4 e2e                                  |
-| Theme           | Custom, token-driven — `packages/app/src/modules/theme`      |
+|                 |                                                                       |
+| --------------- | --------------------------------------------------------------------- |
+| Backstage       | 1.53.0                                                                |
+| Frontend system | **New** — `createApp` from `@backstage/frontend-defaults`             |
+| Backend system  | **New** — `createBackend()`                                           |
+| Node / Yarn     | 24.x / 4.13.0                                                         |
+| Dev database    | PostgreSQL 16 via `docker-compose.yml`                                |
+| Auth            | GitHub OAuth + guest (**placeholder** — Entra ID comes last)          |
+| Permissions     | `allow-all-policy` — nothing is enforced yet                          |
+| Custom plugins  | `fleet-common`, `fleet-backend`, `fleet` (frontend)                   |
+| Scorecard       | **7 metrics — the requirement's own set.** All measurable, 100 of 100 |
+| Bands           | **4** — Excellent 90+, Healthy 75+, Needs Attention 60+, At Risk      |
+| Branches        | Divergence measured on its own 6h pass, **not scored**                |
+| Progress        | 1,123 tests, 57 suites, 4 e2e                                         |
+| Theme           | Custom, token-driven — `packages/app/src/modules/theme`               |
+
+### The scorecard, as it stands 2026-09-10
+
+The requirement's seven rules, at its weights, registered in the order its
+tables list them so the document can be read beside the page. Live figures
+from the pass at 05:48 on 2026-09-10, **99 repositories** -- the estate grew by
+one that morning (`axp-data-plugin-user-report-daily`), which is the standing
+reason to read these from the database rather than from here.
+
+| Rule                          | Weight | Bands                | Measurable on | Notes                                           |
+| ----------------------------- | -----: | -------------------- | ------------: | ----------------------------------------------- |
+| Main branch up to date        |     20 | 30 / 60 / 90 days    |         99/99 | `repository.last_commit_at`, default branch     |
+| Stale branches                |     15 | 0 / 1-2 / 3-5 / >5   |         99/99 | count, excludes default + `exempt`              |
+| Changes through pull requests |     20 | 100% / 95 / 80       |         40/99 | 30-day window; middle bands unreachable here    |
+| Code review completed         |     15 | 90% / 70%            |         45/99 | **peer** approvals; 39 repositories lose points |
+| Pull request size             |     10 | <400 / ≤1000 / >1000 |         44/99 | **median** (decision 11); bottom band pays 1    |
+| Active development            |     10 | 30 / 60 / 90 days    |         99/99 | newest commit on **any** branch                 |
+| README available              |     10 | present / absent     |         99/99 | 64 present, 35 absent                           |
+
+Estate bands: **1 excellent / 17 healthy / 29 needs-attention / 52 at-risk**,
+mean total 53.5. `available_weight` ranges 55-100 per repository.
+
+**Verified in the browser 2026-09-10**, every figure cross-checked against the
+database: the band bar reads 52 / 29 / 17 / 1 and the Status column counts the
+same, "99 repositories", and all seven problem chips match a SQL reproduction
+of `deriveProblems` exactly -- code review 39, README 35, pull request size 21,
+main branch 19, stale branches 19, no recent development 16, bypassing pull
+requests 9. No chips for the three unregistered metrics. No sideways scroll.
+
+**Unregistered, kept and tested:** `activeContributors`, `pipelineHealth`,
+`ownerAssigned`. Each file opens with a NOT REGISTERED note; their inputs are
+still populated, so reinstating one is a line in `plugin.ts` plus a weight
+rebalance to keep the sum at 100.
+
+**Where to pick up.** The six-step rewrite is complete. What is left is
+judgement, not construction:
+
+1. ~~Open decision 11~~ **CLOSED and live: median.** Chosen by the product
+   owner 2026-09-10, set in `app-config.yaml`, and confirmed in the running
+   portal after a backend restart -- 44 of 44 repositories scored on the
+   median, 0 on the mean. **The projection held exactly**: the same four
+   repositories moved, at the same totals -- `ingest-jobs` 68→77 and `crm`
+   66→75 into Healthy, `website-tracking` 56→65 and `dxp-mono` 53→60 out of At
+   Risk -- and the metric split landed on the predicted 23 / 8 / 13.
+   The one discrepancy was in the baseline, not the change: the estate-wide
+   figures were projected from a pass that was one cycle stale, during which
+   an ingestion pass moved one repository on its own. **Project from the pass
+   you are about to replace, not the one before it.**
+2. **Open decision 8** — whether branch divergence should score at all. It
+   would need a weight rebalance away from 100.
+3. **§8 access control** (open decision 6) — still the one blocking gap before
+   anyone outside the team sees per-person figures.
+4. **Per-engineer lines added/deleted** is now nearly free; see requirement 8
+   below.
 
 ## Measured facts about the estate
 
@@ -343,6 +398,15 @@ override.
   contain `primary key (resource)`. The test now asserts that DDL instead, which
   is deterministic. If the behavioural form is ever reinstated, expect the
   flake back.
+- **The unit suite runs on SQLite, so store SQL must be portable.**
+  `startFleetTestDatabase` boots `startTestBackend` with no Postgres
+  configured, which is why `ProductivityStore`'s `date_trunc` has never been
+  exercised by a test. `IS DISTINCT FROM` is the same trap: it is the natural
+  way to write "approved by somebody who is not the author" and it does not
+  exist in SQLite. `reviewSummary` therefore does the comparison in JavaScript
+  from a second query rather than a correlated subquery -- chunked at 200 ids,
+  because SQLite caps bound parameters per statement and a busy repository can
+  carry more merged pull requests in the window than that cap allows.
 - **Never edit a migration that has already run.** Knex records migrations by
   filename, so an edit is silently a no-op against any database that already
   applied it -- the unit tests still pass, because they migrate a fresh
@@ -351,6 +415,11 @@ override.
   41 repositories failing with `column "is_proposed" does not exist`. Add a new
   migration instead; the only exception is one that has never left this
   machine, which can be dropped from `knex_migrations` and re-applied.
+- **`RepositoryFactsCard.test.tsx` fixtures are NOT type-checked.** Its `ok()
+helper takes `body: unknown`, so adding a required field to
+`ReviewSummaryView`compiled clean while two fixtures still lacked it and the
+card rendered "undefined of 53".`yarn tsc` cannot catch this; only reading
+  the fixtures can. Update them whenever a view type gains a field.
 - **Never assert a wall-clock budget in a test.** The same build and page
   measured warm medians from 0.9s to 2.8s on this machine depending only on
   what else was running. `packages/app/e2e-tests/performance.test.ts` prints
@@ -435,6 +504,54 @@ override.
   permissions across every route later is significantly harder.
 - **Score history is written from the first scorer onward** — one row per repo
   per run, never a single mutable row. History cannot be backfilled.
+- **There are four bands, and `critical` is now `at-risk`.** The product owner
+  specified the thresholds on 2026-09-09, which closed open decision 2:
+  Excellent 90-100, Healthy 75-89, Needs Attention 60-74, At Risk below 60.
+  `DEFAULT_BANDS` (was `PROVISIONAL_BANDS`, a name that had become a false
+  claim) carries them and a test pins the numbers.
+  **The rename is a data change, not a relabelling.** `repo_score.band` stores
+  the band string, so leaving it `critical` while showing "At risk" would mean
+  anyone reading the table saw a word the specification does not use. But score
+  history is append-only: 7,915 rows still say `critical`, only the latest row
+  per repository is rewritten by the next pass, and those old rows exist for
+  ever. So `canonicalBand` in **`fleet-common/src/bands.ts`** is the single
+  place that knows `critical` means `at-risk`, and it must be applied before
+  any band is **compared or counted** -- the fleet page's band filter is an
+  equality test against the value its own segment was built from, so raw
+  comparison made "At risk (58)" filter to nothing. Four callers: the overview
+  endpoint's counts, `bandCounts`, `filterRepositories` and the search
+  collator, which also indexes the canonical value so a facet cannot offer a
+  band no filter serves. `isSatisfactoryBand` lives beside it.
+  **Nothing may index a band map directly.** `plugins/fleet/src/bands.ts`
+  exposes `bandLabel`/`bandText`/`bandFill`/`bandSeverity`, which canonicalise
+  on the way in; its maps are keyed by the current names only. Before that the
+  legacy name was encoded in two places and would have drifted.
+  **`band !== 'healthy'` is now a bug, and it was written twice** -- in
+  `shouldHighlightProblems` and in `dormancyCounts.underperforming`. With
+  Excellent above Healthy both bannered the _best_ repositories on the estate.
+  Ask `isSatisfactoryBand`, which also refuses to assume an unrecognised band
+  is good news.
+- **Four bands, three colours, and that is the specification.** Its
+  classification table marks both Excellent and Healthy with a green circle, so
+  they share the positive intent; the label distinguishes them. This is why no
+  fourth `--portal-*` token pair was added, and why `bands.test.ts` asserts the
+  sharing explicitly rather than dropping its distinctness check -- a band
+  picking up a _neighbouring_ intent must still fail.
+  The cost is that the segmented band bar had two adjacent identical greens
+  with no visible boundary. The fix is an `inset 1px 0 0 var(--bui-border-2)`
+  on every segment but the first -- an inset shadow, not a border, which would
+  consume width and reflow the flex sizing that carries the counts. Measured
+  live: `rgba(20, 40, 66, 0.11)` in light and `rgba(148, 178, 214, 0.14)` in
+  dark, so it reads on all three tints in both modes.
+- **Re-banding moved 23 repositories with nothing about them having changed.**
+  Measured 2026-09-09 across 98: 42 critical to at-risk (the same band,
+  renamed), 18 healthy unchanged, 3 needs-attention unchanged, and then the
+  real movement -- **12 healthy promoted to excellent**, **7 healthy demoted to
+  needs-attention** (the floor rose 70 to 75) and **16 needs-attention dropped
+  to at-risk** (that floor rose 40 to 60). The estate reads worse in total, 58
+  at risk against 42 critical, while 12 repositories now stand out as the best
+  of it. **No score moved** -- only the thresholds did -- so the trend chart
+  genuinely contains a step at this change that no repository earned.
 - **Ownership resolution sits behind `OwnershipResolver`**, and there are now
   three: `PermissionOwnershipResolver` (repository admin), then
   `CommitHistoryOwnershipResolver`, chained by
@@ -460,6 +577,116 @@ override.
   watermark and never acquires older history. Deepening the window therefore
   needs `DELETE FROM commit` before the pass, or 47 of 95 keep only what they
   had -- which is exactly what happened on the first attempt.
+- **Recency is two metrics, not one, and they must read different
+  timestamps.** "Main branch is up to date" and "Active development" have the
+  same 30/60/90 day boundaries, and measuring both from one timestamp would
+  make the second metric free marks. `mainBranchCurrent` reads
+  `activity.lastCommitAt`, which is default-branch-only because
+  `CommitIngestionService` ingests only that branch, so it is exactly the field
+  the rule asks about. `activeDevelopment` reads the newest head across **every**
+  branch, from `BranchSummary.lastCommitAt` -- returned at no cost, since that
+  query already reads each branch's timestamp to count the stale ones.
+  **The split pays for itself.** Measured on the pass at 08:01 on 2026-09-09:
+  54 repositories are current on both, 37 are quiet everywhere, and **7 have a
+  stale main branch with live work on a branch** -- `plugin_count` is 238 days
+  stale on main and 34 days on a branch. Those 7 are the ones where work is
+  happening and nothing is shipping, and a single timestamp would have scored
+  them the same as the 37 that are simply dead.
+  **The ladders have the same days and different shapes**: 20/7/3/0 for main,
+  10/7/3/0 for development. The second falls away far more gently, so a
+  slowdown costs much less than main going quiet. `recencyLadder` in
+  `scorers/recency.ts` is shared, and reports each rung as a share of the
+  **top** rung, so the ladder describes itself and a reweighting cannot change
+  the proportions.
+  **Beyond the last rung is zero, not the last rung's points.** The first
+  version fell through to `bands[bands.length - 1]`, which paid every
+  repository whose main had been quiet for years the same 3 of 20 as one quiet
+  for 90 days -- 44 repositories scoring the bottom band instead of nothing.
+  Only a test at 91 days found it; the estate figures looked plausible.
+  **A future timestamp is treated as current.** Committer dates come from
+  whoever made the commit, so a skewed clock is possible and is not the
+  repository's fault; a negative age falling through every rung would report an
+  actively developed repository as abandoned.
+  **The "on a branch, not the default one" note is only said when main is
+  itself behind.** Found by reading the stored details rather than by reasoning:
+  `demand-ai-website` has a commit on main _today_ and a branch head seconds
+  newer, and the note therefore described a perfectly current repository as
+  having work stuck on a branch. It now reuses the ladder to ask whether main
+  is at full marks, so the two can never disagree about where the boundary is.
+- **Stale branches are COUNTED, not scored as a ratio, and that changed the
+  answer for 34 repositories.** `branchHygiene` scored `active / total`, so one
+  stale branch out of twenty scored 0.95 while one out of two scored 0.5 -- the
+  same single branch needing the same single deletion. Worse, the ratio made
+  the metric a restatement of dormancy: measured across the two passes either
+  side of the change, **repositories scoring zero fell from 38 to 4** and
+  estate-wide points rose **482.9 to 806.7**. Only 4 repositories have more
+  than five branches to delete; the other 34 were being marked down for having
+  no _recent_ branch activity, which the recency metrics already say.
+  **Only 2 repositories changed band, in opposite directions.** `dxp-mono` fell
+  61 to 57 because 9 stale branches is beyond the top band where the ratio had
+  given it partial credit for the branches that _were_ active -- the metric
+  finally doing its job. Average total rose 5.5 with almost no band churn: the
+  gains were broad and sub-threshold.
+- **The exemption list has to reach the STORE, not the scorer.** The scorer only
+  ever sees counts, and the repository card names the stalest branches from a
+  separate query, so `BranchStore.summary` and `BranchStore.stalest` both take
+  the list and `plugin.ts` threads one value into the scoring service and the
+  router. **Both options are optional, so omitting one typechecks perfectly and
+  simply scores the exempt branches anyway** -- which is what happened first,
+  to the scoring service. There is no compile-time guard; check both call sites.
+  `DEFAULT_STALE_BRANCH_EXEMPTIONS` is `stage`, `staging`, `dev`, `dev-stage`
+  -- measured, not guessed, and worth roughly 750 of the estate's 2,699
+  stranded commits. **`master` is deliberately absent** though 2 repositories
+  carry a stale one: a `master` left by a rename to `main` is exactly what this
+  rule exists to catch. Nothing speculative is listed either -- a default that
+  forgives a branch nobody has is a silent hole in the metric. This settles
+  open decision 9 for scoring; branch _divergence_ still counts them.
+  Verified live: 4 repositories reached full marks purely because their only
+  stale branch was a deliberate one.
+  **Matched case-insensitively through `lower(name)`**, which is the one
+  spelling that works on Postgres and on the SQLite the unit suite runs. This
+  estate is already demonstrably inconsistent about case.
+- **Zero stale branches earns full marks, including for a repository that has
+  only its default branch. This reverses the branch-hygiene reasoning**, which
+  called that unmeasurable on the grounds that full marks would flatter
+  something empty. That was really a guard against dividing by zero in a ratio;
+  with a count there is no division and "nothing needs deleting" is a true and
+  complete measurement. An empty repository is answered by the recency and
+  README metrics, which is where it should be answered.
+  The default branch is never counted however stale it is -- its staleness is
+  `mainBranchCurrent`'s job, and suggesting somebody delete the branch the
+  repository is built on would discredit the whole scorecard.
+- **A scorer's title labels the measurement; only the specification's heading
+  asserts the desired state.** Titling this one "No stale branches", as the rule
+  is named, made the scorecard row read **"No stale branches -- 5 branches with
+  no commit in 90 days"**, a flat contradiction. It is "Stale branches" now, and
+  the zero case reads "None need deleting" rather than repeating the title. The
+  other titles survive the same reading because they do not assert a negative:
+  "README available -- No README at the repository root" is fine. Found in the
+  browser; no test and no type would have shown it.
+- **`deriveProblems` keys dormancy on a metric id, so replacing that metric
+  silently breaks it.** `ACTIVITY_METRIC` was `active-commits`; with the
+  commit-volume metric retired, dormancy would have stopped classifying all 37
+  dormant repositories and nothing would have failed. It is
+  `active-development` now -- deliberately the repository-wide metric rather
+  than the main-branch one, because **main going quiet while a branch is busy
+  is a shipping problem the team should be told about, not dormancy**. The old
+  id is kept as `LEGACY_ACTIVITY_METRIC` and read as a fallback, because stored
+  breakdowns outlive the scorer that wrote them and every repository would
+  otherwise lose its dormancy statement for exactly one cycle.
+  `ACTIVITY_DERIVED` grew to four ids for the same reason it existed: a dormant
+  repository scores zero on main recency, on development, on contributors and
+  badly on branch hygiene, and that is one fact wearing four hats.
+  **Partial credit is what separates the two populations now.** 37 repositories
+  score zero on development and get the dormancy statement; **17 more lose
+  points without reaching zero** and get "No recent development" as a real
+  problem. The old volume metric could not tell those apart.
+- **Do not spread a store shape into an API response.** `router.ts` built
+  `BranchSummaryView` with `...branchSummary`, so adding `lastCommitAt` to
+  `BranchSummary` for the recency scorer leaked a raw `Date` into the response
+  under a view type that does not declare it, bypassing `iso()`. The fields are
+  named explicitly now. `yarn tsc` does not catch this -- the view is wider
+  than declared, not narrower.
 - **Commit figures describe the default branch only.**
   `CommitIngestionService` passes `branch: repository.default_branch`, so every
   commit count, contributor count and last-commit date excludes unmerged
@@ -486,15 +713,13 @@ override.
   confirmed" and never leads with a commit share, because that owner does not
   rest on commits -- the share appears only as corroboration, and only when it
   is non-zero. Derived owners keep the old caveat verbatim.
-- **The security-scan metric is gone and the weights total 100 again.** Dropped
-  at the product owner's direction on 2026-08-26; the freed 5 points plus 5 taken
-  from `codeReviewCompleted` (15 -> 10) fund `pullRequestDiscipline` at 10, so
-  the eight registered scorers are **20 / 10 / 20 / 10 / 10 / 10 / 10 / 10 = 100**
-  and a test asserts that sum. Code review lost the five because approval is the
-  weaker signal here -- median time from opening to first approval is **12
-  seconds** -- where whether a change went through a pull request at all is not.
-  **Section 7's security-scan requirement did not disappear with the metric**;
-  the portal simply no longer tracks it, and nothing now reports that gap.
+- **The security-scan metric was dropped on 2026-08-26**, at the product
+  owner's direction. **Section 7's security-scan requirement did not disappear
+  with the metric**; the portal simply no longer tracks it, and nothing now
+  reports that gap. The weight arithmetic that used to be recorded here
+  described an eight-metric scorecard and is superseded by the rule rewrite --
+  see "the scorecard is the requirement's seven rules" below for the weights
+  that are actually registered.
 - **`availableWeight < nominalWeight` no longer means the portal is
   unfinished.** Every registered metric has a data source, so a short
   denominator now means _this repository_ has nothing to measure -- no pipeline
@@ -545,6 +770,181 @@ windowStart` for commits, `updated_on` for pull requests), so existing rows
   380 commits across 33 repositories, most of it already-fixed history; at 30
   days it reports 16 across 8, which is the live problem.
   `fleet.scoring.disciplineWindowDays` changes it.
+- **The scorecard is the requirement's seven rules and nothing else, at its own
+  weights, in its own order.** 20 / 15 / 20 / 15 / 10 / 10 / 10 = 100, pinned by
+  a test. The card renders the breakdown in registration order, so the document
+  can be held beside the page and checked line by line -- which is worth more
+  than it sounds, because it is how the "Main branch" collision below was found.
+  **Three working, tested metrics were unregistered on 2026-09-09** at the
+  product owner's direction -- the instruction was to display only what the
+  requirement demands: `activeContributors`, `pipelinePassing` and
+  `ownerAssigned`. **Unregistered, not deleted**, on the same principle that
+  kept `unmeasuredScorer`: they work, they are tested, and pipeline passing is
+  the likeliest to come back since it was the estate's most widespread problem
+  at 38 repositories. Each file now opens with a **NOT REGISTERED** note saying
+  how to reinstate it. `ScorerContext.pipelines`, `.ownership` and
+  `activity.authors` are still populated, so reinstating one is a line in
+  `plugin.ts` plus a weight rebalance -- the fetches are deliberately kept for
+  exactly that reason, and the dead queries are the price.
+  **The ownership register is untouched and that is the important part:**
+  `spec.owner`, the catalog's Owner column and filter, the `confirmed-owner`
+  tag and the About card all still work. Only the ten points stopped.
+  **Measured on the pass at 09:42: the estate reads worse.** Excellent 4 to 2,
+  Healthy 23 to 15, Needs Attention 19 to 22, At Risk 52 to 59, average 57.6 to
+  53.7. The three dropped metrics were collectively yielding about half their
+  weight, and `ownerAssigned` alone paid **10 of 10 to 89 of 98 repositories** --
+  the single most reliably earned metric on the card, and the estate's main
+  source of easy points. What remains is the harsh banded set.
+- **Pull request size is measured now, and the probe settled three things
+  before a line was written.** Probed read-only 2026-09-09 across 48 pull
+  requests:
+  - **The pull request list carries no diffstat under any spelling.**
+    `values.diffstat`, `values.lines_added`, `values.lines_removed`,
+    `values.size` and `values.summary.size` all come back absent or `{}`. So
+    unlike `merge_commit.hash` and `participants`, this one genuinely **cannot**
+    ride an existing call -- the "ask and the field appears" lesson has a limit,
+    and this is it.
+  - **One request covers a pull request.** `pagelen=500` is accepted and none of
+    the 48 paginated, the largest being 158 files. The loop over `next` is there
+    for correctness, not for this estate.
+  - **The `fields` selector IS honoured**, and a first probe appeared to prove
+    otherwise: `fields=size,next,values.lines_added,...` returned
+    `{"values":[],"size":0}`. That was `oxp-backend#112`, a merged pull request
+    with a genuinely **empty** diffstat -- which is also why the size columns are
+    nullable, so "never fetched" stays distinct from "changed nothing".
+- **Excluding generated files is worth 0.7% of the estate, not the 21-25% a
+  three-pull-request sample said.** This is the Deployments-API mistake in
+  miniature and worth reading as one: a lockfile really was 6,813 of
+  `dai-delivery#1`'s 31,856 lines and 2,077 of `daarwyn-bo-ui#1`'s 8,257, and
+  generalising those two into a claim about the estate was wrong. **Measured
+  across all 391 merged pull requests: 15,681 excluded lines out of 2.2
+  million.** The exclusion is still right -- it is free, the requirement asks
+  for it, and it stops a dependency bump costing points -- but it fixes almost
+  nothing.
+  `DEFAULT_GENERATED_PATHS` in `analysis/diffstat.ts` matches lockfiles by exact
+  name and vendored directories by **path segment**, so `src/dist-helper.ts` is
+  source where `dist/index.js` is not. Deliberately conservative:
+  over-excluding flatters a repository, which is the worse failure for a metric
+  meant to find risk.
+- **What actually inflates this metric is branch promotion, and no exclusion
+  rule can touch it.** The estate's largest pull requests are titled "Prod
+  migration", "Promote stage to main" and "Staging sync main":
+  `portal-apis#73` moved **601,858 lines across 3,304 files, 3,301 of them
+  newly added**, and `ingest-jobs#18` 577,323 across 3,809. Those are release
+  mechanics -- a long-lived `stage` branch landing on `main` -- not changes
+  anybody reviewed or could have made smaller. The same `stage`/`staging`
+  branches the stale-branch metric exempts are what produce them.
+  **`files_added` is the field that identifies them**, at 99.9% of files added,
+  which is why it is stored even though nothing scores it.
+  Measured over 90 days across the 44 repositories with merged pull requests:
+  **13 average under 400 changed lines, 6 between 400 and 1,000, and 25 over
+  1,000** -- so 25 repositories score 1 of 10, most of them for release
+  mechanics. So the specification's **mean** is a poor description of this
+  estate. It is implemented anyway, because it is what the requirement bands,
+  but:
+  - per-pull-request figures are **stored**, so median or any other statistic
+    is a query rather than a 390-request refetch;
+  - `files_added` is stored too, from the same response, because the added-file
+    share is the only field that separates an import from a change -- CLAUDE.md
+    already records what needing a second backfill costs;
+  - the detail line reports the median beside the mean when they disagree, and
+    names the imports, so the number is not read as a verdict on the team.
+  - The bottom band pays **1, not 0** -- the only band on the scorecard that
+    does. A team merging 5,000-line pull requests is at least merging pull
+    requests.
+- **A long sweep must write as it goes, and the first live run proved it the
+  expensive way.** The original `PullRequestSizeService` collected all 390
+  results and wrote once at the close. The sweep ran for **over 16 minutes**,
+  met its 20-minute task timeout, and was killed having written **nothing** --
+  `sync_state` showed an attempt with no success and **no error**, because an
+  external abort never reaches the service's own catch. Every request it had
+  paid for was discarded, and the next sweep would have paid again. It writes in
+  batches of 25 now and the timeout is 40 minutes. **Symptom to recognise: an
+  attempt timestamp with neither a success nor an error is a killed task, not a
+  failed one.** The second sweep hit the same 20-minute limit -- the running
+  backend still held the old timeout -- but kept its 225 measured rows, which
+  is the fix working; a third finished the remaining 166.
+- **The whole estate is measured: 391 merged pull requests, 2.2 million changed
+  lines, in about 400 requests across three sweeps.** `available_weight` now
+  reaches **100** where it had topped out at 90, so no repository forfeits
+  points for a metric the portal could not measure. Points on the metric split
+  **13 repositories at 10, 6 at 3, 25 at 1**, with 54 unmeasurable for having
+  no merged pull requests at all. Estate bands moved 2/15/22/59 to
+  **1/14/29/54** and the average barely at 53.7 to 52.4 -- at-risk fell by five
+  because a measurable metric pays something where a forfeited one paid
+  nothing.
+- **Open decision 11, measured 2026-09-10: the mean scores release mechanics,
+  not review burden.** Three candidates banded the specification's way, across
+  the 44 repositories with merged pull requests in the window:
+
+  | statistic              | 10 pts | 3 pts | 1 pt | unmeasurable | mean points |
+  | ---------------------- | -----: | ----: | ---: | -----------: | ----------: |
+  | mean, as specified     |     13 |     6 |   25 |            0 |        3.93 |
+  | median                 |     24 |     7 |   13 |            0 |        6.23 |
+  | mean, imports excluded |     20 |     6 |   11 |            7 |        6.19 |
+
+  **The repositories the mean punishes are the disciplined ones.**
+  `oxp-backend` merged **66** pull requests typically **240** lines long -- the
+  busiest repository on the estate and among the best-behaved -- and scores 1
+  of 10 because one promotion moved 35,028 lines.
+  `daarwyn-data-sync-jobs` is 12 pull requests with a median of **3** and a
+  mean of 2,730. `ingest-jobs` is 3 with a median of **76** and a mean of
+  **192,474**.
+  **Excluding imports was measured and rejected**: it leaves 7 repositories
+  unmeasurable, and it does not rescue `portal-ui`, `crm` or `daarwyn-ui`,
+  whose large pull requests are **not** mostly-added files -- so the
+  `files_added` heuristic does not catch them. The median does.
+  Built as `fleet.scoring.metrics.pullRequestSize.statistic`, defaulting to
+  `mean` so the shipped behaviour still follows the document. Switching is a
+  product decision, reversible without a deploy -- the same reasoning as
+  `codeReviewCompleted.countSelfApprovals`.
+  Whichever is scored, the detail line names the **other** statistic when they
+  disagree by more than a factor of two, so neither number is read alone.
+
+- **The detail line justifies itself on the first repository that renders it.**
+  `daarwyn-data-sync-jobs` reads "2730 changed lines on average across 12
+  merged PRs in 90 days, **typically 4**". One promotion pull request sets the
+  mean for twelve that are typically four lines long. That clause is the whole
+  argument for storing the median, and it appears only when the two disagree by
+  more than a factor of two, so it stays quiet where the mean is honest.
+- **A short denominator now has two unrelated causes, and one sentence about
+  both was wrong.** Pull request size is a gap in the **portal**; code review
+  going unmeasured means **this repository** merged nothing. Reporting the
+  first as the second sends a team hunting data that exists and that nothing
+  has asked Bitbucket for. A scorer returning `null` carries no reason, so
+  `isPortalGap` in `fleet-common/src/problems.ts` holds the ids that are ours
+  -- delete the entry when the diffstat ingestion lands. The card partitions
+  `problems.unmeasured` by it, which finally gave that field something to do:
+  it had been computed and never rendered. Live: `ux-designs` reads "Scored
+  over 55 of 100 weight. Pull request size cannot be measured by the portal
+  yet. Main branch health, Code review completed have nothing to measure in
+  this repository."
+  **The same text used to end "Band thresholds are placeholders pending
+  sign-off", which had been false since decision 2 closed.** A test now asserts
+  the words "placeholders" and "pending sign-off" are absent.
+- **Two adjacent rows whose names differed by one word measured different
+  things.** Trimming the scorecard to seven rules put `pullRequestDiscipline`,
+  then titled "Main branch health", directly beneath "Main branch up to date".
+  It is **"Changes through pull requests"** now, which says what it measures and
+  matches the problem chip's wording. The id is unchanged, so stored breakdowns
+  and the fleet filter still match. Visible only on the rendered card -- no test
+  and no type would have shown it, and neither would reading the registration
+  list, because the collision is created by adjacency.
+- **The scorecard totalled exactly 100 at every step of the rule rewrite, and
+  that cost interim weights.** A scoring pass fires every 30 minutes and its
+  rows are append-only, so an intermediate state where the weights total 110 or
+  130 would write permanent history at a scale that is nobody's intended
+  answer. So each step preserves the sum: the two recency metrics were
+  registered at **13 and 7**, splitting the 20 the retired commit-volume metric
+  held in the 2:1 ratio the specification gives them, and
+  `pullRequestDiscipline` and `codeReviewCompleted` keep 10 each rather than
+  taking their specified 20 and 15. The specification's absolute figures arrive
+  in **one** change together with the removal of the dropped metrics. The band
+  _proportions_ are already the specification's everywhere, because every band
+  table is expressed as a fraction of the configured weight.
+  The consequence to remember: **remediation text must never quote absolute
+  points.** Two scorers did, and were wrong on the page the moment the interim
+  weights landed. Quote the day threshold or the share instead.
 - **Registering the tenth metric took nominal weight to 110.** Scores still
   normalise over `availableWeight`, and the card shows the denominator, but every
   score shifted again. Rebalancing to keep 100 is a config change and a product
@@ -554,12 +954,16 @@ windowStart` for commits, `updated_on` for pull requests), so existing rows
   the **fleet dashboard** reads `/api/fleet/overview` and needed
   `FleetRepositorySummary.directCommits` plus a chip in `FleetFiltersBar`. Adding
   a tag does nothing for the fleet page -- that mistake was made here first.
-- **The ownership metric is earned only by a confirmed owner.** `owner-assigned`
-  was an `unmeasuredScorer` forfeiting 10 weight; it now scores, taking the
-  scorecard from 85 to 95 of 100 measurable. **A derived owner earns zero, not
-  partial credit** -- the portal can name a likely owner for nearly every
-  repository, and if a guess scored, the estate would report as owned while
-  nobody had agreed to own anything.
+- **The ownership metric is NOT REGISTERED any more** -- unregistered
+  2026-09-09 with the rule rewrite, because the requirement's seven rules do not
+  include it. Everything below still describes how it behaves and is kept
+  because reinstating it is one line in `plugin.ts`: `ScoringService` still
+  resolves ownership and populates `ScorerContext.ownership`. **The register
+  itself is untouched** -- `spec.owner`, the catalog's Owner column and filter,
+  the `confirmed-owner` tag and the About card all work exactly as before.
+  **A derived owner earns zero, not partial credit** -- the portal can name a
+  likely owner for nearly every repository, and if a guess scored, the estate
+  would report as owned while nobody had agreed to own anything.
   **The two absences in `ScorerContext.ownership` mean different things and must
   not be conflated:** no `RepositoryOwnership` at all means no pass has ever
   succeeded, so the metric is _unmeasured_; a `RepositoryOwnership` with no
@@ -670,12 +1074,50 @@ connection`, which took `/api/catalog` down to 404 and left every page in the
   connection the fleet plugin uses -- and is **read-only by contract**: fleet
   owns those migrations, and every consumer must tolerate the tables not
   existing yet.
-- **Approval is not review, in this estate.** Measured 2026-08-25 from 243
-  approved merged PRs: median time from opening to first approval is **12
-  seconds**, and **169 of 243 (70%) are approved within five minutes**. p90 is
-  3.8 hours and the tail reaches 10 days, so real review does happen on a
-  minority. Treat "approved" as a weak signal; the `codeReviewCompleted` scorer
-  counts approvals and therefore measures ceremony as much as scrutiny.
+- **Approval is not review, in this estate, and the reason is self-approval.**
+  Measured 2026-08-25 from 243 approved merged PRs: median time from opening to
+  first approval is **12 seconds**, and **169 of 243 (70%) are approved within
+  five minutes**. p90 is 3.8 hours and the tail reaches 10 days, so real review
+  does happen on a minority.
+  **Measured 2026-09-09, which explains it: of 365 pull requests merged in 90
+  days, 265 carry an approval and only 85 carry one from anybody other than the
+  author.** 180 self-approvals. A 12-second approval is not fast review, it is
+  the author clicking approve on their own work. So `ReviewSummary.peerApproved`
+  exists beside `approved`, and `codeReviewCompletedScorer` scores the former by
+  default -- the rule it implements says "PRs should receive **peer** review",
+  and the specification's baseline is "Author cannot approve own PR".
+  `fleet.scoring.metrics.codeReviewCompleted.countSelfApprovals` reverses it
+  without a deploy, because of how much it moves: measured across the two
+  scoring passes either side of the change, estate-wide points on that metric
+  fell **321.8 to 50** and repositories scoring zero went from **7 to 39 of the
+  44 that can be measured at all**. Only 5 repositories on this estate earn
+  anything for code review once self-approvals stop counting.
+  **A peer approval requires both account ids known and different.** An
+  approval the portal cannot attribute is not evidence a second person looked.
+  Costs nothing today -- no row in either column is null -- and a test pins it
+  so a future ingestion gap cannot manufacture reviews.
+  **The card had to change with the scorer.** It reported "265 of 365 reviewed";
+  a scorecard saying 0 of 10 beside it would read as a portal defect. It shows
+  peer approvals with the self-approved count in the hint, so it agrees with
+  either setting of the config rather than tracking one of them.
+- **Banded scoring is expressed as a fraction of the configured weight, never
+  as absolute points.** The specification's tables give points -- 20 / 7 / 3 / 0
+  for pull-request discipline, 15 / 7 / 0 for review -- but `Scorer` returns a
+  0..1 fraction that the engine multiplies by a **configurable** weight. So the
+  band tables are written as `7 / 20` and `7 / 15` rather than as decimals:
+  each entry then states the points it is worth at the nominal weight, and the
+  proportions survive a reweighting instead of silently becoming a different
+  share of a different total.
+  **Full marks for "100%" is an integer comparison, not `share >= 1`.** The rule
+  is that nothing bypassed a pull request; comparing counts says that without
+  depending on how a division rounds, and a repository 1 commit short of
+  perfect must land in the band below rather than float up into it.
+- **The middle bands of the pull-request rule are unreachable here, and it is
+  arithmetic.** 95-99% cannot be expressed with fewer than 20 mainline commits
+  in the window. Measured 2026-09-09 over 30 days: **32 repositories at 100%, 9
+  below 80%, and not one in either middle band** -- so the metric pays 20 or 0
+  on this estate. Implemented anyway rather than collapsed to pass/fail: it
+  starts to discriminate as repositories get busier.
 - **`updated_on` is not a merge time.** It moves on any later edit.
   `oxp-backend#98` merged 38 seconds after opening but was last updated four
   minutes after -- a sevenfold overstatement. `closed_on` is the real thing and
@@ -698,6 +1140,27 @@ connection`, which took `/api/catalog` down to 404 and left every page in the
   `final_entities` settled it in one query. A backend restart fixed it.
   So: after editing backend code, do not conclude anything from a task running.
   Check a value that differs between the two versions.
+- **Config read at plugin `init()` is NOT hot-reloadable, and a scoring pass
+  will happily run with the old value.** Backstage reloads `app-config.yaml`
+  into the `Config` object, but `plugin.ts` builds the `ScoringEngine` -- and
+  every scorer's options with it -- once during `init()`. Editing
+  `fleet.scoring.metrics.pullRequestSize.statistic` and triggering the pass
+  therefore rescored the whole estate **with the old statistic** and reported
+  success. Only a backend **restart** re-runs `init()`.
+  Contrast `catalog.locations`, which the scaffolder removal did hot-reload:
+  that config is read continuously by the catalog, not captured at startup.
+  The test is whether a value is baked into an object at init.
+  **Touching a source file to force the watcher does not work** -- changing
+  only `LastWriteTime` left the backend running the same build through eight
+  polls. The watcher wants a content change, or a real restart.
+  **And the obvious discriminator was useless here**, which cost a round:
+  "does the detail say `typically`" looked like it would separate the two,
+  but the mean path _already_ printed a `typically N` contrast clause, and the
+  new code scoring the mean emits a byte-identical string to the old code. The
+  discriminator has to be a value that differs **between the two
+  configurations**, not merely between two code versions:
+  `'% changed lines typically across%'` -- the median leading the sentence --
+  is the one that works.
 - **A task's schedule survives a restart, so `initialDelayDuration` does not
   re-fire.** `next_run_start_at` is persisted in
   `backstage_backend_tasks__tasks`, per plugin database -- so restarting to pick
@@ -1196,7 +1659,7 @@ id = '<task>'` -- which is the scheduler's own next action, just sooner, and
   measured, the avatar ended at x=321 and the name began at x=321, with vertical
   position coming from inline baseline metrics. `display: inline-flex` on that
   link -- inline, so it does not claim the row -- activates BUI's own values and
-  needs none of ours. Gap became 8px and the vertical offset −0.3px.
+  needs none of ours. Gap became 8px and the vertical offset âˆ’0.3px.
   Worth checking whenever a BUI row looks a pixel or two out: the properties may
   be declared and doing nothing.
 - **`[class*="MTableToolbar"]` matches four elements, not one** -- the toolbar,
@@ -1346,17 +1809,20 @@ id = '<task>'` -- which is the scheduler's own next action, just sooner, and
   second compiled fine, because an object spread bypasses excess-property
   checking, and then failed at the first property access. Keep them in step.
 - **Remediation text belongs to the scorer, not to whatever renders it.**
-  `ScorerOutcome.remediation` is optional and each of the eight scorers supplies
+  `ScorerOutcome.remediation` is optional and every registered scorer supplies
   its own, because the fix almost always quotes a **configured** value -- the
-  commit target, the discipline window -- and a frontend lookup table would
-  duplicate config and drift silently the moment someone tuned it. A test proves
-  it: `activeCommitsScorer({ target: 25 })` says "25 commits in 90 days", not a
-  hardcoded 10.
+  recency threshold, the discipline window, the exemption key -- and a frontend
+  lookup table would duplicate config and drift silently the moment someone
+  tuned it. A test proves it: `mainBranchCurrentScorer({ bands: [...14 days] })`
+  says "every 14 days", not a hardcoded 30.
+  **It must never quote absolute points**, only day thresholds and shares. Two
+  scorers did and were wrong on the page the moment the interim weights landed;
+  the weight is configurable, so a figure is a claim the scorer cannot keep.
   The engine drops remediation at full marks, so it never travels beside a
-  metric that lost nothing. Two scorers deliberately stay **silent**:
-  `activeCommits` and `activeContributors` say nothing to a repository with no
-  commits at all, because "commit more" answers neither the scaffold case nor
-  the abandoned one -- the card reports that as dormancy instead.
+  metric that lost nothing. The recency scorers deliberately stay **silent**
+  for a repository with no commits at all, because "commit more" answers
+  neither the scaffold case nor the abandoned one -- the card reports that as
+  dormancy instead.
   **Adding the field broke four pre-existing tests** that used `toEqual` on
   outcomes and breakdown entries. They are `toMatchObject` now; exact equality
   on a growing object makes every future field addition look like a regression.
@@ -1369,20 +1835,22 @@ id = '<task>'` -- which is the scheduler's own next action, just sooner, and
   underperforming**. Ranking metrics by points lost and showing the worst would
   print "no commits in 90 days" 48 times, 42 of them about scaffolds -- which is
   how a warning gets trained out of people.
-  So `plugins/fleet-common/src/problems.ts` folds `active-commits`,
-  `active-contributors` and `branch-hygiene` into a single dormancy statement
-  whenever the activity metric is zero: they are one fact wearing three hats,
-  and a dormant repository scores zero on all three by construction. Dormancy is
-  then phrased by history -- `portal-ui` with 276 lifetime commits reads
-  "abandoned", a four-commit scaffold reads "never really developed. Not a
-  decaying service." Absent lifetime data assumes never-started, because that is
-  the less alarming of the two guesses.
-  Unmeasurable metrics are listed separately and never counted as problems: 55
-  repositories cannot be judged on code review at all.
-  **The payoff is that the top actionable problem across the estate turns out to
-  be `README available` on 29 repositories** -- minutes of work each, previously
-  buried beneath four larger numbers nobody could act on. Pipeline passing is
-  second at 14.
+  So `plugins/fleet-common/src/problems.ts` folds the activity-derived metrics
+  into a single dormancy statement whenever the activity metric is zero: they
+  are one fact wearing several hats, and a dormant repository scores zero on all
+  of them by construction. `ACTIVITY_DERIVED` and `ACTIVITY_METRIC` hold the ids
+  and have had to move twice as metrics were replaced -- see the note on
+  `deriveProblems` keying dormancy on an id. Dormancy is then phrased by history
+  -- `portal-ui` with 276 lifetime commits reads "abandoned", a four-commit
+  scaffold reads "never really developed. Not a decaying service." Absent
+  lifetime data assumes never-started, because that is the less alarming of the
+  two guesses.
+  Unmeasurable metrics are listed separately and never counted as problems: 54
+  repositories cannot be judged on code review or pull request size at all.
+  **The payoff is that the biggest actionable problems are cheap ones.**
+  Measured 2026-09-09 after the rule rewrite: README on 35 repositories,
+  code review on 39, stale branches on 20 -- where the old flat list buried
+  them beneath four larger numbers nobody could act on.
   Problems are shown only below healthy: a banner on the 36 healthy
   repositories would be noise. This is derived from the breakdown the scoring
   pass already writes -- no migration, no new pass, no Bitbucket requests -- and
@@ -1541,12 +2009,19 @@ id = '<task>'` -- which is the scheduler's own next action, just sooner, and
   entirely" are opposite outcomes that a value-only assertion cannot tell
   apart.
 
-- **Requirement 8 delivers eight of its ten measures, and the two missing ones
-  are a cost decision.** Lines added and deleted exist only behind
-  `/2.0/repositories/{ws}/{slug}/diffstat/{sha}` -- verified working, returning
-  real numbers -- at **one or more requests per commit**, so about 4,000 for this
-  estate against ~500 for a full sweep. Open decision 5 should be settled on that
-  number. **Filtering by Team has no data source at all**, not merely deferred.
+- **Requirement 8 delivers eight of its ten measures, and there are now two
+  routes to the ninth at very different prices.** Lines added and deleted come
+  from two separate diffstat endpoints:
+  - **Per pull request**, `/pullrequests/{id}/diffstat` -- **built and swept**,
+    one request each, 391 for this estate. `pull_request.lines_added` and
+    `lines_removed` are populated for every merged pull request, and a pull
+    request carries an author, so **per-engineer line counts are derivable with
+    no new requests at all**.
+  - **Per commit**, `/diffstat/{sha}` -- verified working, never built, at one
+    or more requests per commit: about **4,000** against ~500 for a full sweep.
+    This is the only thing open decision 5 is still about, and it buys accuracy
+    on commits that never went through a pull request.
+    **Filtering by Team has no data source at all**, not merely deferred.
 - **Participants and `closed_by` cost nothing, and looked unavailable.** The
   pull request _list_ endpoint omits `participants` entirely by default; asking
   for `values.participants.user.display_name` and friends returns them in full.
@@ -1615,36 +2090,43 @@ docker exec -it backstage-postgres psql -U backstage -c "\l"
 
 ### Closed
 
-|     | Decision          | Outcome                                                                        |
-| --- | ----------------- | ------------------------------------------------------------------------------ |
-| 1   | Bitbucket flavour | **Cloud** (Pipelines is Cloud-only)                                            |
-| 4   | CI/CD system      | **Bitbucket Pipelines** — same API, same credentials, same quota               |
-| —   | Dev database      | Postgres 16 in Docker; managed Postgres for production                         |
-| —   | Auth sequencing   | Entra ID deferred to the **end** of the build                                  |
-| —   | Config placement  | Postgres in `app-config.yaml` with `${...}`; values in `app-config.local.yaml` |
-| 9   | §9 numbering gap  | **Not a requirement** — confirmed by the product owner; do not track it        |
+|     | Decision          | Outcome                                                                                                                              |
+| --- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| 1   | Bitbucket flavour | **Cloud** (Pipelines is Cloud-only)                                                                                                  |
+| 4   | CI/CD system      | **Bitbucket Pipelines** — same API, same credentials, same quota                                                                     |
+| —   | Dev database      | Postgres 16 in Docker; managed Postgres for production                                                                               |
+| —   | Auth sequencing   | Entra ID deferred to the **end** of the build                                                                                        |
+| —   | Config placement  | Postgres in `app-config.yaml` with `${...}`; values in `app-config.local.yaml`                                                       |
+| 9   | §9 numbering gap  | **Not a requirement** — confirmed by the product owner; do not track it                                                              |
+| 2   | Score bands       | **Four, specified:** Excellent 90-100, Healthy 75-89, Needs Attention 60-74, At Risk <60                                             |
+| —   | Scorecard metrics | **The requirement's seven rules only**, at its weights. Contributors / pipeline / ownership unregistered 2026-09-09                  |
+| 11  | PR size statistic | **Median**, not the specification's mean — the mean scored release mechanics, not review burden. Set in `app-config.yaml` 2026-09-10 |
 
 ### Open
 
-|     | Question                                                               | Blocks                                                 |
-| --- | ---------------------------------------------------------------------- | ------------------------------------------------------ |
-| 2   | Score band thresholds (Healthy / Needs Attention / Critical)           | Ship provisional values in config                      |
-| 3   | Is §6 health and §7 scorecard one score or two?                        | Scoring design                                         |
-| 5   | Keep or drop lines added/deleted                                       | Productivity dashboards                                |
-| 6   | Who may see whose productivity data                                    | Productivity dashboards                                |
-| 7   | Business Owner / Business Unit source of record; retention period      | Ownership fields                                       |
-| 8   | Should branch divergence be scored? Needs a weight rebalance           | The 8 metrics total exactly 100                        |
-| 9   | Filter deliberate long-lived branches out of divergence                | ~750 of 2,699 stranded commits                         |
-| 10  | Commit trend: zero-fill from the window start, or from first activity? | The per-engineer chart's x-axis is not continuous time |
+|     | Question                                                                                                                   | Blocks                                                 |
+| --- | -------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| 3   | Is §6 health and §7 scorecard one score or two?                                                                            | Scoring design                                         |
+| 5   | Keep or drop lines added/deleted **per commit** (per-PR is now built)                                                      | Productivity dashboards                                |
+| 6   | Who may see whose productivity data                                                                                        | Productivity dashboards                                |
+| 7   | Business Owner / Business Unit source of record; retention period                                                          | Ownership fields                                       |
+| 8   | Should branch divergence be scored? Needs a weight rebalance                                                               | The 7 metrics total exactly 100                        |
+| 9   | Filter deliberate long-lived branches out of **divergence** — settled for scoring, where `staleBranches.exempt` handles it | ~750 of 2,699 stranded commits                         |
+| 10  | Commit trend: zero-fill from the window start, or from first activity?                                                     | The per-engineer chart's x-axis is not continuous time |
 
 ### Deferred as later add-ons
 
 Business Owner/Unit fields, the security-scan scorer, Entra ID + RBAC.
 
 Productivity dashboards (§8) are **built**, not deferred -- eight of the ten
-measures, with lines added/deleted (open decision 5) and Team filtering (no
-data source) the two absences. The README scorer is live. What is still
-missing from §8 is **access control**: see open decision 6, and treat it as
+measures, with lines added/deleted and Team filtering (no data source) the two
+absences. **The per-pull-request diffstat now exists**, so §8's lines
+added/deleted is no longer blocked on the API, only on attributing lines to a
+_person_: a pull request carries an author, so per-engineer totals are
+derivable from `pull_request.lines_added` without a single new request. Open
+decision 5 is now only about per-**commit** lines, which still costs ~4,000
+requests. What is still missing from §8 is **access control**: see open
+decision 6, and treat it as
 blocking before anyone outside the team sees per-person figures.
 
 ## Known risks
@@ -1692,9 +2174,26 @@ blocking before anyone outside the team sees per-person figures.
   state, so `grep "LISTENING.*:7007"` can never match -- that pattern produced
   a confident diagnosis that the backend was down while it was serving 200s.
   If a measurement is impossible, the measurement is wrong.
-- Test coverage is no longer thin -- 992 tests across 53 suites -- but it is
+  **A third instrument failure, and it reports success:** guarding the guest
+  sign-in with `if (await enter.isVisible())` **silently skips it** on a fresh
+  page, because the button has not rendered when the check runs and
+  `isVisible` does not retry. The run then measures the sign-in page --
+  `SEGMENTS []`, `STATUS COLUMN []`, no theme buttons -- which reads exactly
+  like a component that failed to render, and cost two rounds of debugging the
+  wrong thing. Always `await enter.waitFor({ state: 'visible' })` first.
+  Two lesser notes on driving it from a script rather than the test runner:
+  `playwright.config.ts` restricts `testDir` through `generateProjects`, so a
+  spec outside the package is "No tests found" -- use `chromium.launch()`
+  directly. And a scratchpad script cannot resolve `@playwright/test`, so
+  require it by absolute path out of the repo's `node_modules`.
+- Test coverage is no longer thin -- 1,123 tests across 57 suites -- but it is
   uneven: `ProductivityStore` still has no test file (see below), and nothing in
   the suite loads a real `app-config`. New modules ship with tests.
+  **`BranchStore` was the same kind of gap and is now closed**: it had no test
+  file at all until 2026-09-09, having been exercised only through
+  `RepositoryDetailIngestionService`, so its default-branch exclusion had no
+  coverage of its own. Worth checking for others: a store reached only through a
+  service is tested by accident, not on purpose.
 - The Bitbucket credential in use belongs to an individual, not a service
   account. Synchronization will break if that person's access changes.
 

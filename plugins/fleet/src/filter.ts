@@ -1,4 +1,8 @@
-import type { FleetRepositorySummary } from '@internal/backstage-plugin-fleet-common';
+import {
+  canonicalBand,
+  isSatisfactoryBand,
+  type FleetRepositorySummary,
+} from '@internal/backstage-plugin-fleet-common';
 
 export interface FleetFilters {
   /** A score band, or 'unscored'. Undefined means every band. */
@@ -28,8 +32,10 @@ export function filterRepositories(
 
   return repositories.filter(repository => {
     if (filters.band) {
-      const band = repository.score?.band ?? 'unscored';
-      if (band !== filters.band) return false;
+      // Canonical on both sides: a segment is built from the current name and
+      // a score row may still hold the name it was written under.
+      const band = canonicalBand(repository.score?.band) ?? 'unscored';
+      if (band !== canonicalBand(filters.band)) return false;
     }
 
     if (filters.problem) {
@@ -114,7 +120,9 @@ export function dormancyCounts(repositories: FleetRepositorySummary[]) {
         r.problems &&
         !r.problems.dormancy &&
         r.problems.top.length > 0 &&
-        r.score?.band !== 'healthy',
+        // Not `!== 'healthy'`: with Excellent above Healthy that counted the
+        // best repositories on the estate as underperforming.
+        !isSatisfactoryBand(r.score?.band),
     ).length,
   };
 }
@@ -122,12 +130,15 @@ export function dormancyCounts(repositories: FleetRepositorySummary[]) {
 /** Band counts for a given set of rows, including the unscored. */
 export function bandCounts(repositories: FleetRepositorySummary[]) {
   const of = (band: string) =>
-    repositories.filter(r => (r.score?.band ?? 'unscored') === band).length;
+    repositories.filter(
+      r => (canonicalBand(r.score?.band) ?? 'unscored') === band,
+    ).length;
 
   return {
-    critical: of('critical'),
+    atRisk: of('at-risk'),
     needsAttention: of('needs-attention'),
     healthy: of('healthy'),
+    excellent: of('excellent'),
     unscored: of('unscored'),
   };
 }

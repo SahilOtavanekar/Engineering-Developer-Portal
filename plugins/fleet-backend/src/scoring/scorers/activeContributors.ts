@@ -6,6 +6,11 @@ export interface ActiveContributorsOptions {
 }
 
 /**
+ * **NOT REGISTERED.** Dropped from the scorecard on 2026-09-09 at the product
+ * owner's direction: the specification's seven rules do not include it. Kept
+ * rather than deleted -- it works and it is tested. Reinstate by adding it to
+ * the `scorers` array in `plugin.ts`; `activity.authors` is still populated.
+ *
  * How many people can safely change this?
  *
  * A single-author repository is a bus-factor risk even when it is busy, which

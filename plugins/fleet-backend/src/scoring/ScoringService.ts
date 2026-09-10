@@ -30,6 +30,13 @@ export interface ScoringServiceOptions {
   windowDays?: number;
   /** Window for the pull-request discipline metric. Defaults to 30 days. */
   disciplineWindowDays?: number;
+  /**
+   * Branch names never counted as stale. See `StaleBranchOptions`.
+   *
+   * Threaded from config to the **store**, not to the scorer: the scorer only
+   * sees counts, so the exemption has to be applied where the names are.
+   */
+  staleBranchExemptions?: string[];
 }
 
 export interface ScoringSummary {
@@ -60,6 +67,7 @@ export class ScoringService {
   private readonly logger: LoggerService;
   private readonly windowDays: number;
   private readonly disciplineWindowDays: number;
+  private readonly staleBranchExemptions: string[];
 
   constructor(options: ScoringServiceOptions) {
     this.engine = options.engine;
@@ -75,6 +83,7 @@ export class ScoringService {
     this.windowDays = options.windowDays ?? DEFAULT_WINDOW_DAYS;
     this.disciplineWindowDays =
       options.disciplineWindowDays ?? DEFAULT_DISCIPLINE_WINDOW_DAYS;
+    this.staleBranchExemptions = options.staleBranchExemptions ?? [];
   }
 
   static resourceKey(workspace: string): string {
@@ -126,12 +135,15 @@ export class ScoringService {
 
       for (const repository of live) {
         try {
-          const [activity, branches, pipelines, reviews, policy] =
+          const [activity, branches, pipelines, reviews, size, policy] =
             await Promise.all([
               this.commits.activitySince(repository.id, since),
-              this.branches.summary(repository.id, since),
+              this.branches.summary(repository.id, since, {
+                exempt: this.staleBranchExemptions,
+              }),
               this.pipelines.summary(repository.id),
               this.pullRequests.reviewSummary(repository.id, since),
+              this.pullRequests.sizeSummary(repository.id, since),
               // Its own window: direct commits collapsed around 2026-07-27, so
               // the activity window would mostly report behaviour that has
               // already changed.
@@ -144,6 +156,9 @@ export class ScoringService {
             branches,
             pipelines,
             reviews,
+            // Absent when nothing merged in the window, so the scorer can tell
+            // "no pull requests" from "none measured yet".
+            size: reviews.merged > 0 ? size : undefined,
             ownership: ownershipResolved
               ? { proposed: proposedOwners.get(repository.id) }
               : undefined,

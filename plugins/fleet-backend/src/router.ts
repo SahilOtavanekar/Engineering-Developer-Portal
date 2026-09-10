@@ -4,6 +4,7 @@ import type {
   PermissionsService,
 } from '@backstage/backend-plugin-api';
 import {
+  canonicalBand,
   fleetRepositoryReadPermission,
   type FleetOverview,
   type FleetRepositorySummary,
@@ -53,6 +54,13 @@ export interface RouterOptions {
    * a longer one reports behaviour that has largely already stopped.
    */
   disciplineWindowDays?: number;
+  /**
+   * Branch names never counted as stale.
+   *
+   * Must match what the scoring pass was given, or the card names branches as
+   * neglect that the score has forgiven.
+   */
+  staleBranchExemptions?: string[];
   /**
    * Per-engineer productivity. Absent means the endpoint reports that it is not
    * configured rather than returning empty figures, which would read as
@@ -202,6 +210,7 @@ export async function createRouter(
     httpAuth,
     permissions,
     activityWindowDays = DEFAULT_WINDOW_DAYS,
+    staleBranchExemptions = [],
     disciplineWindowDays = DEFAULT_DISCIPLINE_WINDOW_DAYS,
     productivity,
     productivityWindowDays = DEFAULT_WINDOW_DAYS,
@@ -386,11 +395,17 @@ export async function createRouter(
       return a.slug.localeCompare(b.slug);
     });
 
+    // Canonical, so a score row written before `critical` was renamed to
+    // `at-risk` is counted in the band it belongs to rather than in none of
+    // them, which would leave the segments totalling less than the estate.
+    const inBand = (band: string) =>
+      summaries.filter(s => canonicalBand(s.score?.band) === band).length;
+
     const counts = {
-      healthy: summaries.filter(s => s.score?.band === 'healthy').length,
-      needsAttention: summaries.filter(s => s.score?.band === 'needs-attention')
-        .length,
-      critical: summaries.filter(s => s.score?.band === 'critical').length,
+      excellent: inBand('excellent'),
+      healthy: inBand('healthy'),
+      needsAttention: inBand('needs-attention'),
+      atRisk: inBand('at-risk'),
       unscored: summaries.filter(s => !s.score).length,
     };
 
@@ -519,8 +534,10 @@ export async function createRouter(
       ] = await Promise.all([
         scores.latest(record.id),
         scores.history(record.id, HISTORY_POINTS),
-        branches.summary(record.id, since),
-        branches.stalest(record.id, since),
+        branches.summary(record.id, since, { exempt: staleBranchExemptions }),
+        branches.stalest(record.id, since, 5, {
+          exempt: staleBranchExemptions,
+        }),
         branches.divergenceSummary(record.id),
         pullRequests.reviewSummary(record.id, since),
         deployments.currentEnvironments(record.id),
@@ -615,7 +632,17 @@ export async function createRouter(
           authors: activity.authors,
         },
         branches: {
-          ...branchSummary,
+          // Named explicitly rather than spread. `BranchSummary` is the
+          // store's shape and gained `lastCommitAt` -- a raw `Date`, for the
+          // recency scorer -- which a spread leaked straight into the response
+          // under a view type that does not declare it and without going
+          // through `iso()`. Listing the fields is what stops the next
+          // store-internal addition escaping into the API the same way.
+          total: branchSummary.total,
+          active: branchSummary.active,
+          stale: branchSummary.stale,
+          staleActionable: branchSummary.staleActionable,
+          staleExempt: branchSummary.staleExempt,
           stalest: stalest.map(branch => ({
             name: branch.name,
             lastCommitAt: iso(branch.lastCommitAt),

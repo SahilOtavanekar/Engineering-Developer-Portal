@@ -4,7 +4,10 @@ import type {
   DocumentCollatorFactory,
   IndexableDocument,
 } from '@backstage/plugin-search-common';
-import { fleetRepositoryReadPermission } from '@internal/backstage-plugin-fleet-common';
+import {
+  canonicalBand,
+  fleetRepositoryReadPermission,
+} from '@internal/backstage-plugin-fleet-common';
 import type { DeploymentStore } from '../database/DeploymentStore';
 import type { OwnershipStore } from '../database/OwnershipStore';
 import type { RepositoryStore } from '../database/RepositoryStore';
@@ -13,7 +16,7 @@ import type { ScoreStore } from '../database/ScoreStore';
 /**
  * A repository as the search index holds it.
  *
- * The custom fields exist to be filtered and faceted on -- "critical Python
+ * The custom fields exist to be filtered and faceted on -- "at-risk Python
  * services that reach production" is a query over `band`, `technologies` and
  * `environments`, none of which the catalog knows anything about.
  */
@@ -47,11 +50,18 @@ export interface FleetRepositoryCollatorFactoryOptions {
   logger: LoggerService;
 }
 
-/** Reads better in search results than the raw band value. */
+/**
+ * Reads better in search results than the raw band value.
+ *
+ * Keyed by the current band names only; `canonicalBand` resolves the name At
+ * Risk was stored under before the fourth band landed, so the legacy spelling
+ * lives in one place rather than in every map that renders a band.
+ */
 const BAND_LABEL: Record<string, string> = {
+  excellent: 'Excellent',
   healthy: 'Healthy',
   'needs-attention': 'Needs attention',
-  critical: 'Critical',
+  'at-risk': 'At risk',
 };
 
 /**
@@ -60,7 +70,7 @@ const BAND_LABEL: Record<string, string> = {
  * The catalog collator already indexes identity -- name, description, tags.
  * None of what makes this portal useful is in the catalog: the score, the
  * technology stack, what is deployed where, who probably owns it. Without this,
- * "which critical Python services reach production" is a question you can only
+ * "which at-risk Python services reach production" is a question you can only
  * answer by reading the fleet page and filtering by hand.
  *
  * Four batched queries regardless of estate size. A collator that issued one
@@ -111,8 +121,9 @@ export class FleetRepositoryCollatorFactory implements DocumentCollatorFactory {
       const language = record.language ?? record.derived_language ?? undefined;
       const ownerName = owner?.name ?? owner?.email ?? undefined;
 
-      const bandLabel = score
-        ? BAND_LABEL[score.band] ?? score.band
+      const canonical = canonicalBand(score?.band);
+      const bandLabel = canonical
+        ? BAND_LABEL[canonical] ?? canonical
         : 'Not scored';
 
       yield {
@@ -145,7 +156,10 @@ export class FleetRepositoryCollatorFactory implements DocumentCollatorFactory {
         slug: record.slug,
         workspace: record.workspace,
         entityRef: record.entity_ref,
-        band: score?.band,
+        // Canonical, not the raw stored value: this is the field a facet
+        // filters on, so indexing a pre-rename `critical` here would put a
+        // second band in the facet list that no filter in the portal offers.
+        band: canonical,
         score: score?.total,
         language,
         technologies,

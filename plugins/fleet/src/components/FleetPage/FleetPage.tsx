@@ -4,7 +4,7 @@ import type { FleetOverview } from '@internal/backstage-plugin-fleet-common';
 import { Flex, Link, Skeleton, Text } from '@backstage/ui';
 import useAsync from 'react-use/esm/useAsync';
 import { timeAgo } from '../../format';
-import { BAND_LABEL, BAND_TEXT } from '../../bands';
+import { bandLabel, bandText } from '../../bands';
 import { filterRepositories, type FleetFilters } from '../../filter';
 import { FleetFiltersBar } from './FleetFilters';
 import {
@@ -261,7 +261,7 @@ export function FleetPage() {
                       <Text
                         style={
                           repository.score
-                            ? { color: BAND_TEXT[repository.score.band] }
+                            ? { color: bandText(repository.score.band) }
                             : undefined
                         }
                       >
@@ -273,13 +273,12 @@ export function FleetPage() {
                         variant="body-small"
                         style={
                           repository.score
-                            ? { color: BAND_TEXT[repository.score.band] }
+                            ? { color: bandText(repository.score.band) }
                             : undefined
                         }
                       >
                         {repository.score
-                          ? BAND_LABEL[repository.score.band] ??
-                            repository.score.band
+                          ? bandLabel(repository.score.band)
                           : 'Not scored'}
                       </Text>
                     </td>

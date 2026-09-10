@@ -31,7 +31,15 @@ export interface ScoreHistoryPoint {
 
 export interface RepositoryScoreSummary {
   total: number;
-  /** 'healthy' | 'needs-attention' | 'critical'. */
+  /**
+   * 'excellent' | 'healthy' | 'needs-attention' | 'at-risk'.
+   *
+   * Deliberately a `string` rather than a union: the bands are decided by
+   * configured thresholds, so a value the frontend has never heard of is
+   * possible and must render as itself instead of failing to compile. Rows
+   * written before `critical` was renamed to `at-risk` still carry the old
+   * name, which is why the band maps keep it as a legacy key.
+   */
   band: string;
   /**
    * How much of the nominal 100 was measurable. A total of 80 over 30
@@ -56,6 +64,14 @@ export interface BranchSummaryView {
   total: number;
   active: number;
   stale: number;
+  /**
+   * Stale branches somebody ought to delete: excludes the default branch and
+   * anything on the exemption list. **This is what the score is built on**, so
+   * it is the figure to show beside a scorecard rather than `stale`.
+   */
+  staleActionable: number;
+  /** Stale branches spared as deliberate. Shown so the two counts reconcile. */
+  staleExempt: number;
   /** Longest-abandoned first. Excludes the default branch. */
   stalest: Array<{ name: string; lastCommitAt?: string }>;
   /**
@@ -259,7 +275,19 @@ export interface PipelineSummaryView {
 /** Pull request throughput over the activity window. */
 export interface ReviewSummaryView {
   merged: number;
+  /** Merged pull requests carrying at least one approval, the author's included. */
   approved: number;
+  /**
+   * Merged pull requests approved by somebody **other than the author**.
+   *
+   * Reported alongside `approved` rather than instead of it because the two
+   * differ enormously here -- 85 against 265 over 90 days -- and the gap
+   * between them is the number of self-approvals, which is the fact worth
+   * seeing. Showing only one of them would also make the card disagree with
+   * the scorecard whenever `codeReviewCompleted.countSelfApprovals` is
+   * changed; showing both means it cannot.
+   */
+  peerApproved: number;
   open: number;
   /** Median hours from opening to merge. Absent when nothing merged. */
   medianMergeHours?: number;
@@ -480,9 +508,10 @@ export interface FleetOverview {
   generatedAt: string;
   nominalWeight: number;
   counts: {
+    excellent: number;
     healthy: number;
     needsAttention: number;
-    critical: number;
+    atRisk: number;
     unscored: number;
   };
   repositories: FleetRepositorySummary[];

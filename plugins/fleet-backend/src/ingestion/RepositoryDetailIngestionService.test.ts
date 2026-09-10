@@ -126,6 +126,12 @@ describe('RepositoryDetailIngestionService', () => {
       total: 10,
       active: 3,
       stale: 7,
+      // All 7 are actionable: none is the default branch and nothing is
+      // exempt, since no exemption list was passed.
+      staleActionable: 7,
+      staleExempt: 0,
+      // The newest head across every branch, which the recency metric reads.
+      lastCommitAt: new Date('2026-08-21T12:00:00.000Z'),
     });
   });
 

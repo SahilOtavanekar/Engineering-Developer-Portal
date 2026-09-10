@@ -543,6 +543,8 @@ describe('createRouter', () => {
       total: 0,
       active: 0,
       stale: 0,
+      staleActionable: 0,
+      staleExempt: 0,
       stalest: [],
     });
     expect(res.body.reviews).toMatchObject({ merged: 0, approved: 0, open: 0 });
@@ -901,9 +903,10 @@ describe('createRouter', () => {
 
       expect(res.body.repositories).toEqual([]);
       expect(res.body.counts).toEqual({
+        excellent: 0,
         healthy: 0,
         needsAttention: 0,
-        critical: 0,
+        atRisk: 0,
         unscored: 0,
       });
     });
@@ -978,7 +981,7 @@ describe('createRouter', () => {
         {
           slug: 'built-last-week',
           total: 40,
-          band: 'critical',
+          band: 'at-risk',
           runAt: '2026-08-26T23:00:00.000Z',
         },
       ]);
@@ -994,7 +997,7 @@ describe('createRouter', () => {
         {
           slug: 'weak',
           total: 40,
-          band: 'critical',
+          band: 'at-risk',
           runAt: '2026-08-28T18:00:00.000Z',
         },
         {
@@ -1012,7 +1015,7 @@ describe('createRouter', () => {
       // The reason the bucket widened. These are four calendar days apart, so
       // under the old day bucket the healthy repository led purely because it
       // built more recently -- which is what put a 95 at the top of the real
-      // dashboard while 43 repositories sat critical below it.
+      // dashboard while 43 repositories sat at risk below it.
       await seedEstate([
         {
           slug: 'healthy-and-recent',
@@ -1021,15 +1024,15 @@ describe('createRouter', () => {
           runAt: '2026-08-28T09:00:00.000Z',
         },
         {
-          slug: 'critical-and-older',
+          slug: 'at-risk-and-older',
           total: 17,
-          band: 'critical',
+          band: 'at-risk',
           runAt: '2026-08-24T09:00:00.000Z',
         },
       ]);
 
       expect(await slugs()).toEqual([
-        'critical-and-older',
+        'at-risk-and-older',
         'healthy-and-recent',
       ]);
     });
@@ -1047,7 +1050,7 @@ describe('createRouter', () => {
         {
           slug: 'sunday-before',
           total: 10,
-          band: 'critical',
+          band: 'at-risk',
           runAt: '2026-08-30T23:30:00.000Z',
         },
       ]);
@@ -1063,7 +1066,7 @@ describe('createRouter', () => {
         {
           slug: 'built',
           total: 20,
-          band: 'critical',
+          band: 'at-risk',
           runAt: '2026-08-27T06:00:00.000Z',
         },
       ]);
@@ -1073,7 +1076,7 @@ describe('createRouter', () => {
 
     it('ranks the never-built block worst first too', async () => {
       await seedEstate([
-        { slug: 'poor', total: 20, band: 'critical' },
+        { slug: 'poor', total: 20, band: 'at-risk' },
         { slug: 'fine', total: 80, band: 'healthy' },
       ]);
 
@@ -1096,7 +1099,7 @@ describe('createRouter', () => {
       );
       await scores.record(
         stored!.id,
-        { total: 3, band: 'critical', availableWeight: 85, breakdown: [] },
+        { total: 3, band: 'at-risk', availableWeight: 85, breakdown: [] },
         NOW,
       );
 
@@ -1188,7 +1191,7 @@ describe('createRouter', () => {
     });
 
     it('sorts unscored repositories last, not first', async () => {
-      await seedScored('scored', 10, 'critical');
+      await seedScored('scored', 10, 'at-risk');
       await repositories.syncWorkspace(
         'demandai',
         [
@@ -1211,12 +1214,13 @@ describe('createRouter', () => {
     });
 
     it('counts each band and the unscored separately', async () => {
-      await seedScored('a', 90, 'healthy');
-      await seedScored('b', 55, 'needs-attention');
-      await seedScored('c', 10, 'critical');
+      await seedScored('a', 95, 'excellent');
+      await seedScored('b', 80, 'healthy');
+      await seedScored('c', 65, 'needs-attention');
+      await seedScored('d', 10, 'at-risk');
       await repositories.syncWorkspace(
         'demandai',
-        ['a', 'b', 'c', 'd'].map(slug => repository({ slug, name: slug })),
+        ['a', 'b', 'c', 'd', 'e'].map(slug => repository({ slug, name: slug })),
         NOW,
       );
 
@@ -1225,15 +1229,37 @@ describe('createRouter', () => {
         .expect(200);
 
       expect(res.body.counts).toEqual({
+        excellent: 1,
         healthy: 1,
         needsAttention: 1,
-        critical: 1,
+        atRisk: 1,
         unscored: 1,
       });
     });
 
+    /**
+     * Score rows are append-only, so a repository last scored before At Risk
+     * was renamed from `critical` still carries the old name. Counting it in
+     * no band at all would leave the fleet page's segments totalling less than
+     * the estate -- and the count is what sizes each segment.
+     */
+    it('counts a pre-rename band as At Risk', async () => {
+      await seedScored('legacy', 20, 'critical');
+      await repositories.syncWorkspace(
+        'demandai',
+        [repository({ slug: 'legacy', name: 'legacy' })],
+        NOW,
+      );
+
+      const res = await request(await app())
+        .get(fleetUrl)
+        .expect(200);
+
+      expect(res.body.counts).toMatchObject({ atRisk: 1, unscored: 0 });
+    });
+
     it('serves only the newest score per repository', async () => {
-      const id = await seedScored('alpha', 10, 'critical');
+      const id = await seedScored('alpha', 10, 'at-risk');
       await scores.record(
         id,
         { total: 90, band: 'healthy', availableWeight: 85, breakdown: [] },
@@ -1315,7 +1341,7 @@ describe('createRouter', () => {
     });
 
     it('excludes repositories that are no longer live', async () => {
-      await seedScored('gone', 10, 'critical');
+      await seedScored('gone', 10, 'at-risk');
       await repositories.syncWorkspace('demandai', [], NOW);
 
       const res = await request(await app())
@@ -1326,7 +1352,7 @@ describe('createRouter', () => {
     });
 
     it('can be filtered to one workspace', async () => {
-      await seedScored('alpha', 10, 'critical');
+      await seedScored('alpha', 10, 'at-risk');
       await repositories.syncWorkspace(
         'other',
         [repository({ workspace: 'other', slug: 'beta', name: 'beta' })],

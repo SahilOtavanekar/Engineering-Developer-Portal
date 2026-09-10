@@ -17,6 +17,28 @@ export interface PullRequestDisciplineOptions {
 export const DEFAULT_DISCIPLINE_WINDOW_DAYS = 30;
 
 /**
+ * The specification's bands, as fractions of this metric's weight.
+ *
+ * Each entry states the points it is worth at the nominal weight of 20, which
+ * is what the specification's table gives; fractions rather than absolute
+ * points so the proportions survive a reweighting, since the engine multiplies
+ * by the configured weight.
+ *
+ * **The two middle bands are unreachable for most of this estate, and that is
+ * arithmetic rather than a defect.** 95-99% requires at least 20 mainline
+ * commits in the window to be expressible at all. Measured 2026-09-09 over 30
+ * days: 32 repositories are at 100%, 9 are below 80%, and **not one falls in
+ * either middle band**. So in practice this metric pays 20 or 0 here. It will
+ * start to discriminate as repositories get busier, which is why the bands are
+ * implemented rather than collapsed to a pass/fail.
+ */
+const BANDS: Array<{ atLeast: number; fraction: number }> = [
+  { atLeast: 0.95, fraction: 7 / 20 },
+  { atLeast: 0.8, fraction: 3 / 20 },
+  { atLeast: 0, fraction: 0 },
+];
+
+/**
  * How work reaches the default branch: through a branch and a pull request, or
  * straight onto main.
  *
@@ -31,9 +53,13 @@ export const DEFAULT_DISCIPLINE_WINDOW_DAYS = 30;
  * commits attributed to a pull request here have a single parent, and every
  * one of those is a squash that a parent-count rule would have missed.
  *
- * Graded rather than pass/fail: one direct commit among fifty is a slip, and
- * eleven out of eleven is a repository with no review at all. Scoring both zero
- * would tell the second team nothing about how far they have to go.
+ * **Banded, and the top band demands perfection.** The specification awards the
+ * full 20 only for 100% -- a single direct commit costs 13 of them, dropping to
+ * the 80-94% band -- then 7 for 95-99%, 3 for 80-94% and nothing below. This
+ * replaced a linear share, which gave a repository at 95% almost full marks;
+ * the rule being scored is "no direct commits should be made to the main
+ * branch", and a graded reading of that let a team be mostly compliant for
+ * almost all of the credit.
  *
  * Returns `null`, not zero, in two cases that are not failures:
  *
@@ -49,7 +75,14 @@ export function pullRequestDisciplineScorer(
 
   return {
     id: 'pull-request-discipline',
-    title: 'Main branch health',
+    // **"Changes through pull requests", not "Main branch health".** The old
+    // title said nothing about what is measured, and once the scorecard was
+    // trimmed to the requirement's seven rules it sat directly beneath "Main
+    // branch up to date" -- two adjacent rows whose names differ by one word
+    // and which measure entirely different things. Found by reading the
+    // rendered card, which is the only place the collision was visible.
+    // The id is unchanged, so stored breakdowns and filters still match.
+    title: 'Changes through pull requests',
     score: ({ branchPolicy }) => {
       if (!branchPolicy) return null;
 
@@ -57,8 +90,16 @@ export function pullRequestDisciplineScorer(
       if (mainline === 0) return null;
 
       const directTotal = direct + directMerge;
-      const fraction = viaPullRequest / mainline;
+      const share = viaPullRequest / mainline;
       const branch = branchPolicy.branch ?? 'the default branch';
+
+      // Exact equality for the top band rather than `share >= 1`: the point of
+      // the rule is that nothing bypassed a pull request, and an integer
+      // comparison says that without depending on how the division rounds.
+      const fraction =
+        viaPullRequest === mainline
+          ? 1
+          : BANDS.find(band => share >= band.atLeast)?.fraction ?? 0;
 
       if (directTotal === 0) {
         return {
@@ -89,11 +130,22 @@ export function pullRequestDisciplineScorer(
         directMerge > 0
           ? ` ${directMerge} of those were merges with no pull request behind them, usually a local merge pushed straight up.`
           : '';
+      // Names the whole band table rather than just the next rung: the gap to
+      // full marks is usually the whole way, since only 100% earns it, so
+      // "get to 95%" would understate what the metric is asking for.
+      //
+      // Stated as shares of the metric rather than as absolute points. The
+      // weight is configurable -- and is currently an interim figure -- so
+      // naming "20 points" would be wrong on the page today and wrong again
+      // the moment anybody retuned it.
       return {
         fraction,
         remediation:
-          `Land changes on ${branch} through a pull request. ` +
-          `${directTotal} of the last ${mainline} mainline commits did not.${mergeNote}`,
+          `Land every change on ${branch} through a pull request, and protect ` +
+          `the branch with Bitbucket branch restrictions so it cannot be ` +
+          `bypassed. ${directTotal} of the last ${mainline} mainline commits ` +
+          `did not go through one.${mergeNote} Only 100% earns full marks; ` +
+          `95-99% earns just over a third of them and 80-94% earns a seventh.`,
         detail:
           `${mainline} commit${mainline === 1 ? '' : 's'} reached ${branch} ` +
           `in ${windowDays} days: ${split}`,

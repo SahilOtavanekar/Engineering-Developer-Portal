@@ -1,5 +1,5 @@
 import type { FleetRepositorySummary } from '@internal/backstage-plugin-fleet-common';
-import { BAND_SEVERITY } from '../../bands';
+import { bandSeverity } from '../../bands';
 import {
   nextSort as cycle,
   sortRows,
@@ -41,9 +41,9 @@ function valueOf(row: FleetRepositorySummary, key: SortKey): Comparable {
     case 'score':
       return row.score?.total;
 
-    // The rank, never the label. See `BAND_SEVERITY`.
+    // The rank, never the label. See `bandSeverity`.
     case 'band':
-      return row.score ? BAND_SEVERITY[row.score.band] : undefined;
+      return bandSeverity(row.score?.band);
 
     case 'lastCommitAt': {
       if (!row.lastCommitAt) return undefined;
@@ -67,8 +67,8 @@ function valueOf(row: FleetRepositorySummary, key: SortKey): Comparable {
  *
  * Ascending for the owner, because Z-to-A is nobody's first guess at an
  * alphabetical column. Descending for the other three, which puts the highest
- * score, the most recent commit and -- because `BAND_SEVERITY` runs
- * worst-highest -- the critical repositories at the top.
+ * score, the most recent commit and -- because `bandSeverity` runs
+ * worst-highest -- the repositories at risk at the top.
  */
 export function initialDirection(key: SortKey): SortDirection {
   return key === 'owner' ? 'asc' : 'desc';

@@ -144,6 +144,22 @@ export interface BitbucketPullRequest {
 }
 
 /** One person's involvement in a pull request. */
+/**
+ * One file a pull request touched.
+ *
+ * `path` is the file's new path, or its old one for a deletion -- Bitbucket
+ * sets `new` to null when a file is gone. Undefined for the rare row that
+ * carries neither, which the summariser then cannot classify and counts as
+ * ordinary source.
+ */
+export interface BitbucketDiffstatFile {
+  path?: string;
+  linesAdded: number;
+  linesRemoved: number;
+  /** `added`, `modified`, `removed`, `renamed`. */
+  status?: string;
+}
+
 export interface BitbucketPullRequestParticipant {
   /** Stable across renames. No address: `/2.0/users/{id}` is 403 here. */
   accountId?: string;
@@ -288,6 +304,27 @@ export interface BitbucketClient {
     slug: string,
     options?: ListPullRequestsOptions,
   ): Promise<BitbucketPullRequest[]>;
+
+  /**
+   * One pull request's changed files, with the lines each one moved.
+   *
+   * **One request per pull request, and there is no cheaper route.** Probed
+   * 2026-09-09: the pull request *list* endpoint carries no diffstat under any
+   * spelling -- `values.diffstat`, `values.lines_added`, `values.size` and
+   * `values.summary.size` all come back absent or empty -- so unlike
+   * `merge_commit.hash` and `participants`, this one genuinely cannot ride an
+   * existing call. About 389 requests for this estate's merged pull requests,
+   * paid once and then only for new ones.
+   *
+   * Returns the per-file rows rather than a total, deliberately: which files
+   * are generated or vendored is policy, and the adapter should not hold it.
+   * `summariseDiffstat` applies that.
+   */
+  listPullRequestDiffstat(
+    workspace: string,
+    slug: string,
+    pullRequestId: number,
+  ): Promise<BitbucketDiffstatFile[]>;
 
   /**
    * Who has explicit permission on a repository, and at what level.

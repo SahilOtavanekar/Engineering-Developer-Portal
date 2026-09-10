@@ -2,6 +2,7 @@ import type { RepositoryScoreSummary, ScoreBreakdownEntry } from './types';
 import {
   deriveProblems,
   describeDormancy,
+  isPortalGap,
   shouldHighlightProblems,
 } from './problems';
 
@@ -22,7 +23,7 @@ const entry = (
 
 const score = (
   breakdown: ScoreBreakdownEntry[],
-  band = 'critical',
+  band = 'at-risk',
 ): RepositoryScoreSummary => ({
   total: 30,
   band,
@@ -252,9 +253,37 @@ describe('deriveProblems', () => {
   });
 });
 
+describe('isPortalGap', () => {
+  /**
+   * Empty today, and that is the good outcome: `pull-request-size` was the last
+   * entry and left when the diffstat ingestion landed, so every registered
+   * metric has a data source. The predicate is kept because a scorer returning
+   * `null` still carries no reason with it -- without somewhere to record which
+   * absences are the portal's, the card goes back to blaming a repository for
+   * our gaps.
+   */
+  it('claims nothing today, because every metric can be measured', () => {
+    for (const id of [
+      'pull-request-size',
+      'main-branch-current',
+      'stale-branches',
+      'pull-request-discipline',
+      'code-review-completed',
+      'active-development',
+      'readme-available',
+    ]) {
+      expect(isPortalGap(id)).toBe(false);
+    }
+  });
+
+  it('does not claim a metric it has never heard of', () => {
+    expect(isPortalGap('made-up')).toBe(false);
+  });
+});
+
 describe('shouldHighlightProblems', () => {
   it('leads with problems below healthy', () => {
-    expect(shouldHighlightProblems(score([], 'critical'))).toBe(true);
+    expect(shouldHighlightProblems(score([], 'at-risk'))).toBe(true);
     expect(shouldHighlightProblems(score([], 'needs-attention'))).toBe(true);
   });
 
@@ -262,6 +291,21 @@ describe('shouldHighlightProblems', () => {
     // Putting a warning on 36 healthy repositories is how a warning gets
     // trained out of people.
     expect(shouldHighlightProblems(score([], 'healthy'))).toBe(false);
+  });
+
+  /**
+   * The regression this test exists for: the check was `band !== 'healthy'`,
+   * so the moment Excellent was added above Healthy it bannered the *best*
+   * repositories on the estate.
+   */
+  it('does not banner an excellent repository either', () => {
+    expect(shouldHighlightProblems(score([], 'excellent'))).toBe(false);
+  });
+
+  it('banners a band it does not recognise rather than assuming it is good', () => {
+    // Thresholds are configuration, so an unknown band is possible; treating
+    // it as good news would silently stop reporting problems for it.
+    expect(shouldHighlightProblems(score([], 'made-up'))).toBe(true);
   });
 
   it('stays quiet for a repository with no score at all', () => {

@@ -3,6 +3,7 @@ import type {
   BitbucketClient,
   BitbucketCommit,
   BitbucketDeployment,
+  BitbucketDiffstatFile,
   BitbucketRepositoryPermission,
   BitbucketPipelineRun,
   BitbucketPullRequest,
@@ -43,6 +44,10 @@ export class FakeBitbucketClient implements BitbucketClient {
   private readonly pullRequestsByRepo = new Map<
     string,
     BitbucketPullRequest[]
+  >();
+  private readonly diffstatByPullRequest = new Map<
+    string,
+    BitbucketDiffstatFile[]
   >();
   private requests = 0;
   private readonly callsByMethod = new Map<string, number>();
@@ -461,5 +466,40 @@ export class FakeBitbucketClient implements BitbucketClient {
     if (cutoff === undefined) return [...byState];
 
     return byState.filter(pr => new Date(pr.updatedAt).getTime() > cutoff);
+  }
+
+  /**
+   * Seeds a pull request's changed files.
+   *
+   * Unseeded returns an empty list, which is a real answer rather than a hole:
+   * a merged pull request with an empty diffstat exists on the live estate
+   * (`oxp-backend#112`), so the fake must be able to produce one.
+   */
+  setPullRequestDiffstat(
+    workspace: string,
+    slug: string,
+    pullRequestId: number,
+    files: BitbucketDiffstatFile[],
+  ): void {
+    this.diffstatByPullRequest.set(
+      `${workspace}/${slug}#${pullRequestId}`,
+      files,
+    );
+  }
+
+  async listPullRequestDiffstat(
+    workspace: string,
+    slug: string,
+    pullRequestId: number,
+  ): Promise<BitbucketDiffstatFile[]> {
+    if (!workspace || !slug) {
+      throw new Error('a workspace slug and repository slug are required');
+    }
+    this.record('listPullRequestDiffstat');
+    return [
+      ...(this.diffstatByPullRequest.get(
+        `${workspace}/${slug}#${pullRequestId}`,
+      ) ?? []),
+    ];
   }
 }

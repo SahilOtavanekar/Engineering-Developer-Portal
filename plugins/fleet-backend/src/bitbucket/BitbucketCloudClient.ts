@@ -6,6 +6,7 @@ import type {
   BitbucketClient,
   BitbucketCommit,
   BitbucketDeployment,
+  BitbucketDiffstatFile,
   BitbucketRepositoryPermission,
   BitbucketPipelineRun,
   BitbucketPullRequest,
@@ -155,6 +156,30 @@ const PULL_REQUEST_FIELDS = [
  * the live API.
  */
 const PR_PAGE_SIZE = 50;
+
+/**
+ * Diffstat accepts a far larger page than the pull request list does -- 500,
+ * verified against the live API -- and that is what keeps this to one request
+ * per pull request. The biggest diff on this estate is 158 files.
+ */
+const DIFFSTAT_PAGE_SIZE = 500;
+
+/**
+ * Everything the size metric stores, and nothing else.
+ *
+ * `old.path` is here for deletions, where `new` is null. **The selector is
+ * honoured on this endpoint** -- checked specifically, because a first probe
+ * appeared to show it returning nothing and that turned out to be a pull
+ * request with a genuinely empty diff rather than a selector failure.
+ */
+const DIFFSTAT_FIELDS = [
+  'next',
+  'values.lines_added',
+  'values.lines_removed',
+  'values.status',
+  'values.new.path',
+  'values.old.path',
+].join(',');
 
 const DEFAULT_PR_STATES = ['MERGED', 'OPEN'];
 const DEFAULT_MAX_PR_PAGES = 10;
@@ -455,6 +480,64 @@ export class BitbucketCloudClient implements BitbucketClient {
 
     const commits = (page.values ?? []).length;
     return { commits, capped: Boolean(page.next) };
+  }
+
+  async listPullRequestDiffstat(
+    workspace: string,
+    slug: string,
+    pullRequestId: number,
+  ): Promise<BitbucketDiffstatFile[]> {
+    if (!workspace || !slug) {
+      throw new Error('a workspace slug and repository slug are required');
+    }
+
+    const files: BitbucketDiffstatFile[] = [];
+    let url: string | undefined =
+      `${this.apiBaseUrl}/repositories/${encodeURIComponent(workspace)}/` +
+      `${encodeURIComponent(slug)}/pullrequests/${pullRequestId}/diffstat` +
+      `?pagelen=${DIFFSTAT_PAGE_SIZE}&fields=${DIFFSTAT_FIELDS}`;
+
+    // The loop exists for correctness, not because this estate needs it: 48
+    // pull requests were probed and none paginated, the largest being 158
+    // files against a page of 500. A repository that one day merges a
+    // 600-file pull request should still be measured rather than truncated.
+    while (url) {
+      let page: PagedResponse;
+      try {
+        page = await this.request(url);
+      } catch (error) {
+        // A pull request whose diff Bitbucket will not produce is an ordinary
+        // answer, not a sweep failure: 404 for one it has garbage-collected,
+        // 555 for a diff it times out generating. Returning what was read so
+        // far would understate the size, so the caller gets nothing and the
+        // row stays null -- unfetched, which is honest.
+        if (
+          error instanceof BitbucketApiError &&
+          (error.status === 404 || error.status === 555)
+        ) {
+          this.logger?.warn(
+            `Bitbucket will not produce a diffstat for ${workspace}/${slug}` +
+              `#${pullRequestId} (${error.status}); its size stays unmeasured`,
+          );
+          return [];
+        }
+        throw error;
+      }
+
+      for (const raw of (page.values ?? []) as any[]) {
+        files.push({
+          // `new` is null on a deletion, so the old path is the only name the
+          // file has. Either is enough to tell generated from hand-written.
+          path: optional(raw.new?.path) ?? optional(raw.old?.path),
+          linesAdded: Number(raw.lines_added ?? 0),
+          linesRemoved: Number(raw.lines_removed ?? 0),
+          status: optional(raw.status),
+        });
+      }
+      url = page.next;
+    }
+
+    return files;
   }
 
   async listRepositoryPermissions(

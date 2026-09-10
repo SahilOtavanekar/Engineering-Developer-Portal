@@ -1,6 +1,15 @@
 import type { Scorer } from '../types';
 
 /**
+ * **NOT REGISTERED.** Dropped from the scorecard on 2026-09-09 at the product
+ * owner's direction: the specification's seven rules do not include it, and the
+ * instruction was to show only what the requirement demands. Kept rather than
+ * deleted, on the same principle as `unmeasuredScorer` -- it works, it is
+ * tested, and it is the most likely of the three drops to come back, because it
+ * was the estate's single most widespread problem at 38 repositories. Reinstate
+ * by adding it to the `scorers` array in `plugin.ts`; `ScorerContext.pipelines`
+ * is still populated, so nothing else is needed.
+ *
  * Are this repository's builds passing?
  *
  * Scored as a success rate over recent judged runs rather than on the latest

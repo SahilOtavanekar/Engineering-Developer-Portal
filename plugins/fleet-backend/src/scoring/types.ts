@@ -1,7 +1,7 @@
 import type { BranchSummary } from '../database/BranchStore';
 import type { RepositoryActivity } from '../database/CommitStore';
 import type { PipelineSummary } from '../database/PipelineStore';
-import type { ReviewSummary } from '../database/PullRequestStore';
+import type { ReviewSummary, SizeSummary } from '../database/PullRequestStore';
 import type { RepositoryRecord } from '../database/RepositoryStore';
 import type { StoredOwnershipCandidate } from '../database/OwnershipStore';
 import type { BranchPolicySummary } from '../analysis/branchPolicy';
@@ -42,6 +42,15 @@ export interface ScorerContext {
   branches?: BranchSummary;
   pipelines?: PipelineSummary;
   reviews?: ReviewSummary;
+  /**
+   * Pull request size over the window.
+   *
+   * Absent means no merged pull requests at all; present with `measured: 0`
+   * means there are some but none has had its diffstat fetched, which is the
+   * portal's gap rather than the repository's. The scorer treats both as
+   * unmeasurable but the card distinguishes them.
+   */
+  size?: SizeSummary;
   /** Absent when ownership has never been resolved. See the type. */
   ownership?: RepositoryOwnership;
   /** Absent until the branch policy pass has covered this repository. */
@@ -74,7 +83,7 @@ export interface ScorerOutcome {
  * Returning `null` from `score` means "cannot be measured yet" -- a missing
  * data source, not a failing repository. The engine excludes those from the
  * total rather than scoring them zero, so an incomplete portal does not
- * misreport a healthy repository as critical.
+ * misreport a healthy repository as at risk.
  */
 export interface Scorer {
   id: string;

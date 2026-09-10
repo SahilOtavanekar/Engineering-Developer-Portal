@@ -1,3 +1,4 @@
+import { isSatisfactoryBand } from './bands';
 import type {
   LifetimeSummaryView,
   RepositoryScoreSummary,
@@ -7,23 +8,50 @@ import type {
 /**
  * Metrics that are all the same fact wearing different hats.
  *
- * A repository with no commits in the window scores zero on commits, zero on
- * contributors and zero on branch hygiene -- because there were no commits, no
- * committers and no branches touched. Reporting three problems for one fact is
- * noise, and on this estate it would be noise 48 times over.
+ * A repository nobody has touched in 90 days scores zero on main-branch
+ * recency, zero on development activity, zero on contributors and badly on
+ * branch hygiene -- because there were no commits, no committers and no
+ * branches touched. Reporting four problems for one fact is noise, and on this
+ * estate it would be noise 38 times over.
  *
  * So when the repository is dormant these are folded into a single statement
  * about dormancy, and only the genuinely independent gaps -- README, owner,
  * pipelines, review -- are reported as problems a team can act on.
  */
 const ACTIVITY_DERIVED = new Set([
-  'active-commits',
+  'main-branch-current',
+  'active-development',
   'active-contributors',
+  'stale-branches',
+  // The retired ratio-based branch metric, and the retired commit-volume one. Kept because breakdowns are stored JSON
+  // and a score row written before it was replaced still carries an entry
+  // under this id, which would otherwise be reported as a problem of its own
+  // beside the dormancy statement that supersedes it.
   'branch-hygiene',
+  'active-commits',
 ]);
 
-/** The metric whose zero defines dormancy. */
-const ACTIVITY_METRIC = 'active-commits';
+/**
+ * The metric whose zero defines dormancy.
+ *
+ * `active-development` rather than the main-branch metric, and the distinction
+ * matters: main going quiet while a feature branch is busy is a **shipping**
+ * problem the team should be told about, not dormancy. Only when nothing has
+ * happened anywhere in the repository is it genuinely dormant. Measured
+ * 2026-09-09, that separates 38 dormant repositories from the 44 whose main
+ * branch is stale.
+ */
+const ACTIVITY_METRIC = 'active-development';
+
+/**
+ * The id the dormancy trigger used to live on.
+ *
+ * Read as a fallback so a score row written before the recency metrics landed
+ * still classifies as dormant. Without it, every repository would lose its
+ * dormancy statement for one scoring cycle and then regain it, which reads as
+ * a portal defect rather than as a deployment.
+ */
+const LEGACY_ACTIVITY_METRIC = 'active-commits';
 
 /**
  * A repository with ten or fewer commits in its whole life was never really
@@ -98,15 +126,53 @@ export interface RepositoryProblems {
  * at all, and none of them has failed to review anything.
  */
 const PROBLEM_TITLES: Record<string, string> = {
+  // Retired, and kept for the same reason it stays in `ACTIVITY_DERIVED`:
+  // stored breakdowns outlive the scorer that wrote them.
   'active-commits': 'Not enough commits',
   'active-contributors': 'Not enough contributors',
+  'active-development': 'No recent development',
   'branch-hygiene': 'Stale branches',
+  'stale-branches': 'Stale branches',
+  'main-branch-current': 'Main branch out of date',
   'code-review-completed': 'Code review not completed',
   'owner-assigned': 'Owner not assigned',
   'pipeline-passing': 'Pipeline not passing',
   'pull-request-discipline': 'Changes bypassing pull requests',
   'readme-available': 'README not available',
 };
+
+/**
+ * Metrics **no** repository can be scored on, because the portal cannot measure
+ * them at all.
+ *
+ * A scorer returning `null` carries no reason with it, so the breakdown cannot
+ * say whether a metric went unmeasured because this repository has no data or
+ * because nothing has been built to measure it. Those are opposite messages: the
+ * first is the repository's to act on, the second is ours, and reporting the
+ * second as the first sends a team hunting data that exists and that nothing has
+ * asked Bitbucket for.
+ *
+ * **Empty today, and that is the good outcome.** `pull-request-size` was the
+ * only entry, and it left when `PullRequestSizeService` landed the diffstat --
+ * every registered metric now has a data source. The set is kept rather than
+ * removed because it is the mechanism for the next deferred requirement, and
+ * because losing it would take the *distinction* with it: a scorer returning
+ * `null` still carries no reason, so without somewhere to record which
+ * absences are ours, the card would go back to blaming a repository for the
+ * portal's gaps.
+ *
+ * A metric here should also be registered rather than omitted, so its
+ * forfeited weight stays visible.
+ */
+const PORTAL_CANNOT_MEASURE = new Set<string>([]);
+
+/**
+ * Whether an unmeasured metric is the portal's gap rather than the
+ * repository's.
+ */
+export function isPortalGap(metricId: string): boolean {
+  return PORTAL_CANNOT_MEASURE.has(metricId);
+}
 
 /**
  * The problem phrasing for a metric, falling back to its own title.
@@ -156,7 +222,9 @@ export function deriveProblems(
     }));
 
   const measured = score.breakdown.filter(entry => entry.available);
-  const activity = measured.find(entry => entry.id === ACTIVITY_METRIC);
+  const activity =
+    measured.find(entry => entry.id === ACTIVITY_METRIC) ??
+    measured.find(entry => entry.id === LEGACY_ACTIVITY_METRIC);
   const isDormant = activity !== undefined && (activity.points ?? 0) === 0;
 
   const dormancy: Dormancy | undefined = isDormant
@@ -204,13 +272,14 @@ export function deriveProblems(
 /**
  * Whether to lead with problems rather than leave them in the breakdown.
  *
- * Only below healthy. A healthy repository with one small gap does not need a
+ * Only below Healthy -- see `isSatisfactoryBand`, which is where Excellent is
+ * accounted for. A satisfactory repository with one small gap does not need a
  * banner, and putting one there would train people to ignore it.
  */
 export function shouldHighlightProblems(
   score: RepositoryScoreSummary | undefined,
 ): boolean {
-  return Boolean(score) && score!.band !== 'healthy';
+  return Boolean(score) && !isSatisfactoryBand(score!.band);
 }
 
 /** One line describing why the repository is quiet, phrased by its history. */

@@ -15,10 +15,11 @@ import {
   deriveProblems,
   describeDormancy,
   isConfirmedOwnership,
+  isPortalGap,
   shouldHighlightProblems,
   type RepositoryFacts,
 } from '@internal/backstage-plugin-fleet-common';
-import { BAND_FILL, BAND_LABEL, BAND_TEXT } from '../../bands';
+import { bandFill, bandLabel, bandText } from '../../bands';
 import {
   BORDER_SOFT,
   NUMERIC,
@@ -280,6 +281,13 @@ export function RepositoryFactsCard({ entity }: { entity: Entity }) {
     // request, and nothing stored that could disagree with the score above it.
     const problems = deriveProblems(score, facts.lifetime);
     const highlight = shouldHighlightProblems(score);
+    // The two reasons a metric can go unmeasured, which need opposite things
+    // said about them. `problems.unmeasured` was computed and never rendered
+    // until this split gave it something to say.
+    const unmeasuredByPortal = problems.unmeasured.filter(m =>
+      isPortalGap(m.id),
+    );
+    const unmeasuredHere = problems.unmeasured.filter(m => !isPortalGap(m.id));
     const reviews = facts.reviews;
     const branches = facts.branches;
     const pipelines = facts.pipelines;
@@ -323,7 +331,7 @@ export function RepositoryFactsCard({ entity }: { entity: Entity }) {
               <Flex gap="2" align="baseline">
                 <Text
                   variant="title-large"
-                  style={{ ...NUMERIC, color: BAND_TEXT[score.band] }}
+                  style={{ ...NUMERIC, color: bandText(score.band) }}
                 >
                   {score.total}
                 </Text>
@@ -335,7 +343,7 @@ export function RepositoryFactsCard({ entity }: { entity: Entity }) {
             <Field label="Band">
               <span
                 style={{
-                  ...BAND_FILL[score.band],
+                  ...bandFill(score.band),
                   padding: '0.15rem 0.6rem',
                   borderRadius: 'var(--portal-radius-pill)',
                   fontSize: '0.75rem',
@@ -343,7 +351,7 @@ export function RepositoryFactsCard({ entity }: { entity: Entity }) {
                   whiteSpace: 'nowrap',
                 }}
               >
-                {BAND_LABEL[score.band] ?? score.band}
+                {bandLabel(score.band)}
               </span>
             </Field>
             <Field label="Measured">
@@ -360,17 +368,31 @@ export function RepositoryFactsCard({ entity }: { entity: Entity }) {
         )}
 
         {partial && (
-          // Every metric has a data source now, so a short denominator no
-          // longer means the portal is unfinished -- it means this repository
-          // has nothing to measure for one of them: no pipeline runs, no merged
-          // pull requests, no commits on its default branch in the window. Two
-          // very different things that read identically if the wording does not
-          // distinguish them.
+          // **A short denominator now has two unrelated causes, and saying one
+          // sentence about both is what made this text wrong.** Pull request
+          // size is a requirement the portal cannot measure at all yet, so
+          // every repository forfeits its 10 points -- a gap in the portal.
+          // The rest is per-repository: no merged pull requests to review, no
+          // commits reaching main in the window. Reporting the portal's own gap
+          // as "this repository has nothing to measure" would send a team
+          // hunting data that exists and that nothing has asked Bitbucket for.
+          //
+          // The band-threshold caveat that used to end this sentence is gone:
+          // the product owner specified the four bands, so calling them
+          // placeholders was simply false.
           <Text variant="body-x-small" color="secondary">
-            Scored over the {score!.availableWeight} of {score!.nominalWeight}{' '}
-            weight this repository has data for — the rest of its metrics have
-            nothing to measure yet. Band thresholds are placeholders pending
-            sign-off.
+            Scored over {score!.availableWeight} of {score!.nominalWeight}{' '}
+            weight.{' '}
+            {unmeasuredByPortal.length > 0 && (
+              <>
+                {unmeasuredByPortal.map(m => m.title).join(', ')} cannot be
+                measured by the portal yet.{' '}
+              </>
+            )}
+            {unmeasuredHere.length > 0 &&
+              `${unmeasuredHere.map(m => m.title).join(', ')} ${
+                unmeasuredHere.length === 1 ? 'has' : 'have'
+              } nothing to measure in this repository.`}
           </Text>
         )}
 
@@ -382,7 +404,7 @@ export function RepositoryFactsCard({ entity }: { entity: Entity }) {
             gap="3"
             style={{
               borderLeft: `3px solid ${
-                BAND_TEXT[score!.band] ?? 'var(--bui-border-2)'
+                bandText(score!.band) ?? 'var(--bui-border-2)'
               }`,
               ...recessed,
               // Square on the left, where the band-coloured rule runs, so the
@@ -529,10 +551,21 @@ export function RepositoryFactsCard({ entity }: { entity: Entity }) {
           <Section title="Pull requests and branches">
             <div style={STAT_GRID}>
               {reviews && reviews.merged > 0 && (
+                // Peer approvals, not approvals. A self-approval is not a
+                // review, and counting one as such is why this card used to
+                // report 265 of 365 reviewed where a second person had looked
+                // at 85. The self-approved count rides in the hint rather than
+                // being hidden: it is the gap the team has to close.
                 <Stat
-                  label={`Reviewed (${window})`}
-                  value={`${reviews.approved} of ${reviews.merged}`}
-                  hint="merged PRs"
+                  label={`Peer reviewed (${window})`}
+                  value={`${reviews.peerApproved} of ${reviews.merged}`}
+                  hint={
+                    reviews.approved > reviews.peerApproved
+                      ? `merged PRs · ${
+                          reviews.approved - reviews.peerApproved
+                        } self-approved only`
+                      : 'merged PRs'
+                  }
                 />
               )}
               {reviews?.medianReviewHours !== undefined && (
@@ -554,9 +587,21 @@ export function RepositoryFactsCard({ entity }: { entity: Entity }) {
                 <Stat label="Open PRs" value={reviews.open} />
               )}
               {branches && branches.total > 0 && (
+                // `staleActionable`, not `stale`: that is what the score is
+                // built on, and it excludes the default branch and anything
+                // exempted as a deliberate long-lived branch. Showing the raw
+                // count made the card read "1 of 14" beside a scorecard saying
+                // "No stale branches to delete", which reads as a defect in one
+                // of the two. The exempt count rides in the hint so the two
+                // figures still reconcile against what Bitbucket shows.
                 <Stat
                   label="Stale branches"
-                  value={`${branches.stale} of ${branches.total}`}
+                  value={`${branches.staleActionable} of ${branches.total}`}
+                  hint={
+                    branches.staleExempt > 0
+                      ? `${branches.staleExempt} exempt as deliberate`
+                      : undefined
+                  }
                 />
               )}
             </div>

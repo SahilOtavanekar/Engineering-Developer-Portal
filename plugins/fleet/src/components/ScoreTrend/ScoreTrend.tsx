@@ -1,16 +1,22 @@
 import type { ScoreHistoryPoint } from '@internal/backstage-plugin-fleet-common';
 import { Flex, Text } from '@backstage/ui';
 
-import { BAND_TEXT } from '../../bands';
+import { bandText } from '../../bands';
 
 const WIDTH = 96;
 const HEIGHT = 24;
 const PADDING = 2;
 
-/** Rising and falling reuse the band intents; flat stays neutral. */
-const RISING = BAND_TEXT.healthy;
-const FALLING = BAND_TEXT.critical;
 const FLAT = 'var(--bui-fg-secondary)';
+/**
+ * Rising and falling reuse the band intents; flat stays neutral.
+ *
+ * Taken from the best and worst bands rather than named tokens, so a change to
+ * how a band is coloured carries here too -- a rising trend drawn in a green
+ * the rest of the page has stopped using would read as a different signal.
+ */
+const RISING = bandText('excellent') ?? FLAT;
+const FALLING = bandText('at-risk') ?? FLAT;
 
 /** Extracted because a nested ternary reads badly and lint rejects it. */
 function trendColour(delta: number): string {

@@ -6,9 +6,11 @@ import type {
 } from './types';
 
 export interface ScoreBands {
+  /** Total at or above which a repository is Excellent. */
+  excellent: number;
   /** Total at or above which a repository is Healthy. */
   healthy: number;
-  /** Total at or above which a repository Needs Attention. Below is Critical. */
+  /** Total at or above which a repository Needs Attention. Below is At Risk. */
   needsAttention: number;
 }
 
@@ -18,19 +20,41 @@ export interface ScoringEngineOptions {
 }
 
 /**
- * Provisional until someone with authority owns the numbers. They determine
- * which teams get told their repository is failing, so they are config rather
- * than code and are labelled provisional wherever they are shown.
+ * The four documented health classifications.
+ *
+ * **No longer provisional.** These were guesses at 70 / 40 across three bands
+ * until the product owner specified them, which is what closed open decision 2:
+ * Excellent 90-100, Healthy 75-89, Needs Attention 60-74, At Risk below 60.
+ * They stay in config because they decide which teams are told their
+ * repository is failing, but the defaults are now the specification rather
+ * than a placeholder.
+ *
+ * Note that the healthy floor rose from 70 to 75, so the same repository
+ * scoring the same points can drop a band across this change with nothing
+ * about it having got worse. Score history is append-only and cannot be
+ * restated, so the trend genuinely does contain a step here.
  */
-export const PROVISIONAL_BANDS: ScoreBands = {
-  healthy: 70,
-  needsAttention: 40,
+export const DEFAULT_BANDS: ScoreBands = {
+  excellent: 90,
+  healthy: 75,
+  needsAttention: 60,
 };
 
+/**
+ * The band a total falls in.
+ *
+ * `at-risk` was called `critical` while there were three bands. The name in the
+ * specification is At Risk, and the band string is what the `score.band` column
+ * stores, so it is renamed rather than merely relabelled in the UI -- otherwise
+ * anyone reading the table sees a word the specification does not use. Rows
+ * written before the rename keep `critical`; the frontend's band maps carry it
+ * as a legacy key so they still render until the next pass rewrites them.
+ */
 export function bandFor(total: number, bands: ScoreBands): string {
+  if (total >= bands.excellent) return 'excellent';
   if (total >= bands.healthy) return 'healthy';
   if (total >= bands.needsAttention) return 'needs-attention';
-  return 'critical';
+  return 'at-risk';
 }
 
 /**

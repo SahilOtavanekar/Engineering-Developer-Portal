@@ -12,9 +12,9 @@ import {
   startFleetTestDatabase,
   type FleetTestDatabase,
 } from '../__testUtils__/database';
-import { PROVISIONAL_BANDS, ScoringEngine } from './ScoringEngine';
+import { DEFAULT_BANDS, ScoringEngine } from './ScoringEngine';
 import { ScoringService } from './ScoringService';
-import { activeCommitsScorer } from './scorers/activeCommits';
+import { mainBranchCurrentScorer } from './scorers/mainBranchCurrent';
 import { activeContributorsScorer } from './scorers/activeContributors';
 import { ownerAssignedScorer } from './scorers/ownerAssigned';
 import { OwnershipService } from '../ownership/OwnershipService';
@@ -56,9 +56,9 @@ describe('ScoringService', () => {
   let syncState: SyncStateStore;
 
   const engine = new ScoringEngine({
-    bands: PROVISIONAL_BANDS,
+    bands: DEFAULT_BANDS,
     scorers: [
-      { scorer: activeCommitsScorer({ target: 10 }), weight: 20 },
+      { scorer: mainBranchCurrentScorer(), weight: 20 },
       { scorer: activeContributorsScorer({ target: 2 }), weight: 10 },
     ],
   });
@@ -127,17 +127,17 @@ describe('ScoringService', () => {
     expect(summary).toMatchObject({ scored: 1, failures: 0 });
   });
 
-  it('gives a busy, multi-author repository a healthy score', async () => {
+  it('gives a busy, multi-author repository an excellent score', async () => {
     const id = await seed('alpha', 10, 2);
 
     await build().scoreAll('demandai', T1);
     const score = await scores.latest(id);
 
     expect(score!.total).toBe(100);
-    expect(score!.band).toBe('healthy');
+    expect(score!.band).toBe('excellent');
   });
 
-  it('marks a dormant repository critical', async () => {
+  it('marks a dormant repository at risk', async () => {
     await repositories.syncWorkspace('demandai', [repository('idle')], T1);
     const stored = await repositories.findByEntityRef('component:default/idle');
 
@@ -145,7 +145,7 @@ describe('ScoringService', () => {
     const score = await scores.latest(stored!.id);
 
     expect(score!.total).toBe(0);
-    expect(score!.band).toBe('critical');
+    expect(score!.band).toBe('at-risk');
   });
 
   it('penalises a single-author repository even when it is busy', async () => {
@@ -169,7 +169,7 @@ describe('ScoringService', () => {
 
     const summary = await build().scoreAll('demandai', T1);
 
-    expect(summary.bands).toEqual({ healthy: 1, critical: 1 });
+    expect(summary.bands).toEqual({ excellent: 1, 'at-risk': 1 });
   });
 
   it('appends history rather than overwriting the previous score', async () => {
@@ -195,9 +195,10 @@ describe('ScoringService', () => {
 
     expect(score!.breakdown).toEqual([
       expect.objectContaining({
-        id: 'active-commits',
-        detail: '5 commits in 90 days',
-        points: 10,
+        id: 'main-branch-current',
+        // Seeded at the scoring instant, so the newest commit is today.
+        detail: 'Last commit to the default branch today',
+        points: 20,
       }),
       expect.objectContaining({
         id: 'active-contributors',
@@ -230,7 +231,7 @@ describe('ScoringService', () => {
 
   describe('ownership reaching the scorer', () => {
     const ownershipEngine = new ScoringEngine({
-      bands: PROVISIONAL_BANDS,
+      bands: DEFAULT_BANDS,
       scorers: [{ scorer: ownerAssignedScorer(), weight: 10 }],
     });
 

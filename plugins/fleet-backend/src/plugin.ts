@@ -27,18 +27,21 @@ import { readOwnershipRegister } from './ownership/ownershipRegister';
 import { OwnershipService } from './ownership/OwnershipService';
 import { createRouter } from './router';
 import { describeBackoff, shouldSkip } from './sync/backoff';
-import { PROVISIONAL_BANDS, ScoringEngine } from './scoring/ScoringEngine';
+import { DEFAULT_BANDS, ScoringEngine } from './scoring/ScoringEngine';
 import { ScoringService } from './scoring/ScoringService';
-import { activeCommitsScorer } from './scoring/scorers/activeCommits';
-import { activeContributorsScorer } from './scoring/scorers/activeContributors';
-import { branchHygieneScorer } from './scoring/scorers/branchHygiene';
+import { activeDevelopmentScorer } from './scoring/scorers/activeDevelopment';
+import { pullRequestSizeScorer } from './scoring/scorers/pullRequestSize';
+import { mainBranchCurrentScorer } from './scoring/scorers/mainBranchCurrent';
+import {
+  DEFAULT_STALE_BRANCH_EXEMPTIONS,
+  staleBranchesScorer,
+} from './scoring/scorers/staleBranches';
 import { codeReviewCompletedScorer } from './scoring/scorers/codeReviewCompleted';
-import { pipelineHealthScorer } from './scoring/scorers/pipelineHealth';
 import { readmeAvailableScorer } from './scoring/scorers/readmeAvailable';
-import { ownerAssignedScorer } from './scoring/scorers/ownerAssigned';
 import { pullRequestDisciplineScorer } from './scoring/scorers/pullRequestDiscipline';
 import { BranchPolicyService } from './analysis/BranchPolicyService';
 import { BranchDivergenceService } from './analysis/BranchDivergenceService';
+import { PullRequestSizeService } from './analysis/PullRequestSizeService';
 import { ProductivityStore } from './database/ProductivityStore';
 import { ProductivityService } from './productivity/ProductivityService';
 import { readIdentityRegister } from './identity/identityRegister';
@@ -105,60 +108,51 @@ export const fleetPlugin = createBackendPlugin({
           scoringConfig?.getOptionalNumber('windowDays') ?? 90;
         const metrics = scoringConfig?.getOptionalConfig('metrics');
 
+        // Branches that are stale by design. Read here rather than inside the
+        // scorer because the exemption has to reach the **store**: the scorer
+        // only ever sees counts, and the repository card names the stalest
+        // branches from a separate query. Both must apply the same list or the
+        // card accuses a team of neglect the score has already forgiven.
+        const staleBranchExemptions =
+          metrics?.getOptionalStringArray('staleBranches.exempt') ??
+          DEFAULT_STALE_BRANCH_EXEMPTIONS;
+
         // Weights and targets are config so they can be tuned without a
         // deploy. Defaults follow the weights in section 7 of the spec.
         const engine = new ScoringEngine({
           bands: {
+            excellent:
+              scoringConfig?.getOptionalNumber('bands.excellent') ??
+              DEFAULT_BANDS.excellent,
             healthy:
               scoringConfig?.getOptionalNumber('bands.healthy') ??
-              PROVISIONAL_BANDS.healthy,
+              DEFAULT_BANDS.healthy,
             needsAttention:
               scoringConfig?.getOptionalNumber('bands.needsAttention') ??
-              PROVISIONAL_BANDS.needsAttention,
+              DEFAULT_BANDS.needsAttention,
           },
+          // **Exactly the seven rules the requirement specifies, in the order
+          // it lists them and at the weights it gives them.** The card renders
+          // the breakdown in registration order, so a reader can hold the
+          // document beside the page and check it line by line.
+          //
+          // Three metrics were dropped here at the product owner's direction:
+          // `activeContributors`, `pipelinePassing` and `ownerAssigned`. All
+          // three worked and all three scored; none is in the rule set, and
+          // the instruction was to show only what the requirement demands.
+          // Losing pipeline passing costs the most -- it was the estate's most
+          // widespread problem at 38 repositories -- and the ownership
+          // register is untouched, so the catalog owner, the tags and the
+          // About card all still work. Only the scoring stops.
           scorers: [
             {
-              scorer: activeCommitsScorer({
-                target: metrics?.getOptionalNumber('activeCommits.target'),
-              }),
-              weight: metrics?.getOptionalNumber('activeCommits.weight') ?? 20,
-            },
-            {
-              scorer: activeContributorsScorer({
-                target: metrics?.getOptionalNumber('activeContributors.target'),
-              }),
+              scorer: mainBranchCurrentScorer(),
               weight:
-                metrics?.getOptionalNumber('activeContributors.weight') ?? 10,
+                metrics?.getOptionalNumber('mainBranchCurrent.weight') ?? 20,
             },
             {
-              scorer: pipelineHealthScorer(),
-              weight:
-                metrics?.getOptionalNumber('pipelinePassing.weight') ?? 20,
-            },
-            {
-              scorer: branchHygieneScorer(),
-              weight: metrics?.getOptionalNumber('branchHygiene.weight') ?? 10,
-            },
-            {
-              // 10, not the document's 15. The five points went to
-              // `pullRequestDiscipline` when the security metric was dropped,
-              // because approval is the weaker of the two signals here:
-              // measured across 243 approved merged pull requests, the median
-              // time from opening to first approval is **12 seconds** and 169
-              // of them were approved within five minutes. That counts ceremony.
-              // Whether a change went through a pull request at all does not.
-              scorer: codeReviewCompletedScorer(),
-              weight:
-                metrics?.getOptionalNumber('codeReviewCompleted.weight') ?? 10,
-            },
-            {
-              scorer: readmeAvailableScorer(),
-              weight:
-                metrics?.getOptionalNumber('readmeAvailable.weight') ?? 10,
-            },
-            {
-              scorer: ownerAssignedScorer(),
-              weight: metrics?.getOptionalNumber('ownerAssigned.weight') ?? 10,
+              scorer: staleBranchesScorer(),
+              weight: metrics?.getOptionalNumber('staleBranches.weight') ?? 15,
             },
             {
               // Its own shorter window, set on the service rather than here so
@@ -170,7 +164,41 @@ export const fleetPlugin = createBackendPlugin({
               }),
               weight:
                 metrics?.getOptionalNumber('pullRequestDiscipline.weight') ??
-                10,
+                20,
+            },
+            {
+              scorer: codeReviewCompletedScorer({
+                countSelfApprovals: metrics?.getOptionalBoolean(
+                  'codeReviewCompleted.countSelfApprovals',
+                ),
+              }),
+              weight:
+                metrics?.getOptionalNumber('codeReviewCompleted.weight') ?? 15,
+            },
+            {
+              // Measurable now. It was an `unmeasuredScorer` forfeiting all 10
+              // points until `PullRequestSizeService` landed the diffstat --
+              // one request per merged pull request, which is why that has a
+              // pass and a budget of its own rather than riding an existing
+              // sweep. A repository whose pull requests have not been measured
+              // yet still scores as unmeasurable rather than as small.
+              scorer: pullRequestSizeScorer({
+                statistic: metrics?.getOptionalString(
+                  'pullRequestSize.statistic',
+                ) as 'mean' | 'median' | undefined,
+              }),
+              weight:
+                metrics?.getOptionalNumber('pullRequestSize.weight') ?? 10,
+            },
+            {
+              scorer: activeDevelopmentScorer(),
+              weight:
+                metrics?.getOptionalNumber('activeDevelopment.weight') ?? 10,
+            },
+            {
+              scorer: readmeAvailableScorer(),
+              weight:
+                metrics?.getOptionalNumber('readmeAvailable.weight') ?? 10,
             },
           ],
         });
@@ -223,6 +251,7 @@ export const fleetPlugin = createBackendPlugin({
             disciplineWindowDays:
               scoringConfig?.getOptionalNumber('disciplineWindowDays') ??
               undefined,
+            staleBranchExemptions,
             httpAuth,
             permissions,
             logger,
@@ -462,6 +491,11 @@ export const fleetPlugin = createBackendPlugin({
             disciplineWindowDays:
               scoringConfig?.getOptionalNumber('disciplineWindowDays') ??
               undefined,
+            // Must be the same list the router is given. Both are optional, so
+            // omitting one here typechecks perfectly and simply scores the
+            // exempt branches anyway -- the failure this threading exists to
+            // prevent, arriving silently.
+            staleBranchExemptions,
           });
 
           const branchPolicy = new BranchPolicyService({
@@ -516,6 +550,51 @@ export const fleetPlugin = createBackendPlugin({
               'Branch divergence',
               BranchDivergenceService.resourceKey(workspace),
               () => divergence.measureAll(workspace),
+            ),
+          });
+
+          const pullRequestSize = new PullRequestSizeService({
+            client: newClient(),
+            pullRequests: pullRequestStore,
+            syncState,
+            logger,
+            requestBudget: scoringConfig?.getOptionalNumber(
+              'metrics.pullRequestSize.requestBudget',
+            ),
+            generatedPaths: scoringConfig?.getOptionalStringArray(
+              'metrics.pullRequestSize.generatedPaths',
+            ),
+          });
+
+          await scheduler.scheduleTask({
+            id: PullRequestSizeService.resourceKey(workspace),
+            ...schedule,
+            // Its own slow cadence, like branch divergence and for the same
+            // reason: this is the only pass costing a request per *pull
+            // request* rather than per repository -- about 389 for the first
+            // sweep of this estate. A merged pull request is immutable, so
+            // afterwards it costs only what has merged since, which is a
+            // handful. Running it every half hour would spend a budget to
+            // learn nothing.
+            frequency: {
+              minutes:
+                scoringConfig?.getOptionalNumber(
+                  'metrics.pullRequestSize.frequencyMinutes',
+                ) ?? 360,
+            },
+            // 40 minutes, not the 20 the other slow passes take. Measured on
+            // the first live sweep: 390 sequential diffstat requests ran for
+            // over 16 minutes, and a first sweep on a larger estate would meet
+            // a 20-minute limit. Progress is written in batches, so a timeout
+            // now costs at most one batch rather than the whole sweep.
+            timeout: { minutes: 40 },
+            // Behind pull request ingestion, which is what creates the rows
+            // this pass then measures.
+            initialDelay: { seconds: 210 },
+            fn: guard(
+              'Pull request size',
+              PullRequestSizeService.resourceKey(workspace),
+              () => pullRequestSize.measure(workspace),
             ),
           });
 

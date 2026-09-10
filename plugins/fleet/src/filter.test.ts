@@ -37,8 +37,8 @@ const scored = (
 const estate: FleetRepositorySummary[] = [
   scored('oxp-backend', 88, 'healthy', ['Node.js', 'Docker', 'React']),
   scored('crm', 55, 'needs-attention', ['Python', 'Docker']),
-  scored('dead-repo', 4, 'critical', ['AWS SAM']),
-  scored('idle-service', 6, 'critical', ['Python']),
+  scored('dead-repo', 4, 'at-risk', ['AWS SAM']),
+  scored('idle-service', 6, 'at-risk', ['Python']),
   repo('brand-new'),
 ];
 
@@ -50,9 +50,24 @@ describe('filterRepositories', () => {
 
   describe('by band', () => {
     it('narrows to one band', () => {
-      const critical = filterRepositories(estate, { band: 'critical' });
+      const atRisk = filterRepositories(estate, { band: 'at-risk' });
 
-      expect(critical.map(r => r.slug)).toEqual(['dead-repo', 'idle-service']);
+      expect(atRisk.map(r => r.slug)).toEqual(['dead-repo', 'idle-service']);
+    });
+
+    /**
+     * Score rows are append-only, so a repository last scored before At Risk
+     * was renamed from `critical` still carries the old name. The segment that
+     * offers this filter is built from the current name, so comparing raw
+     * strings made "At risk (42)" filter to nothing -- which reads as a broken
+     * filter rather than as a renamed band.
+     */
+    it('matches a repository still holding the pre-rename band name', () => {
+      const legacy = [...estate, scored('old-score', 12, 'critical')];
+
+      expect(
+        filterRepositories(legacy, { band: 'at-risk' }).map(r => r.slug),
+      ).toEqual(['dead-repo', 'idle-service', 'old-score']);
     });
 
     it('treats a repository with no score as its own band', () => {
@@ -62,7 +77,7 @@ describe('filterRepositories', () => {
     });
 
     it('never lets an unscored repository match a real band', () => {
-      for (const band of ['healthy', 'needs-attention', 'critical']) {
+      for (const band of ['healthy', 'needs-attention', 'at-risk']) {
         expect(filterRepositories(estate, { band }).some(r => !r.score)).toBe(
           false,
         );
@@ -94,7 +109,7 @@ describe('filterRepositories', () => {
 
   it('applies every filter together', () => {
     const result = filterRepositories(estate, {
-      band: 'critical',
+      band: 'at-risk',
       query: 'idle',
     });
 
@@ -102,7 +117,7 @@ describe('filterRepositories', () => {
   });
 
   it('preserves the order it was given, which is worst-first', () => {
-    expect(filterRepositories(estate, { band: 'critical' })).toEqual([
+    expect(filterRepositories(estate, { band: 'at-risk' })).toEqual([
       estate[2],
       estate[3],
     ]);
@@ -114,7 +129,7 @@ describe('problems across the estate', () => {
     slug: string,
     top: Array<{ id: string; title: string; lost: number }>,
     dormancy?: 'never-started' | 'abandoned',
-    band = 'critical',
+    band = 'at-risk',
   ) =>
     repo(slug, {
       problems: {
@@ -195,13 +210,13 @@ describe('problems across the estate', () => {
 
     it('combines with the band filter', () => {
       const mixed = [
-        withProblems('bad', [readme], undefined, 'critical'),
+        withProblems('bad', [readme], undefined, 'at-risk'),
         withProblems('ok', [readme], undefined, 'healthy'),
       ];
 
       const kept = filterRepositories(mixed, {
         problem: 'readme-available',
-        band: 'critical',
+        band: 'at-risk',
       });
 
       expect(kept.map(r => r.slug)).toEqual(['bad']);
@@ -238,20 +253,22 @@ describe('problems across the estate', () => {
 describe('bandCounts', () => {
   it('counts every band including the unscored', () => {
     expect(bandCounts(estate)).toEqual({
-      critical: 2,
+      atRisk: 2,
       needsAttention: 1,
       healthy: 1,
+      excellent: 0,
       unscored: 1,
     });
   });
 
   it('reflects a filtered subset rather than the whole estate', () => {
-    const critical = filterRepositories(estate, { band: 'critical' });
+    const atRisk = filterRepositories(estate, { band: 'at-risk' });
 
-    expect(bandCounts(critical)).toEqual({
-      critical: 2,
+    expect(bandCounts(atRisk)).toEqual({
+      atRisk: 2,
       needsAttention: 0,
       healthy: 0,
+      excellent: 0,
       unscored: 0,
     });
   });

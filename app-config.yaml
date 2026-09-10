@@ -243,3 +243,21 @@ fleet:
     # ID supplies a directory, this file is the directory.
     register:
       $include: ./catalog/identity-register.yaml
+
+  scoring:
+    # Everything else on the scorecard is left at its default, which is the
+    # requirement's own figure. This is the one deliberate departure, and it is
+    # here rather than in code so that it stays visible and reversible.
+    metrics:
+      pullRequestSize:
+        # The specification says "Average PR Size". On this estate the mean
+        # measures branch promotion rather than review burden: `oxp-backend`
+        # merges 66 pull requests typically 240 lines long -- the busiest and
+        # among the best-behaved repositories here -- and the mean scores it
+        # 1 of 10 because one promotion moved 35,028 lines. Measured across
+        # the 44 repositories with merged pull requests, the mean puts 25 of
+        # them in the bottom band and the median 13.
+        #
+        # Chosen by the product owner on 2026-09-10. Delete this key to return
+        # to the specification's wording exactly.
+        statistic: median

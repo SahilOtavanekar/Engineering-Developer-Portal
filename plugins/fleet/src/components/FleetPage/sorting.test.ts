@@ -40,7 +40,7 @@ describe('sortRepositories', () => {
       scored('mid', 55, 'needs-attention'),
       scored('best', 92, 'healthy'),
       repo('unscored'),
-      scored('worst', 12, 'critical'),
+      scored('worst', 12, 'at-risk'),
     ];
 
     it('puts the highest first when descending', () => {
@@ -58,7 +58,7 @@ describe('sortRepositories', () => {
     });
 
     it('does not treat a zero score as absent', () => {
-      const withZero = [repo('unscored'), scored('zero', 0, 'critical')];
+      const withZero = [repo('unscored'), scored('zero', 0, 'at-risk')];
       expect(
         slugs(sortRepositories(withZero, { key: 'score', direction: 'asc' })),
       ).toEqual(['zero', 'unscored']);
@@ -66,11 +66,11 @@ describe('sortRepositories', () => {
   });
 
   describe('status', () => {
-    // The bug this guards: sorting the band text gives critical, healthy,
+    // The bug this guards: sorting the band text gives at-risk, excellent,
     // needs-attention -- alphabetical, and an ordering of nothing.
     const rows = [
       scored('h', 92, 'healthy'),
-      scored('c', 12, 'critical'),
+      scored('c', 12, 'at-risk'),
       scored('n', 55, 'needs-attention'),
     ];
 
@@ -103,7 +103,7 @@ describe('sortRepositories', () => {
     });
 
     it('sorts a repository with no score at all last', () => {
-      const withNone = [repo('none'), scored('c', 12, 'critical')];
+      const withNone = [repo('none'), scored('c', 12, 'at-risk')];
       expect(
         slugs(sortRepositories(withNone, { key: 'band', direction: 'desc' })),
       ).toEqual(['c', 'none']);
@@ -206,7 +206,7 @@ describe('sortRepositories', () => {
   });
 
   it('does not mutate the array it is given', () => {
-    const rows = [scored('b', 10, 'critical'), scored('a', 90, 'healthy')];
+    const rows = [scored('b', 10, 'at-risk'), scored('a', 90, 'healthy')];
     sortRepositories(rows, { key: 'score', direction: 'desc' });
     expect(slugs(rows)).toEqual(['b', 'a']);
   });
@@ -218,7 +218,7 @@ describe('initialDirection', () => {
   });
 
   it('opens score, status and last commit at the top of their range', () => {
-    // For status that means critical first, because BAND_SEVERITY runs
+    // For status that means at risk first, because bandSeverity runs
     // worst-highest.
     expect(initialDirection('score')).toBe('desc');
     expect(initialDirection('band')).toBe('desc');

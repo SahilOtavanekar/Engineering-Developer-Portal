@@ -898,7 +898,7 @@ function buildPalette(tokens: PortalTokens) {
     linkHover: tokens.accent.hover,
 
     // Statuses come from the same three intents the score bands use, so a
-    // pipeline dot and a "Critical" pill cannot end up different reds.
+    // pipeline dot and an "At risk" pill cannot end up different reds.
     status: {
       ...base.status,
       ok: tokens.status.positive.bg,
