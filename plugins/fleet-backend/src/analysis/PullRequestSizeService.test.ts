@@ -235,13 +235,24 @@ describe('PullRequestSizeService', () => {
     );
 
     let seen = 0;
+    /**
+     * Captured here and asserted below, rather than asserted in place.
+     *
+     * An `expect` inside a callback that never fires passes **silently**, so
+     * the original version of this test would have stayed green if a change
+     * stopped the sweep ever reaching request 28 -- it would simply have
+     * checked nothing. That is the same failure mode as the dashboard
+     * ordering test CLAUDE.md records as having rotted without anyone
+     * noticing, and it is what `jest/no-conditional-expect` exists to catch.
+     */
+    let measuredAtRequest28: number | undefined;
     const slow = new FakeBitbucketClient();
     slow.listPullRequestDiffstat = async () => {
       seen++;
       // Once past the batch size, earlier results must already be stored.
       if (seen === 28) {
-        const partial = await pullRequests.sizeSummary(id, SINCE);
-        expect(partial.measured).toBeGreaterThanOrEqual(25);
+        measuredAtRequest28 = (await pullRequests.sizeSummary(id, SINCE))
+          .measured;
       }
       return [
         { path: 'src/a.ts', linesAdded: 3, linesRemoved: 1, status: 'added' },
@@ -251,6 +262,10 @@ describe('PullRequestSizeService', () => {
 
     const summary = await build().measure('demandai', NOW);
 
+    // The sweep must actually have got that far, or the observation below is
+    // vacuous rather than passing.
+    expect(seen).toBeGreaterThanOrEqual(28);
+    expect(measuredAtRequest28).toBeGreaterThanOrEqual(25);
     expect(summary.measured).toBe(30);
   });
 
