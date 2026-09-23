@@ -37,6 +37,14 @@ spec:
           # The image's own CMD loads two configs. This adds the mounted
           # secrets file as a third, which is why the image stays free of
           # credentials. Last one wins, so it can also override baseUrl.
+          # `command` AND `args`, not args alone. The image inherits
+          # ENTRYPOINT ["docker-entrypoint.sh"] from node:24-trixie-slim and
+          # supplies the program through CMD. Kubernetes `args` replaces CMD
+          # only, so setting it without `command` hands the entrypoint a bare
+          # "--config ..." and the container dies with `node: bad option:
+          # --config` before any plugin loads -- CrashLoopBackOff with nothing
+          # in the log but that line. Caught on a real cluster, not in review.
+          command: ['node', 'packages/backend']
           args:
             - '--config'
             - 'app-config.yaml'
