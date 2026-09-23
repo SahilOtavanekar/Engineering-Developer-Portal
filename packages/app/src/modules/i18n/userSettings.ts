@@ -24,10 +24,6 @@ export const userSettingsMessages = createTranslationMessages({
     // "...Authentication Providers to Backstage which allows...".
     'emptyProviders.description':
       'You can add Authentication Providers to the portal which allows you to use these providers to authenticate yourself.',
-    // Shown when no feature flags are registered. Upstream reads
-    // "...register features in Backstage for users to opt into...".
-    'featureFlags.emptyFlags.description':
-      'Feature Flags make it possible for plugins to register features in the portal for users to opt into. You can use this to split out logic in your code for manual A/B testing, etc.',
   },
 });
 

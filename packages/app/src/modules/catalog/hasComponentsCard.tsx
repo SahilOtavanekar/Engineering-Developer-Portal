@@ -62,19 +62,90 @@ import { EntityCardBlueprint } from '@backstage/plugin-catalog-react/alpha';
  * | Description | 368px         | 1 of 37     |
  *
  * Three columns share 654px equally, so Name gets 218px against the 276 it
- * wants and the longest repository names truncate. That is a real cost of
- * keeping Description, not an argument for dropping it -- the fix, if one is
- * wanted, is to size the columns rather than to remove one, which needs the
- * theme's `BackstageTable` reset (`width: auto !important`) scoped away from
- * this table first. It beats any `width` set here, so a `TableColumn.width`
- * would be dead code today.
+ * wants. **An earlier version of this note said the longest names "truncate".
+ * They did not -- they overlapped the Owner column**, because the cells are
+ * `nowrap` with `overflow: visible`, and nothing was measured to check. They
+ * wrap now; see `WRAPPING_CELL`.
+ *
+ * That squeeze is a real cost of keeping Description, not an argument for
+ * dropping it -- the fix, if one is wanted, is to size the columns rather than
+ * to remove one, which needs the theme's `BackstageTable` reset
+ * (`width: auto !important`) scoped away from this table first. It beats any
+ * `width` set here, so a `TableColumn.width` would be dead code today.
  */
-const columns = [
-  EntityTable.columns.createEntityRefColumn<ComponentEntity>({
-    defaultKind: 'component',
+/**
+ * Let a cell that cannot fit **wrap**, rather than paint over its neighbour.
+ *
+ * Backstage's table gives every cell `white-space: nowrap` with
+ * `overflow: visible` and `text-overflow: clip`. Under `tableLayout: 'fixed'`
+ * that is the worst of the three options: content too wide to fit can neither
+ * wrap nor be clipped, so it is drawn straight across the next column.
+ * Measured on MDLH before this: 1 row overlapping by 3px at a 1600px viewport,
+ * 7 by 74px at 1280, and **18 of 38 by up to 131px at 1024**. An earlier
+ * comment here claimed the long names "truncate" -- they never did.
+ *
+ * `anywhere` rather than `break-word` because these are single unbroken
+ * tokens: `Data_Plugin_Lookup_Index_Sync_Function` has no space to break at,
+ * and `break-word` will not split inside a word that has never had a chance
+ * to sit on its own line.
+ */
+const WRAPPING_CELL = {
+  whiteSpace: 'normal' as const,
+  overflowWrap: 'anywhere' as const,
+};
+
+/**
+ * Truncate prose instead of wrapping it.
+ *
+ * A description is supplementary -- 1 of 37 repositories on MDLH has one -- so
+ * a row grown to three lines to show it costs every other row's scannability
+ * for something nobody came to read. `nowrap` is already set, so it only needs
+ * somewhere to clip and a mark to say it did.
+ */
+const TRUNCATING_CELL = {
+  overflow: 'hidden' as const,
+  textOverflow: 'ellipsis' as const,
+};
+
+/** Merges a cell style onto a generated column without discarding its own. */
+function withCellStyle<T extends { cellStyle?: unknown }>(
+  column: T,
+  style: Record<string, string>,
+): T {
+  return {
+    ...column,
+    cellStyle: { ...(column.cellStyle as object | undefined), ...style },
+  };
+}
+
+/**
+ * Exported so a test can reach it.
+ *
+ * The cell styles here are the whole of the overlap fix and are invisible to
+ * every other check -- `yarn tsc` cannot see a missing style, and the defect
+ * only shows on a project page at a narrow enough width. Regenerating this
+ * array from `EntityTable.columns` without re-applying them is the obvious way
+ * to lose it.
+ */
+export const projectRepositoryColumns = [
+  // The name is the identifier and these names differ at the END --
+  // `dataAgentUi-contact-company-backend` against
+  // `dataAgentUi-emailpattern-backend` -- so truncating it is the one option
+  // that could make two rows read identically. It wraps.
+  withCellStyle(
+    EntityTable.columns.createEntityRefColumn<ComponentEntity>({
+      defaultKind: 'component',
+    }),
+    WRAPPING_CELL,
+  ),
+  // Person names break at spaces, so ordinary wrapping is enough.
+  withCellStyle(EntityTable.columns.createOwnerColumn<ComponentEntity>(), {
+    whiteSpace: 'normal',
   }),
-  EntityTable.columns.createOwnerColumn<ComponentEntity>(),
-  EntityTable.columns.createMetadataDescriptionColumn<ComponentEntity>(),
+  withCellStyle(
+    EntityTable.columns.createMetadataDescriptionColumn<ComponentEntity>(),
+    TRUNCATING_CELL,
+  ),
 ];
 
 function ProjectComponentsCard() {
@@ -91,7 +162,7 @@ function ProjectComponentsCard() {
     <EntityTable
       title="Repositories"
       entities={(entities ?? []) as ComponentEntity[]}
-      columns={columns}
+      columns={projectRepositoryColumns}
       emptyContent="This project has no repositories."
       /**
        * Fixed layout, because the automatic one does not fit this card.

@@ -95,6 +95,26 @@ app:
     - entity-card:catalog/depends-on-resources: false
     - entity-card:catalog/has-subcomponents: false
 
+    # The Feature Flags tab on Settings, removed at the product owner's
+    # direction.
+    #
+    # It could only ever render its empty state here: nothing in this workspace
+    # registers a flag, and verified in the browser before removal, the tab
+    # showed "No Feature Flags" above a code sample instructing the reader to
+    # add one and a "Read More" link into Backstage's own documentation. That is
+    # a page telling a portal user to go and write a plugin.
+    #
+    # Safe to disable, unlike a page: `featureFlagsSettingsPage` is a
+    # `SubPageBlueprint` declared with no `routeRef`, so nothing can resolve a
+    # route to it, and the sidebar links to `/settings` rather than to any tab.
+    # The Settings page and its General and Authentication Providers tabs are
+    # untouched.
+    #
+    # Re-enabling it wants `featureFlags.emptyFlags.description` restored to
+    # `packages/app/src/modules/i18n/userSettings.ts` as well, or the empty
+    # state says "Backstage" again.
+    - sub-page:user-settings/feature-flags: false
+
 organization:
   name: Demand AI
 

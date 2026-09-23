@@ -27,62 +27,79 @@ Target is the organization's **real Bitbucket estate**, not a sandbox.
 | Scorecard       | **7 metrics — the requirement's own set.** All measurable, 100 of 100 |
 | Bands           | **4** — Excellent 90+, Healthy 75+, Needs Attention 60+, At Risk      |
 | Branches        | Divergence measured on its own 6h pass, **not scored**                |
-| Progress        | 1,123 tests, 57 suites, 4 e2e                                         |
+| Progress        | 1,147 tests, 60 suites, 4 e2e                                         |
 | Theme           | Custom, token-driven — `packages/app/src/modules/theme`               |
 
 ### The scorecard, as it stands 2026-09-10
 
 The requirement's seven rules, at its weights, registered in the order its
-tables list them so the document can be read beside the page. Live figures
-from the pass at 05:48 on 2026-09-10, **99 repositories** -- the estate grew by
-one that morning (`axp-data-plugin-user-report-daily`), which is the standing
-reason to read these from the database rather than from here.
+tables list them so the document can be read beside the page. **The weights and
+the bands are stable; every count below is a sample and goes stale within
+hours** -- it drifted twice in one afternoon while this section was being
+written. Re-derive rather than trust:
 
-| Rule                          | Weight | Bands                | Measurable on | Notes                                           |
-| ----------------------------- | -----: | -------------------- | ------------: | ----------------------------------------------- |
-| Main branch up to date        |     20 | 30 / 60 / 90 days    |         99/99 | `repository.last_commit_at`, default branch     |
-| Stale branches                |     15 | 0 / 1-2 / 3-5 / >5   |         99/99 | count, excludes default + `exempt`              |
-| Changes through pull requests |     20 | 100% / 95 / 80       |         40/99 | 30-day window; middle bands unreachable here    |
-| Code review completed         |     15 | 90% / 70%            |         45/99 | **peer** approvals; 39 repositories lose points |
-| Pull request size             |     10 | <400 / ≤1000 / >1000 |         44/99 | **median** (decision 11); bottom band pays 1    |
-| Active development            |     10 | 30 / 60 / 90 days    |         99/99 | newest commit on **any** branch                 |
-| README available              |     10 | present / absent     |         99/99 | 64 present, 35 absent                           |
+```sql
+-- bands, mean and the measurable-weight spread, from the newest pass
+with l as (select * from repo_score
+           where computed_at = (select max(computed_at) from repo_score))
+select count(*) repos,
+       count(*) filter (where band='excellent')       excellent,
+       count(*) filter (where band='healthy')         healthy,
+       count(*) filter (where band='needs-attention') needs_attention,
+       count(*) filter (where band='at-risk')         at_risk,
+       round(avg(total),1) mean_total,
+       min(available_weight), max(available_weight)
+from l;
+```
 
-Estate bands: **1 excellent / 17 healthy / 29 needs-attention / 52 at-risk**,
-mean total 53.5. `available_weight` ranges 55-100 per repository.
+| Rule                          | Weight | Bands                | Notes                                             |
+| ----------------------------- | -----: | -------------------- | ------------------------------------------------- |
+| Main branch up to date        |     20 | 30 / 60 / 90 days    | `repository.last_commit_at`, default branch       |
+| Stale branches                |     15 | 0 / 1-2 / 3-5 / >5   | count, excludes default + `exempt`                |
+| Changes through pull requests |     20 | 100% / 95 / 80       | 30-day window; middle bands unreachable here      |
+| Code review completed         |     15 | 90% / 70%            | **peer** approvals; very few repositories earn it |
+| Pull request size             |     10 | <400 / ≤1000 / >1000 | **median** (decision 11); bottom band pays 1      |
+| Active development            |     10 | 30 / 60 / 90 days    | newest commit on **any** branch                   |
+| README available              |     10 | present / absent     | binary; the estate's cheapest points              |
 
-**Verified in the browser 2026-09-10**, every figure cross-checked against the
-database: the band bar reads 52 / 29 / 17 / 1 and the Status column counts the
-same, "99 repositories", and all seven problem chips match a SQL reproduction
-of `deriveProblems` exactly -- code review 39, README 35, pull request size 21,
-main branch 19, stale branches 19, no recent development 16, bypassing pull
-requests 9. No chips for the three unregistered metrics. No sideways scroll.
+**Sampled 11:16 on 2026-09-10**, 99 repositories: bands **1 / 17 / 27 / 54**,
+mean total 52.9, `available_weight` 55-100. The three PR-derived metrics are
+measurable on only 40-45 of 99 -- most of the estate merges nothing -- while
+the other four are measurable on all 99.
+
+**Verified in the browser 2026-09-10**, every rendered figure cross-checked
+against the database: the band bar and the Status column agreed with each
+other and with the estate counts, and all seven problem chips matched a SQL
+reproduction of `deriveProblems` exactly. No chips for the three unregistered
+metrics. No sideways scroll.
 
 **Unregistered, kept and tested:** `activeContributors`, `pipelineHealth`,
 `ownerAssigned`. Each file opens with a NOT REGISTERED note; their inputs are
 still populated, so reinstating one is a line in `plugin.ts` plus a weight
 rebalance to keep the sum at 100.
 
-**Where to pick up.** The six-step rewrite is complete. What is left is
-judgement, not construction:
+**Where to pick up.** The scorecard is finished: the six-step rule rewrite
+landed, pull request size is measured, and decision 11 chose the median. What
+remains is judgement and one real risk, not construction.
 
-1. ~~Open decision 11~~ **CLOSED and live: median.** Chosen by the product
-   owner 2026-09-10, set in `app-config.yaml`, and confirmed in the running
-   portal after a backend restart -- 44 of 44 repositories scored on the
-   median, 0 on the mean. **The projection held exactly**: the same four
-   repositories moved, at the same totals -- `ingest-jobs` 68→77 and `crm`
-   66→75 into Healthy, `website-tracking` 56→65 and `dxp-mono` 53→60 out of At
-   Risk -- and the metric split landed on the predicted 23 / 8 / 13.
-   The one discrepancy was in the baseline, not the change: the estate-wide
-   figures were projected from a pass that was one cycle stale, during which
-   an ingestion pass moved one repository on its own. **Project from the pass
-   you are about to replace, not the one before it.**
+1. **§8 access control** (open decision 6) — **the only blocking item.** The
+   productivity page serves per-person performance figures and the portal runs
+   `allow-all-policy`, so anyone who can read the fleet can read everyone's
+   numbers. Treat this as blocking before the page is shown outside the team.
+   It is also the natural first slice of the deferred Entra ID + RBAC work.
 2. **Open decision 8** — whether branch divergence should score at all. It
-   would need a weight rebalance away from 100.
-3. **§8 access control** (open decision 6) — still the one blocking gap before
-   anyone outside the team sees per-person figures.
-4. **Per-engineer lines added/deleted** is now nearly free; see requirement 8
-   below.
+   would need a weight rebalance away from 100, so it is a product decision
+   before it is a code one.
+3. **Per-engineer lines added/deleted** is now nearly free: a pull request
+   carries an author and `pull_request.lines_added` is populated for all 391,
+   so §8's ninth measure needs no new Bitbucket requests. Open decision 5 is
+   only about the per-**commit** variant, which still costs ~4,000.
+4. **Open decision 10** — the commit trend has no zero-fill, so bars that look
+   adjacent may not be adjacent weeks. A real defect, small and unglamorous.
+
+**Nothing is committed.** The whole rule rewrite, the diffstat ingestion, the
+median switch and the MDLH table fix are all sitting in the working tree. 4. **Per-engineer lines added/deleted** is now nearly free; see requirement 8
+below.
 
 ## Measured facts about the estate
 
@@ -836,19 +853,18 @@ windowStart` for commits, `updated_on` for pull requests), so existing rows
   branches the stale-branch metric exempts are what produce them.
   **`files_added` is the field that identifies them**, at 99.9% of files added,
   which is why it is stored even though nothing scores it.
-  Measured over 90 days across the 44 repositories with merged pull requests:
-  **13 average under 400 changed lines, 6 between 400 and 1,000, and 25 over
-  1,000** -- so 25 repositories score 1 of 10, most of them for release
-  mechanics. So the specification's **mean** is a poor description of this
-  estate. It is implemented anyway, because it is what the requirement bands,
-  but:
-  - per-pull-request figures are **stored**, so median or any other statistic
-    is a query rather than a 390-request refetch;
+  Measured over 90 days across the 44 repositories with merged pull requests,
+  the specification's **mean** put **25 of them in the bottom band**, most for
+  release mechanics -- which is what closed open decision 11 in favour of the
+  **median**, now live. What made that decision cheap to take:
+  - per-pull-request figures are **stored**, so the median was a query rather
+    than a 390-request refetch, and any future statistic is too;
   - `files_added` is stored too, from the same response, because the added-file
     share is the only field that separates an import from a change -- CLAUDE.md
     already records what needing a second backfill costs;
-  - the detail line reports the median beside the mean when they disagree, and
-    names the imports, so the number is not read as a verdict on the team.
+  - the detail line reports the **other** statistic beside the scored one when
+    they disagree by more than a factor of two, and names the imports, so
+    neither number is read alone.
   - The bottom band pays **1, not 0** -- the only band on the scorecard that
     does. A team merging 5,000-line pull requests is at least merging pull
     requests.
@@ -867,12 +883,12 @@ windowStart` for commits, `updated_on` for pull requests), so existing rows
 - **The whole estate is measured: 391 merged pull requests, 2.2 million changed
   lines, in about 400 requests across three sweeps.** `available_weight` now
   reaches **100** where it had topped out at 90, so no repository forfeits
-  points for a metric the portal could not measure. Points on the metric split
-  **13 repositories at 10, 6 at 3, 25 at 1**, with 54 unmeasurable for having
-  no merged pull requests at all. Estate bands moved 2/15/22/59 to
-  **1/14/29/54** and the average barely at 53.7 to 52.4 -- at-risk fell by five
-  because a measurable metric pays something where a forfeited one paid
-  nothing.
+  points for a metric the portal could not measure. Points **under the mean,
+  which the next note replaced**: 13 repositories at 10, 6 at 3, 25 at 1, with
+  54 unmeasurable for having no merged pull requests at all. Estate bands moved
+  2/15/22/59 to **1/14/29/54** and the average barely at 53.7 to 52.4 --
+  at-risk fell by five because a measurable metric pays something where a
+  forfeited one paid nothing.
 - **Open decision 11, measured 2026-09-10: the mean scores release mechanics,
   not review burden.** Three candidates banded the specification's way, across
   the 44 repositories with merged pull requests in the window:
@@ -894,31 +910,46 @@ windowStart` for commits, `updated_on` for pull requests), so existing rows
   unmeasurable, and it does not rescue `portal-ui`, `crm` or `daarwyn-ui`,
   whose large pull requests are **not** mostly-added files -- so the
   `files_added` heuristic does not catch them. The median does.
-  Built as `fleet.scoring.metrics.pullRequestSize.statistic`, defaulting to
-  `mean` so the shipped behaviour still follows the document. Switching is a
-  product decision, reversible without a deploy -- the same reasoning as
-  `codeReviewCompleted.countSelfApprovals`.
+  Built as `fleet.scoring.metrics.pullRequestSize.statistic`. **The code
+  default stays `mean`, so the shipped behaviour follows the document; this
+  estate opts out in `app-config.yaml`** -- the product owner chose the median
+  on 2026-09-10. Deleting that key returns to the specification exactly. Same
+  reasoning as `codeReviewCompleted.countSelfApprovals`: a departure from the
+  written requirement belongs in config, where it is visible and reversible,
+  not baked into a constant.
   Whichever is scored, the detail line names the **other** statistic when they
   disagree by more than a factor of two, so neither number is read alone.
+  **The change landed exactly as projected** -- the same four repositories
+  moved, at the same totals (`ingest-jobs` 68→77, `crm` 66→75 into Healthy;
+  `website-tracking` 56→65, `dxp-mono` 53→60 out of At Risk) and the metric
+  split hit the predicted 23 / 8 / 13. The only miss was estate-wide, and it
+  was the baseline's fault: those figures were projected from a pass one cycle
+  stale, during which an ingestion pass moved a repository on its own.
+  **Project from the pass you are about to replace, not the one before it.**
 
 - **The detail line justifies itself on the first repository that renders it.**
-  `daarwyn-data-sync-jobs` reads "2730 changed lines on average across 12
-  merged PRs in 90 days, **typically 4**". One promotion pull request sets the
-  mean for twelve that are typically four lines long. That clause is the whole
-  argument for storing the median, and it appears only when the two disagree by
-  more than a factor of two, so it stays quiet where the mean is honest.
-- **A short denominator now has two unrelated causes, and one sentence about
-  both was wrong.** Pull request size is a gap in the **portal**; code review
-  going unmeasured means **this repository** merged nothing. Reporting the
-  first as the second sends a team hunting data that exists and that nothing
-  has asked Bitbucket for. A scorer returning `null` carries no reason, so
-  `isPortalGap` in `fleet-common/src/problems.ts` holds the ids that are ours
-  -- delete the entry when the diffstat ingestion lands. The card partitions
-  `problems.unmeasured` by it, which finally gave that field something to do:
-  it had been computed and never rendered. Live: `ux-designs` reads "Scored
-  over 55 of 100 weight. Pull request size cannot be measured by the portal
-  yet. Main branch health, Code review completed have nothing to measure in
-  this repository."
+  `daarwyn-data-sync-jobs` reads "**4** changed lines typically across 12
+  merged PRs in 90 days, on average 2730". One promotion pull request sets the
+  mean for twelve that are typically four lines long. That clause was the whole
+  argument for storing the median, and having both is what let decision 11 be
+  settled from stored data. It appears only when the two disagree by more than
+  a factor of two, so it stays quiet where they agree.
+- **A short denominator has two unrelated causes, and one sentence about both
+  was wrong.** A metric the **portal** cannot measure and a metric **this
+  repository** has no data for need opposite things said about them: reporting
+  the first as the second sends a team hunting data that exists and that
+  nothing has asked Bitbucket for. A scorer returning `null` carries no reason,
+  so `isPortalGap` in `fleet-common/src/problems.ts` records which ids are
+  ours. The card partitions `problems.unmeasured` by it, which finally gave
+  that field something to do: it had been computed and never rendered.
+  **`isPortalGap` is empty today, and that is the good outcome** --
+  `pull-request-size` was the only entry and left when the diffstat ingestion
+  landed, so every registered metric has a data source. The predicate stays,
+  because without somewhere to record which absences are ours the card goes
+  straight back to blaming a repository for the portal's gaps. Live now:
+  `ux-designs` reads "Scored over 55 of 100 weight. Changes through pull
+  requests, Code review completed, Pull request size have nothing to measure
+  in this repository" -- all three the repository's own, none the portal's.
   **The same text used to end "Band thresholds are placeholders pending
   sign-off", which had been false since decision 2 closed.** A test now asserts
   the words "placeholders" and "pending sign-off" are absent.
@@ -1172,6 +1203,23 @@ connection`, which took `/api/catalog` down to 404 and left every page in the
 id = '<task>'` -- which is the scheduler's own next action, just sooner, and
   it reschedules normally afterwards. Do that rather than polling; **do not**
   read "the code is deployed" as "the data has changed".
+- **"The backend is up" has three meanings and two of them are wrong.**
+  Measured across a restart 2026-09-23, to the half-second: the **port** opens
+  at 143s, every plugin route still 404s until **148s**, and
+  `/.backstage/health/v1/readiness` was _still_ 503 at 148s while auth,
+  catalog and fleet were all already answering 200. So a port check is five
+  seconds early and a readiness check is late. The only gate that means what
+  it says is an unauthenticated GET of a **real plugin route**: 404 is "not
+  mounted", 401 is "mounted and wants credentials", which is precisely the
+  state a browser needs. `scripts/dev.js` uses that. **`playwright.config.ts`
+  still gates on `port: 7007`**, so an e2e run can in principle begin inside
+  that 5-second window -- not yet observed as a flake, but it is the same
+  class of bug as the two suites that fail only under full-suite concurrency.
+  A second thing this settled: auth, catalog and fleet mount **together**, so
+  "the catalog is slower to start than auth" is not a real failure mode, and
+  the signing keys survive a restart (both `kid`s stay in `signing_keys`) --
+  so a pre-restart token is **not** invalidated by rotation. Both were
+  plausible diagnoses of the startup error and both are wrong.
 - **Never derive a measurement window from `Date.now()`.** The ownership
   resolver did, so the window it _reported_ drifted from the window it
   _queried_ whenever the caller's `now` was not that instant. It passed for a
@@ -1547,6 +1595,40 @@ id = '<task>'` -- which is the scheduler's own next action, just sooner, and
   Overriding an entity card under the stock name does work; the disable in
   `app-config.yaml` is kept because naming the two separately is clearer, not
   because the override failed.
+- **`nowrap` + `overflow: visible` + `tableLayout: fixed` is the worst of the
+  three, and it overlaps rather than truncates.** Backstage's table gives every
+  cell `white-space: nowrap`, `overflow: visible` and `text-overflow: clip`.
+  Under a fixed layout, content too wide to fit can neither wrap nor be
+  clipped, so it is **painted straight across the next column**. On the MDLH
+  project's Repositories card, measured: 1 row overlapping by 3px at a 1600px
+  viewport, 7 by 74px at 1280, **18 of 38 by up to 131px at 1024**. It degrades
+  steeply with width, which is why it can look fine on the machine it is
+  checked on.
+  **An earlier note here claimed those names "truncate". They never did** --
+  that was reasoned from `tableLayout: 'fixed'` without looking, and the fix
+  was reported as a known cost rather than a bug for as long as the claim
+  stood.
+  Fixed per column through material-table's `cellStyle`, which is an inline
+  style and so beats the class rule, **not** through the theme -- a
+  `BackstageTable` rule would reach every core-components table in the portal,
+  which is the trap the `th:last-child { width: 1% }` rule already sprang once.
+  The split is by what the column holds: **Name wraps**
+  (`whiteSpace: normal` + `overflowWrap: anywhere`) because it is the
+  identifier and these names differ at the _end_ --
+  `dataAgentUi-contact-company-backend` against
+  `dataAgentUi-emailpattern-backend` -- so truncating is the one option that
+  could make two rows read identically; **Owner wraps** at its spaces;
+  **Description truncates**, because 1 of 37 repositories has one and a row
+  grown to three lines for it costs every other row's scannability.
+  `anywhere`, not `break-word`: `Data_Plugin_Lookup_Index_Sync_Function` is a
+  single token with nowhere to break, and `break-word` will not split inside a
+  word that has never had a line of its own.
+  Verified after: **zero overlap at all five widths**, nothing past the table
+  edge, and the longest name still rendered in full.
+  `hasComponentsCard.test.ts` pins the styles, and identifies columns by
+  **translation key** -- `EntityTable.columns` builds each title as an
+  `<EntityTableColumnTitle translationKey="name" />` element, not a string, so
+  matching on text silently finds nothing. That cost a round.
 - **`HasComponentsCard` is not exported from anywhere public** -- only
   `HasComponentsCardProps` is, and the stock extension reaches the component
   through a deep dynamic import. So its `columns`/`columnConfig` props are
@@ -2073,12 +2155,69 @@ loopback and authenticated by nothing but the Postgres credentials.
 ```bash
 docker compose up -d          # start Postgres and Adminer
 yarn install                  # install deps
-yarn start                    # app :3000, backend :7007
+yarn dev                      # yarn start + a banner when the API is REALLY up
+yarn start                    # app :3000, backend :7007 (no readiness banner)
 yarn tsc                      # typecheck
 yarn lint:all                 # lint everything
 CI=true yarn test             # unit tests (CI=true avoids watch mode)
 yarn test:e2e                 # playwright
 ```
+
+**The backend is not up for ~2.5 minutes after `yarn start`, and the app now
+waits for it.** Measured 2026-09-23: :3000 serves in about a second while
+Rspack compiles, `Listening on :7007` arrives at **143s**, every plugin route
+404s until **148s** while plugins register, and a second run took 192s. Before
+this was fixed, loading inside that window produced "Could not fetch catalog
+entities" and "Failed to load entity kinds", and **nothing recovered** -- which
+is why "log out and log back in" looked like an auth fix when it was only
+elapsed time.
+
+`GatedSignInPage` in `packages/app/src/modules/auth/SignInPage.tsx` holds the
+whole app on a "Starting the portal" panel until a plugin route answers, then
+lets the normal sign-in run. **`SignInPage` is the right place and the only
+easy one**: it is rendered _instead of_ the app until it passes an identity
+up, so it gates routes, cards and the catalog's own fetching at once; gating
+the catalog page would leave the fleet and productivity pages broken.
+Verified in the browser -- backend unreachable at load shows the panel and no
+error, and when the backend returns it signs in and loads 20 rows **with no
+reload and no sign-out**.
+
+Two limits worth knowing. **A tab that is already rendered when the backend
+restarts has passed the gate**, so it still shows the catalog error until
+reloaded; recovering that means retrying inside Backstage's own
+`EntityListProvider`. And the wait is capped at ~5 minutes, deliberately, so a
+genuinely broken backend ends in the ordinary error rather than an endless
+spinner.
+
+`yarn dev` (`scripts/dev.js`) is now a convenience rather than the fix: it
+runs `yarn start` and prints a banner the moment a plugin route answers, so
+you know when the portal is actually usable.
+
+**The portal opens on the sign-in page, and that took a second change.** The
+gate alone still let a returning browser through: `core-components` remembers
+the last provider in `localStorage['@backstage/core:SignInPage:provider']` and
+signs in automatically, so the picker never appeared and the app landed
+straight on the catalog. There is no prop and no config for that -- clearing
+the key is the only lever, and exactly one file reads it
+(`core-components`' `layout/SignInPage/providers.esm.js`), verified across
+every `@backstage` package. `ensureSignInPageOnNewSession` in
+`packages/app/src/modules/auth/signInMemory.ts` clears it.
+
+**Two things about that are load-bearing.** It runs **during render, not in an
+effect**: the reader is a `useLayoutEffect` inside `SignInPage`, and a
+parent's effects run _after_ a child's layout effects, so an effect would fire
+after the automatic sign-in had already started. And it is scoped to a
+**browser session**, not a page load -- the first version cleared on every
+load, which signed the user out of every refresh and every deep link.
+`performance.test.ts` caught that: it signs in once and then calls
+`page.goto()` five times per sample, and the second navigation had no session.
+`sessionStorage` survives reloads and in-tab navigation while being empty in a
+new tab, which is what "start from the sign-in page" actually means.
+
+Validated in the browser end to end, with the provider key deliberately
+seeded: sign-in page on load, no jump to the catalog, no error; then Enter →
+20 rows. And with the backend unreachable: the loading panel, then the
+sign-in page by itself when the backend returns.
 
 Inspect the database:
 
@@ -2186,7 +2325,7 @@ blocking before anyone outside the team sees per-person figures.
   spec outside the package is "No tests found" -- use `chromium.launch()`
   directly. And a scratchpad script cannot resolve `@playwright/test`, so
   require it by absolute path out of the repo's `node_modules`.
-- Test coverage is no longer thin -- 1,123 tests across 57 suites -- but it is
+- Test coverage is no longer thin -- 1,147 tests across 60 suites -- but it is
   uneven: `ProductivityStore` still has no test file (see below), and nothing in
   the suite loads a real `app-config`. New modules ship with tests.
   **`BranchStore` was the same kind of gap and is now closed**: it had no test
