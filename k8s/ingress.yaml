@@ -1,0 +1,49 @@
+# OPTIONAL, AND CURRENTLY THE RISKY OPTION. Read this before applying it.
+#
+# The backend runs `allow-all-policy` and /api/fleet/productivity serves
+# per-person performance figures. An Ingress publishes those to anyone who can
+# resolve the host. Open decision 6 in CLAUDE.md treats that as blocking until
+# Entra ID and RBAC land, so a port-forward or the cluster-internal Service is
+# the defensible exposure for now:
+#
+#   kubectl -n fleet port-forward svc/fleet-portal 7007:7007
+#
+# The port-forward also matches the committed baseUrl exactly, so it needs no
+# config change and separates "the portal works" from "the Ingress works".
+#
+# APPLYING THIS REQUIRES A CONFIG CHANGE TOO. app-config.production.yaml ships
+# app.baseUrl and backend.baseUrl both set to http://localhost:7007. The
+# browser downloads a frontend with that baked in as the API address, so on any
+# real hostname the page loads and every request from it fails. Add the real
+# URL to the mounted secrets file, which is already the last --config and
+# therefore wins:
+#
+#   app:
+#     baseUrl: https://portal.demandai.internal
+#   backend:
+#     baseUrl: https://portal.demandai.internal
+#     cors:
+#       origin: https://portal.demandai.internal
+#
+# If GitHub sign-in is kept, the OAuth app's callback URL must also list
+# https://<host>/api/auth/github/handler/frame.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: fleet-portal
+  namespace: fleet
+spec:
+  # RKE2 and K3s default to ingress-nginx; a Rancher cluster may offer Traefik
+  # instead. Check: kubectl get ingressclass
+  ingressClassName: nginx
+  rules:
+    - host: portal.demandai.internal
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: fleet-portal
+                port:
+                  number: 7007

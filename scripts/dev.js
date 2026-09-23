@@ -123,10 +123,25 @@ const child = spawn(
 let announced = false;
 let lastPhase = null;
 
-const timer = setInterval(async () => {
-  if (announced) return;
+/**
+ * Whether a probe is still in flight.
+ *
+ * `setInterval` fires on its own schedule regardless of whether the previous
+ * async callback has finished, and `announced` is only set *after* the await.
+ * Without this second guard two ticks both pass the `announced` check while
+ * the first is still waiting on the socket, and the banner prints twice --
+ * which it duly did on the first run of this script. Set synchronously,
+ * before any await, or it has the same hole it is closing.
+ */
+let probing = false;
 
-  const phase = await probe();
+const timer = setInterval(async () => {
+  if (announced || probing) return;
+  probing = true;
+
+  const phase = await probe().finally(() => {
+    probing = false;
+  });
 
   // One line when the port first opens, so the gap between "listening" and
   // "usable" is visible rather than mysterious.
