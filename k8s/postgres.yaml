@@ -1,0 +1,94 @@
+# Postgres for the portal.
+#
+# The portal creates ONE DATABASE PER PLUGIN, so the user it connects as needs
+# CREATEDB -- the postgres image's superuser has it by default. Verified
+# 2026-09-23 by running the portal image against a Postgres 16: it connected
+# over the POSTGRES_* variables and logged "Fleet database migrations applied"
+# on first boot.
+#
+# A single replica with one volume. This is a portal for ~100 repositories,
+# not a system that needs failover; see k8s/README.md.
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: fleet
+spec:
+  # Headless: nothing load-balances a single StatefulSet member, and a stable
+  # DNS name is all the portal needs.
+  clusterIP: None
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: fleet
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: POSTGRES_PASSWORD
+            - name: POSTGRES_DB
+              value: backstage
+            # The image refuses to initialise into a non-empty directory, and
+            # a mounted volume is never empty (lost+found). A subdirectory is
+            # the documented way round it.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command: ['sh', '-c', 'pg_isready -U $POSTGRES_USER']
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: '100m'
+              memory: '256Mi'
+            limits:
+              memory: '1Gi'
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ['ReadWriteOnce']
+        # SET THIS. Do not rely on a default class existing.
+        #
+        # Docker Desktop has one and the claim binds silently; a Rancher
+        # cluster may have none marked default, and then the PVC sits Pending
+        # for ever and this pod never schedules -- with no error that names
+        # the cause. RKE2 and K3s usually ship `local-path`; a cluster with
+        # Longhorn installed has `longhorn`. Check: kubectl get storageclass
+        storageClassName: local-path
+        resources:
+          requests:
+            storage: 8Gi

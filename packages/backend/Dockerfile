@@ -61,6 +61,15 @@ RUN --mount=type=cache,target=/home/node/.cache/yarn,sharing=locked,uid=1000,gid
 # This will include the examples, if you don't need these simply remove this line
 COPY --chown=node:node examples ./examples
 
+# The ownership and identity registers. `app-config.yaml` pulls both in with
+# `$include` (fleet.ownership.register and fleet.identity.register), and a
+# missing $include target is a HARD failure, not a warning -- config loading
+# throws before any plugin starts, so the image cannot serve anything at all
+# without this line. It is not carried by bundle.tar.gz: verified by listing
+# the bundle, which contains neither register, so this COPY is the only route
+# into the image.
+COPY --chown=node:node catalog ./catalog
+
 # Then copy the rest of the backend bundle, along with any other files we might want.
 COPY --chown=node:node packages/backend/dist/bundle.tar.gz app-config*.yaml ./
 RUN tar xzf bundle.tar.gz && rm bundle.tar.gz

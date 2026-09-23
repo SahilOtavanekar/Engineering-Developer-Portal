@@ -1,0 +1,149 @@
+# The portal: one container serving both the React app and the API on 7007.
+#
+# THE PROBES ARE THE LOAD-BEARING PART OF THIS FILE. Read the block above
+# startupProbe before changing any of them.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fleet-portal
+  namespace: fleet
+spec:
+  # One. The scheduler coordinates through the database, so a second replica
+  # would not double-run the ingestion passes -- but one replica makes
+  # `kubectl logs` answer for the whole system, and nothing here needs the
+  # availability.
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fleet-portal
+  template:
+    metadata:
+      labels:
+        app: fleet-portal
+    spec:
+      # Uncomment for a private registry. Rancher can also hold a registry
+      # credential at the Project level, which applies to every namespace in
+      # that Project -- check before creating one by hand.
+      # imagePullSecrets:
+      #   - name: registry-credentials
+      containers:
+        - name: backstage
+          # REPLACE. A Rancher cluster cannot see a locally built image: the
+          # kubelet pulls through containerd from a registry. Use a dated or
+          # digest tag, never `latest` -- the image carries compiled output, so
+          # with a moving tag nothing in the cluster can tell you which build
+          # is running.
+          image: registry.example.com/demandai/fleet-portal:REPLACE-WITH-DATED-TAG
+          # The image's own CMD loads two configs. This adds the mounted
+          # secrets file as a third, which is why the image stays free of
+          # credentials. Last one wins, so it can also override baseUrl.
+          args:
+            - '--config'
+            - 'app-config.yaml'
+            - '--config'
+            - 'app-config.production.yaml'
+            - '--config'
+            - '/etc/backstage/app-config.secrets.yaml'
+          ports:
+            - containerPort: 7007
+          env:
+            - name: POSTGRES_HOST
+              value: postgres.fleet.svc.cluster.local
+            - name: POSTGRES_PORT
+              value: '5432'
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: POSTGRES_PASSWORD
+            # NOT OPTIONAL, and this was measured rather than assumed.
+            # `app-config.yaml` declares clientId: ${AUTH_GITHUB_CLIENT_ID}.
+            # Without these the auth plugin throws during startup and the pod
+            # hangs Running-but-never-Ready (see the probe note below).
+            # There is no config-only off switch: `auth.providers.github: false`
+            # is an invalid type and breaks the auth plugin AND the app bundle
+            # schema. To drop GitHub sign-in, delete the block from
+            # app-config.yaml and rebuild the image.
+            - name: AUTH_GITHUB_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: github-oauth
+                  key: AUTH_GITHUB_CLIENT_ID
+            - name: AUTH_GITHUB_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: github-oauth
+                  key: AUTH_GITHUB_CLIENT_SECRET
+          volumeMounts:
+            - name: portal-config
+              mountPath: /etc/backstage
+              readOnly: true
+          # WHY A startupProbe, AND WHY IT POINTS AT readiness.
+          #
+          # Measured 2026-09-23 by running this image with no credentials:
+          # three plugins failed during startup, each logged "waiting for N
+          # other plugins to finish before shutting down the process", and then
+          # THE PROCESS NEVER EXITED. The container stayed Running with exit
+          # code 0 and zero restarts for over ten minutes.
+          #
+          # /.backstage/health/v1/liveness returns 200 UNCONDITIONALLY -- its
+          # implementation is a bare `return {status: 200}` with no state
+          # behind it -- so a livenessProbe pointed there can never restart
+          # this pod. /.backstage/health/v1/readiness only flips to 200 on the
+          # startup hook, which in that state never fires.
+          #
+          # So without this probe Kubernetes sees a healthy container that is
+          # permanently NotReady, never restarts it, and `kubectl rollout
+          # status` hangs until it times out. The startupProbe is what turns
+          # that silent hang into an honest CrashLoopBackOff.
+          #
+          # 30 x 10s = 5 minutes of budget. Generous on purpose: it covers the
+          # first boot, which creates a database per plugin and applies 16
+          # fleet migrations. A healthy production image is far quicker than
+          # that -- measured ready in about 5 seconds, because unlike `yarn
+          # start` there is nothing to compile.
+          startupProbe:
+            httpGet:
+              path: /.backstage/health/v1/readiness
+              port: 7007
+            periodSeconds: 10
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /.backstage/health/v1/readiness
+              port: 7007
+            periodSeconds: 10
+          livenessProbe:
+            # Deliberately the readiness path, for the reason above.
+            httpGet:
+              path: /.backstage/health/v1/readiness
+              port: 7007
+            periodSeconds: 20
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: '250m'
+              memory: '768Mi'
+            limits:
+              memory: '2Gi'
+      volumes:
+        - name: portal-config
+          secret:
+            secretName: portal-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fleet-portal
+  namespace: fleet
+spec:
+  selector:
+    app: fleet-portal
+  ports:
+    - port: 7007
+      targetPort: 7007
