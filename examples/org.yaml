@@ -1,10 +1,14 @@
 ---
 # https://backstage.io/docs/features/software-catalog/descriptor-format#kind-user
+# The identity every visitor signs in as while guest is the only sign-in
+# method: auth.providers.guest.userEntityRef in app-config.yaml points here.
 apiVersion: backstage.io/v1alpha1
 kind: User
 metadata:
   name: guest
 spec:
+  profile:
+    displayName: Guest
   memberOf: [guests]
 ---
 # https://backstage.io/docs/features/software-catalog/descriptor-format#kind-group
@@ -16,8 +20,9 @@ spec:
   type: team
   children: []
 ---
-# Your GitHub user. The name must match your GitHub login (case-insensitive),
-# because app-config.yaml uses the `usernameMatchingUserEntityName` resolver.
+# Kept though nothing signs in as it any more: GitHub sign-in, whose
+# `usernameMatchingUserEntityName` resolver matched this name, was removed
+# 2026-09-27. Entra ID, the planned replacement, will need real User entities.
 apiVersion: backstage.io/v1alpha1
 kind: User
 metadata:

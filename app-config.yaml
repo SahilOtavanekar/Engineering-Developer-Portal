@@ -167,10 +167,8 @@ backend:
 #         - username: <bitbucket username, NOT an email>
 #           appPassword: <app password>
 #
-# `integrations.github` was removed on 2026-09-02: nothing consumed it. GitHub
-# sign-in reads `auth.providers.github` below, which is a different key, and no
-# catalog location points at github.com. A `${GITHUB_TOKEN}` placeholder that
-# feeds nothing reads as a required credential and is not one.
+# `integrations.github` was removed on 2026-09-02: nothing consumed it, and no
+# catalog location points at github.com. GitHub sign-in followed on 2026-09-27.
 
 # `proxy:` is deliberately absent. `plugin-proxy-backend` is still loaded and
 # needs no config to start; add a `proxy.endpoints` block here when something
@@ -181,18 +179,18 @@ auth:
   environment: development
   # see https://backstage.io/docs/auth/ to learn about auth providers
   providers:
-    github:
-      development:
-        clientId: ${AUTH_GITHUB_CLIENT_ID}
-        clientSecret: ${AUTH_GITHUB_CLIENT_SECRET}
-        signIn:
-          resolvers:
-            # Matches the GitHub login against a User entity of the same name in
-            # the catalog. See examples/org.yaml for how to register your user.
-            - resolver: usernameMatchingUserEntityName
-
-    # See https://backstage.io/docs/auth/guest/provider
-    guest: {}
+    # Guest is the only sign-in method. GitHub was removed 2026-09-27 at the
+    # product owner's direction; Entra ID is the planned replacement. Everyone
+    # signs in as one shared identity.
+    # A production build (NODE_ENV=production) additionally needs
+    # guest.dangerouslyAllowOutsideDevelopment: true, which the Helm chart sets
+    # (portal.auth.allowGuestSignIn). See https://backstage.io/docs/auth/guest/provider
+    guest:
+      # The User in examples/org.yaml. Left at its default the provider signs
+      # in as user:development/guest, which no catalog entity matches, so the
+      # header, the settings page and every entity page asked the catalog for
+      # a profile and got a 404 -- on every page load, for every visitor.
+      userEntityRef: user:default/guest
   # see https://backstage.io/docs/ai/mcp-actions#client-id-metadata-documents
   # to learn more about client id metadata documents
   clientIdMetadataDocuments:
@@ -211,9 +209,9 @@ catalog:
     - allow: [Component, System, API, Resource, Location]
   locations:
     # The portal's people and groups. Not example data despite the folder name:
-    # `sahilotavanekar` is what the `usernameMatchingUserEntityName` sign-in
-    # resolver matches a GitHub login against, and `unowned` is the placeholder
-    # group every repository without a confirmed owner is counted against.
+    # `unowned` is the placeholder group every repository without a confirmed
+    # owner is counted against. `sahilotavanekar` no longer backs a sign-in
+    # (GitHub was removed 2026-09-27) but is kept for Entra ID to match.
     # File locations are relative to the backend process, typically
     # `packages/backend`.
     - type: file
