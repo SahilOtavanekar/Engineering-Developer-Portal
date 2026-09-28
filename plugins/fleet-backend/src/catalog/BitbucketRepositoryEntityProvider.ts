@@ -24,6 +24,11 @@ import { toEntityName } from './entityName';
 import { toUserEntityRef } from './userEntityName';
 import type { BitbucketClient, BitbucketRepository } from '../bitbucket/types';
 import type { StoredOwnershipCandidate } from '../database/OwnershipStore';
+import {
+  refreshWithOwnershipCatchUp,
+  type OwnershipCatchUpOptions,
+  type OwnershipReady,
+} from './ownershipCatchUp';
 
 /** Namespace for annotations this provider owns. */
 const ANNOTATION_NS = 'fleet.backstage.io';
@@ -196,6 +201,9 @@ export interface BitbucketRepositoryEntityProviderOptions {
   logger: LoggerService;
   /** Absent means every repository keeps the placeholder owner. */
   owners?: ProposedOwnerSource;
+  /** When given, a first boot re-registers as soon as ownership resolves. */
+  ownershipReady?: OwnershipReady;
+  ownershipCatchUp?: OwnershipCatchUpOptions;
   /** Absent means every repository keeps `service` / `unknown`. */
   classifications?: ClassificationSource;
 }
@@ -233,6 +241,8 @@ export class BitbucketRepositoryEntityProvider implements EntityProvider {
   private readonly logger: LoggerService;
   private readonly owners?: ProposedOwnerSource;
   private readonly classifications?: ClassificationSource;
+  private readonly ownershipReady?: OwnershipReady;
+  private readonly ownershipCatchUp?: OwnershipCatchUpOptions;
   private connection?: EntityProviderConnection;
 
   constructor(options: BitbucketRepositoryEntityProviderOptions) {
@@ -242,6 +252,8 @@ export class BitbucketRepositoryEntityProvider implements EntityProvider {
     this.logger = options.logger;
     this.owners = options.owners;
     this.classifications = options.classifications;
+    this.ownershipReady = options.ownershipReady;
+    this.ownershipCatchUp = options.ownershipCatchUp;
   }
 
   /**
@@ -257,6 +269,7 @@ export class BitbucketRepositoryEntityProvider implements EntityProvider {
       scheduler: SchedulerService;
       owners?: ProposedOwnerSource;
       classifications?: ClassificationSource;
+      ownershipReady?: OwnershipReady;
     },
   ): BitbucketRepositoryEntityProvider[] {
     const root = config.getOptionalConfig('fleet.bitbucket');
@@ -290,6 +303,7 @@ export class BitbucketRepositoryEntityProvider implements EntityProvider {
           logger: options.logger,
           owners: options.owners,
           classifications: options.classifications,
+          ownershipReady: options.ownershipReady,
           client: BitbucketCloudClient.fromIntegration(integration.config, {
             logger: options.logger,
           }),
@@ -308,7 +322,14 @@ export class BitbucketRepositoryEntityProvider implements EntityProvider {
       id: this.getProviderName(),
       fn: async () => {
         try {
-          await this.refresh();
+          await refreshWithOwnershipCatchUp({
+            workspace: this.workspace,
+            label: 'Bitbucket repository ingestion',
+            refresh: () => this.refresh(),
+            ready: this.ownershipReady,
+            logger: this.logger,
+            catchUp: this.ownershipCatchUp,
+          });
         } catch (error) {
           // Throwing here would kill the scheduled task for good; the catalog
           // keeps whatever was last applied and we try again next tick.

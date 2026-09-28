@@ -27,6 +27,7 @@ import { readOwnershipRegister } from './ownership/ownershipRegister';
 import { OwnershipService } from './ownership/OwnershipService';
 import { createRouter } from './router';
 import { describeBackoff, shouldSkip } from './sync/backoff';
+import { incompletePrerequisites } from './sync/readiness';
 import { DEFAULT_BANDS, ScoringEngine } from './scoring/ScoringEngine';
 import { ScoringService } from './scoring/ScoringService';
 import { activeDevelopmentScorer } from './scoring/scorers/activeDevelopment';
@@ -313,7 +314,12 @@ export const fleetPlugin = createBackendPlugin({
           // are already recorded in sync_state, so we log and wait for the
           // next tick instead.
           const guard =
-            (label: string, resource: string, run: () => Promise<unknown>) =>
+            (
+              label: string,
+              resource: string,
+              run: () => Promise<unknown>,
+              options: { after?: string[] } = {},
+            ) =>
             async () => {
               // Backoff lives here rather than in each service so every
               // scheduled task gets it: a resource that keeps failing should
@@ -326,6 +332,29 @@ export const fleetPlugin = createBackendPlugin({
                   )}`,
                 );
                 return;
+              }
+
+              // Ordering by initialDelay alone is a race: on a fresh install a
+              // pass whose inputs are still being fetched runs anyway, on
+              // partial facts. For scoring that is permanent -- score history
+              // is append-only -- so a dependent pass waits until each
+              // prerequisite has FINISHED at least once (see readiness.ts).
+              // Only a first boot ever waits: afterwards every prerequisite
+              // has finished, and later failures do not re-close the gate.
+              if (options.after?.length) {
+                const live = await repositories.listLive(workspace);
+                const waiting = await incompletePrerequisites(
+                  syncState,
+                  options.after,
+                  live.length,
+                );
+                if (waiting.length > 0) {
+                  logger.info(
+                    `${label} deferred for '${workspace}': waiting for the ` +
+                      `first complete run of ${waiting.join(', ')}`,
+                  );
+                  return;
+                }
               }
 
               try {
@@ -516,6 +545,15 @@ export const fleetPlugin = createBackendPlugin({
               'Branch policy',
               BranchPolicyService.resourceKey(workspace),
               () => branchPolicy.classifyAll(workspace),
+              // Without pull requests stored, every repository looks like one
+              // that merges nothing, and every mainline commit is classified
+              // as pushed straight to main.
+              {
+                after: [
+                  CommitIngestionService.resourceKey(workspace),
+                  PullRequestIngestionService.resourceKey(workspace),
+                ],
+              },
             ),
           });
 
@@ -595,6 +633,9 @@ export const fleetPlugin = createBackendPlugin({
               'Pull request size',
               PullRequestSizeService.resourceKey(workspace),
               () => pullRequestSize.measure(workspace),
+              // Otherwise a sweep over a half-ingested list finds nothing
+              // pending, records success, and scoring reads that as finished.
+              { after: [PullRequestIngestionService.resourceKey(workspace)] },
             ),
           });
 
@@ -602,10 +643,23 @@ export const fleetPlugin = createBackendPlugin({
             id: ScoringService.resourceKey(workspace),
             ...schedule,
             // Last in the chain: scores are only as good as the facts beneath
-            // them, so this runs after both ingestion passes have had a turn.
+            // them. The delay is only a first guess; `after` is what actually
+            // holds scoring back until every input has finished once. Detail
+            // is gated per repository inside ScoringService instead, so one
+            // unreachable repository cannot hold back the other 105.
             initialDelay: { seconds: 150 },
-            fn: guard('Scoring', ScoringService.resourceKey(workspace), () =>
-              scoring.scoreAll(workspace),
+            fn: guard(
+              'Scoring',
+              ScoringService.resourceKey(workspace),
+              () => scoring.scoreAll(workspace),
+              {
+                after: [
+                  CommitIngestionService.resourceKey(workspace),
+                  PullRequestIngestionService.resourceKey(workspace),
+                  BranchPolicyService.resourceKey(workspace),
+                  PullRequestSizeService.resourceKey(workspace),
+                ],
+              },
             ),
           });
         }

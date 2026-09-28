@@ -1,4 +1,5 @@
 import type { LoggerService } from '@backstage/backend-plugin-api';
+import { BitbucketRateLimitError } from '../bitbucket/errors';
 import type { OwnershipProposal, OwnershipResolver } from './types';
 
 export interface CompositeOwnershipResolverOptions {
@@ -28,6 +29,12 @@ export class CompositeOwnershipResolver implements OwnershipResolver {
   private readonly logger?: LoggerService;
   /** The resolver that produced the last proposal, for `source`. */
   private lastUsed?: OwnershipResolver;
+  /**
+   * Sources that met a rate limit this pass, skipped until the next one. The
+   * quota is the credential's, so asking again for the next repository gets
+   * the same 429 -- after the client has spent its retries waiting on it.
+   */
+  private readonly rateLimited = new Set<OwnershipResolver>();
 
   constructor(options: CompositeOwnershipResolverOptions) {
     if (options.resolvers.length === 0) {
@@ -49,6 +56,7 @@ export class CompositeOwnershipResolver implements OwnershipResolver {
   }
 
   async prepare(workspace: string): Promise<void> {
+    this.rateLimited.clear();
     for (const resolver of this.resolvers) {
       await resolver.prepare?.(workspace);
     }
@@ -63,10 +71,14 @@ export class CompositeOwnershipResolver implements OwnershipResolver {
     let firstWithCandidatesFrom: OwnershipResolver | undefined;
 
     for (const resolver of this.resolvers) {
+      if (this.rateLimited.has(resolver)) continue;
       let proposal: OwnershipProposal;
       try {
         proposal = await resolver.resolve(repositoryId, since, windowDays);
       } catch (error) {
+        if (error instanceof BitbucketRateLimitError) {
+          this.rateLimited.add(resolver);
+        }
         // One source failing must not cost the repository every other source.
         this.logger?.warn(
           `Ownership resolver '${resolver.source}' failed for repository ` +

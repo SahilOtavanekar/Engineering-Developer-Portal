@@ -12,6 +12,7 @@ import {
   type FleetTestDatabase,
 } from '../__testUtils__/database';
 import { PullRequestSizeService } from './PullRequestSizeService';
+import { BitbucketRateLimitError } from '../bitbucket/errors';
 
 const NOW = new Date('2026-09-09T12:00:00.000Z');
 const SINCE = new Date('2026-06-11T12:00:00.000Z');
@@ -267,6 +268,34 @@ describe('PullRequestSizeService', () => {
     expect(seen).toBeGreaterThanOrEqual(28);
     expect(measuredAtRequest28).toBeGreaterThanOrEqual(25);
     expect(summary.measured).toBe(30);
+  });
+
+  it('stops on a rate limit but keeps what it already measured', async () => {
+    const id = await seed(
+      'alpha',
+      Array.from({ length: 30 }, () => pr()),
+    );
+    let seen = 0;
+    const limited = new FakeBitbucketClient();
+    limited.listPullRequestDiffstat = async () => {
+      seen++;
+      // Past one full batch of 25, with one more result still unwritten.
+      if (seen === 27) {
+        throw new BitbucketRateLimitError('https://api.bitbucket.org/x', '');
+      }
+      return [
+        { path: 'src/a.ts', linesAdded: 3, linesRemoved: 1, status: 'added' },
+      ];
+    };
+    client = limited;
+
+    await expect(build().measure('demandai', NOW)).rejects.toThrow(
+      BitbucketRateLimitError,
+    );
+
+    expect(seen).toBe(27);
+    // 26 were paid for; the partial batch is flushed rather than discarded.
+    expect((await pullRequests.sizeSummary(id, SINCE)).measured).toBe(26);
   });
 
   it('names its sync_state resource per workspace', () => {

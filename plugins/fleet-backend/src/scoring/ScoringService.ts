@@ -42,6 +42,12 @@ export interface ScoringServiceOptions {
 export interface ScoringSummary {
   scored: number;
   failures: number;
+  /**
+   * Repositories given no score because their detail (branches, root listing)
+   * has never been fetched. Not failures: nothing went wrong in scoring, the
+   * facts simply are not there yet.
+   */
+  awaitingDetail: number;
   bands: Record<string, number>;
 }
 
@@ -106,6 +112,7 @@ export class ScoringService {
     const bands: Record<string, number> = {};
     let scored = 0;
     let failures = 0;
+    let awaitingDetail = 0;
 
     try {
       const live = await this.repositories.listLive(workspace);
@@ -134,6 +141,16 @@ export class ScoringService {
       }
 
       for (const repository of live) {
+        // No score until this repository's detail has been fetched at least
+        // once. Scoring it anyway is not "unmeasured" but WRONG: with no
+        // branches stored, stale branches counts zero -- full marks -- and the
+        // row goes into append-only history for ever. The root listing is the
+        // detail pass's last write per repository, so its presence means the
+        // branches before it were stored too.
+        if (repository.root_files === null) {
+          awaitingDetail++;
+          continue;
+        }
         try {
           const [activity, branches, pipelines, reviews, size, policy] =
             await Promise.all([
@@ -199,13 +216,17 @@ export class ScoringService {
         );
       }
 
+      const awaiting =
+        awaitingDetail > 0
+          ? `; ${awaitingDetail} not scored, detail never fetched`
+          : '';
       this.logger.info(
         `Scored ${scored} repositories in '${workspace}' ` +
           `(${Object.entries(bands)
             .map(([band, n]) => `${n} ${band}`)
-            .join(', ')})`,
+            .join(', ')})${awaiting}`,
       );
-      return { scored, failures, bands };
+      return { scored, failures, awaitingDetail, bands };
     } catch (error) {
       await this.syncState.recordFailure(resource, error as Error, now);
       throw error;

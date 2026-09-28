@@ -1,5 +1,5 @@
 import { BitbucketCloudClient } from './BitbucketCloudClient';
-import { BitbucketApiError } from './errors';
+import { BitbucketApiError, BitbucketRateLimitError } from './errors';
 
 const API = 'https://api.bitbucket.org/2.0';
 
@@ -43,10 +43,30 @@ function stubFetch(...responses: Response[]) {
   return { impl: impl as unknown as typeof fetch, calls };
 }
 
-function client(fetchImpl: typeof fetch) {
+/** Records the waits a retry asked for, without actually waiting. */
+const noWait = async () => {};
+
+function client(
+  fetchImpl: typeof fetch,
+  sleep: (ms: number) => Promise<void> = noWait,
+) {
   return new BitbucketCloudClient({
     credentials: { username: 'someone@example.com', appPassword: 'secret' },
     fetchImpl,
+    sleep,
+  });
+}
+
+/** A response carrying headers, which jsonResponse deliberately omits. */
+function withHeaders(
+  response: Response,
+  headers: Record<string, string>,
+): Response {
+  const lower = Object.fromEntries(
+    Object.entries(headers).map(([k, v]) => [k.toLowerCase(), v]),
+  );
+  return Object.assign(response, {
+    headers: { get: (name: string) => lower[name.toLowerCase()] ?? null },
   });
 }
 
@@ -569,11 +589,16 @@ requires = ["setuptools"]
     });
 
     it('still raises anything that is not a 403 or 404', async () => {
-      const { impl } = stubFetch(jsonResponse({ type: 'error' }, 500));
+      // A 500 is retried once before it reaches the caller.
+      const { impl, calls } = stubFetch(
+        jsonResponse({ type: 'error' }, 500),
+        jsonResponse({ type: 'error' }, 500),
+      );
 
       await expect(
         client(impl).listRepositoryPermissions('demandai', 'crm'),
       ).rejects.toThrow(BitbucketApiError);
+      expect(calls).toHaveLength(2);
     });
 
     it('follows pagination', async () => {
@@ -753,6 +778,117 @@ requires = ["setuptools"]
         client(impl).listDeployments('demandai', ''),
       ).rejects.toThrow('repository slug are required');
       expect(calls).toHaveLength(0);
+    });
+  });
+
+  describe('retrying', () => {
+    const listing = () => jsonResponse({ values: [repositoryPayload] });
+
+    it('retries a 429 and returns the answer that follows', async () => {
+      const waits: number[] = [];
+      const { impl, calls } = stubFetch(jsonResponse({}, 429), listing());
+      const subject = client(impl, async ms => {
+        waits.push(ms);
+      });
+
+      const repos = await subject.listRepositories('demandai');
+
+      expect(repos).toHaveLength(1);
+      expect(calls).toHaveLength(2);
+      expect(waits).toEqual([2000]);
+      // Retries are real requests against the quota, so they are counted.
+      expect(subject.requestCount).toBe(2);
+    });
+
+    it('retries a 5xx once', async () => {
+      const waits: number[] = [];
+      const { impl } = stubFetch(jsonResponse({}, 503), listing());
+
+      await client(impl, async ms => {
+        waits.push(ms);
+      }).listRepositories('demandai');
+
+      expect(waits).toEqual([2000]);
+    });
+
+    it('honours Retry-After when Bitbucket sends it', async () => {
+      const waits: number[] = [];
+      const { impl } = stubFetch(
+        withHeaders(jsonResponse({}, 429), { 'Retry-After': '7' }),
+        listing(),
+      );
+
+      await client(impl, async ms => {
+        waits.push(ms);
+      }).listRepositories('demandai');
+
+      expect(waits).toEqual([7000]);
+    });
+
+    it('does not wait out a Retry-After beyond the ceiling', async () => {
+      // An hour-long reset is the scheduler's backoff to handle; holding the
+      // pass open for it would only block the next scheduled run.
+      const waits: number[] = [];
+      const { impl, calls } = stubFetch(
+        withHeaders(jsonResponse({}, 429), { 'Retry-After': '3600' }),
+      );
+
+      await expect(
+        client(impl, async ms => {
+          waits.push(ms);
+        }).listRepositories('demandai'),
+      ).rejects.toThrow(BitbucketRateLimitError);
+      expect(calls).toHaveLength(1);
+      expect(waits).toEqual([]);
+    });
+
+    it('gives up on a persistent 429 with a rate-limit error', async () => {
+      const waits: number[] = [];
+      const { impl, calls } = stubFetch(
+        ...Array.from({ length: 4 }, () => jsonResponse({}, 429)),
+      );
+
+      const failure = client(impl, async ms => {
+        waits.push(ms);
+      }).listRepositories('demandai');
+
+      await expect(failure).rejects.toThrow(BitbucketRateLimitError);
+      await expect(failure).rejects.toMatchObject({ status: 429 });
+      expect(calls).toHaveLength(4);
+      expect(waits).toEqual([2000, 4000, 8000]);
+    });
+
+    it('does not retry a 555, which Bitbucket sends when it gave up', async () => {
+      const { impl, calls } = stubFetch(jsonResponse({}, 555));
+
+      await expect(client(impl).listRepositories('demandai')).rejects.toThrow(
+        BitbucketApiError,
+      );
+      expect(calls).toHaveLength(1);
+    });
+
+    it('does not retry a client error', async () => {
+      const { impl, calls } = stubFetch(jsonResponse({}, 401));
+
+      await expect(client(impl).listRepositories('demandai')).rejects.toThrow(
+        BitbucketApiError,
+      );
+      expect(calls).toHaveLength(1);
+    });
+
+    it('raises a persistent 5xx after one retry, as an ordinary error', async () => {
+      // An outage: retrying each repository three times would hold the pass
+      // past its timeout while spending four requests per repository.
+      const { impl, calls } = stubFetch(
+        jsonResponse({}, 500),
+        jsonResponse({}, 500),
+      );
+
+      const failure = client(impl).listRepositories('demandai');
+
+      await expect(failure).rejects.toThrow(BitbucketApiError);
+      await expect(failure).rejects.not.toBeInstanceOf(BitbucketRateLimitError);
+      expect(calls).toHaveLength(2);
     });
   });
 });

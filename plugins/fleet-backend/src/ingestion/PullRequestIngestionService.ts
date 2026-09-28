@@ -3,6 +3,8 @@ import type { BitbucketClient } from '../bitbucket/types';
 import type { PullRequestStore } from '../database/PullRequestStore';
 import type { RepositoryStore } from '../database/RepositoryStore';
 import type { SyncStateStore } from '../database/SyncStateStore';
+import { partialFailure } from '../sync/readiness';
+import { BitbucketRateLimitError } from '../bitbucket/errors';
 
 export interface PullRequestIngestionServiceOptions {
   client: BitbucketClient;
@@ -81,6 +83,9 @@ export class PullRequestIngestionService {
           );
           written += await this.pullRequests.upsertMany(repository.id, fetched);
         } catch (error) {
+          // The quota belongs to the credential, so every remaining
+          // repository would get the same 429: stop the pass instead.
+          if (error instanceof BitbucketRateLimitError) throw error;
           failures++;
           this.logger.warn(
             `Pull request ingestion failed for '${workspace}/${
@@ -105,7 +110,7 @@ export class PullRequestIngestionService {
       } else {
         await this.syncState.recordFailure(
           resource,
-          new Error(`${failures} repositories failed`),
+          partialFailure(failures),
           now,
         );
       }

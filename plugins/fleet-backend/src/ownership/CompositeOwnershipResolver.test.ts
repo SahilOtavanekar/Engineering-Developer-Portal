@@ -1,5 +1,6 @@
 import { mockServices } from '@backstage/backend-test-utils';
 import { AuthorIndex, normaliseName } from './identity';
+import { BitbucketRateLimitError } from '../bitbucket/errors';
 import { CompositeOwnershipResolver } from './CompositeOwnershipResolver';
 import type { OwnershipProposal, OwnershipResolver } from './types';
 
@@ -166,6 +167,63 @@ describe('CompositeOwnershipResolver', () => {
     await expect(composite.resolve(1, SINCE, WINDOW)).resolves.toMatchObject({
       candidates: [],
       windowDays: WINDOW,
+    });
+  });
+
+  describe('a source that meets a rate limit', () => {
+    function counting(error: Error) {
+      let calls = 0;
+      const source: OwnershipResolver = {
+        source: 'repository-admin',
+        resolve: async () => {
+          calls++;
+          throw error;
+        },
+      };
+      return { source, calls: () => calls };
+    }
+    const commits = () =>
+      resolver('commit-history', { candidates: [ADA], proposed: ADA });
+
+    it('is skipped for the rest of the pass, and the next source answers', async () => {
+      const admin = counting(
+        new BitbucketRateLimitError('https://api.bitbucket.org/x', ''),
+      );
+      const composite = build([admin.source, commits()]);
+      await composite.prepare('demandai');
+
+      const first = await composite.resolve(1, SINCE, WINDOW);
+      const second = await composite.resolve(2, SINCE, WINDOW);
+
+      expect(first.proposed).toEqual(ADA);
+      expect(second.proposed).toEqual(ADA);
+      expect(admin.calls()).toBe(1);
+    });
+
+    it('is asked again on the next pass', async () => {
+      const admin = counting(
+        new BitbucketRateLimitError('https://api.bitbucket.org/x', ''),
+      );
+      const composite = build([admin.source, commits()]);
+      await composite.prepare('demandai');
+      await composite.resolve(1, SINCE, WINDOW);
+
+      await composite.prepare('demandai');
+      await composite.resolve(2, SINCE, WINDOW);
+
+      expect(admin.calls()).toBe(2);
+    });
+
+    it('is not how an ordinary failure is treated', async () => {
+      // A 404 for one repository says nothing about the next.
+      const admin = counting(new Error('not found'));
+      const composite = build([admin.source, commits()]);
+      await composite.prepare('demandai');
+
+      await composite.resolve(1, SINCE, WINDOW);
+      await composite.resolve(2, SINCE, WINDOW);
+
+      expect(admin.calls()).toBe(2);
     });
   });
 

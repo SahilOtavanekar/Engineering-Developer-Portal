@@ -3,6 +3,7 @@ import type { BitbucketClient } from '../bitbucket/types';
 import type { BranchStore } from '../database/BranchStore';
 import type { RepositoryStore } from '../database/RepositoryStore';
 import type { SyncStateStore } from '../database/SyncStateStore';
+import { BitbucketRateLimitError } from '../bitbucket/errors';
 
 export interface BranchDivergenceServiceOptions {
   repositories: RepositoryStore;
@@ -128,6 +129,17 @@ export class BranchDivergenceService {
           summary.measured++;
           if (divergence.commits > 0) summary.diverged++;
         } catch (error) {
+          // Unlike a deleted branch, a 429 will be the answer for every branch
+          // left. Stop, and record it: this pass writes no attempt up front,
+          // so without this the failure would leave no trace in sync_state.
+          if (error instanceof BitbucketRateLimitError) {
+            await this.syncState.recordFailure(
+              BranchDivergenceService.resourceKey(workspace),
+              error,
+              checkedAt,
+            );
+            throw error;
+          }
           // One unreachable branch must not abandon the estate: a branch can
           // be deleted between the listing and the measurement, and that is
           // ordinary rather than exceptional.

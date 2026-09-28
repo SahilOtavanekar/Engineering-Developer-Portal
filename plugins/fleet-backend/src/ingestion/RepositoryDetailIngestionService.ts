@@ -7,6 +7,8 @@ import type { DeploymentStore } from '../database/DeploymentStore';
 import type { PipelineStore } from '../database/PipelineStore';
 import type { RepositoryStore } from '../database/RepositoryStore';
 import type { SyncStateStore } from '../database/SyncStateStore';
+import { partialFailure } from '../sync/readiness';
+import { BitbucketRateLimitError } from '../bitbucket/errors';
 
 export interface RepositoryDetailIngestionServiceOptions {
   client: BitbucketClient;
@@ -191,6 +193,9 @@ export class RepositoryDetailIngestionService {
             classifiedCount++;
           }
         } catch (error) {
+          // The quota belongs to the credential, so every remaining
+          // repository would get the same 429: stop the pass instead.
+          if (error instanceof BitbucketRateLimitError) throw error;
           // One unreachable repository must not abandon the rest.
           failures++;
           this.logger.warn(
@@ -221,7 +226,7 @@ export class RepositoryDetailIngestionService {
       } else {
         await this.syncState.recordFailure(
           resource,
-          new Error(`${failures} repositories failed`),
+          partialFailure(failures),
           now,
         );
       }

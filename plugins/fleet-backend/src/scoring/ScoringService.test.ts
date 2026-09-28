@@ -103,8 +103,20 @@ describe('ScoringService', () => {
     await db.client('sync_state').delete();
   });
 
+  /**
+   * Stands in for the detail pass having reached every stored repository.
+   * ScoringService gives no score to a repository whose detail has never been
+   * fetched, so a fixture that skips this is testing that gate, not scoring.
+   */
+  async function detailFetched() {
+    await db
+      .client('repository')
+      .update({ root_files: JSON.stringify([]), has_readme: false });
+  }
+
   async function seed(slug: string, commitCount: number, authors: number) {
     await repositories.syncWorkspace('demandai', [repository(slug)], T1);
+    await detailFetched();
     const stored = await repositories.findByEntityRef(
       `component:default/${slug}`,
     );
@@ -139,6 +151,7 @@ describe('ScoringService', () => {
 
   it('marks a dormant repository at risk', async () => {
     await repositories.syncWorkspace('demandai', [repository('idle')], T1);
+    await detailFetched();
     const stored = await repositories.findByEntityRef('component:default/idle');
 
     await build().scoreAll('demandai', T1);
@@ -166,10 +179,57 @@ describe('ScoringService', () => {
       [repository('busy'), repository('idle')],
       T1,
     );
+    await detailFetched();
 
     const summary = await build().scoreAll('demandai', T1);
 
     expect(summary.bands).toEqual({ excellent: 1, 'at-risk': 1 });
+  });
+
+  describe('a repository whose detail has never been fetched', () => {
+    // The first-boot race: scoring ran before the detail pass reached a
+    // repository, found no branches, counted zero stale branches -- full
+    // marks -- and wrote that into append-only history.
+    it('gets no score row at all, rather than a wrong one', async () => {
+      await repositories.syncWorkspace('demandai', [repository('fresh')], T1);
+      const stored = await repositories.findByEntityRef(
+        'component:default/fresh',
+      );
+
+      const summary = await build().scoreAll('demandai', T1);
+
+      expect(summary).toMatchObject({
+        scored: 0,
+        failures: 0,
+        awaitingDetail: 1,
+      });
+      expect(await scores.latest(stored!.id)).toBeUndefined();
+    });
+
+    it('does not hold back the repositories whose detail is in', async () => {
+      const ready = await seed('ready', 10, 2);
+      // Arrives after seed() marked the estate fetched, so it has none.
+      await repositories.syncWorkspace(
+        'demandai',
+        [repository('ready'), repository('unreached')],
+        T1,
+      );
+
+      const summary = await build().scoreAll('demandai', T1);
+
+      expect(summary).toMatchObject({ scored: 1, awaitingDetail: 1 });
+      expect(await scores.latest(ready)).toBeDefined();
+    });
+
+    it('is still a successful pass, not a failed one', async () => {
+      await repositories.syncWorkspace('demandai', [repository('fresh')], T1);
+
+      await build().scoreAll('demandai', T1);
+
+      const state = await syncState.get(ScoringService.resourceKey('demandai'));
+      expect(state?.last_success_at).toBeTruthy();
+      expect(state?.consecutive_failures).toBe(0);
+    });
   });
 
   it('appends history rather than overwriting the previous score', async () => {

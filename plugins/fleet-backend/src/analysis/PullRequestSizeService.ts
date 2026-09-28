@@ -6,6 +6,8 @@ import type {
 } from '../database/PullRequestStore';
 import type { SyncStateStore } from '../database/SyncStateStore';
 import { summariseDiffstat } from './diffstat';
+import { partialFailure } from '../sync/readiness';
+import { BitbucketRateLimitError } from '../bitbucket/errors';
 
 export interface PullRequestSizeServiceOptions {
   client: BitbucketClient;
@@ -141,6 +143,12 @@ export class PullRequestSizeService {
           batch.push({ id: row.id, ...summary });
           if (batch.length >= WRITE_BATCH) await flush();
         } catch (error) {
+          // Keep what this sweep already paid for, then stop: every pull
+          // request left would get the same 429.
+          if (error instanceof BitbucketRateLimitError) {
+            await flush();
+            throw error;
+          }
           failures++;
           this.logger.warn(
             `Could not measure ${row.workspace}/${row.slug}#${row.prId}: ${
@@ -161,7 +169,7 @@ export class PullRequestSizeService {
       } else {
         await this.syncState.recordFailure(
           resource,
-          new Error(`${failures} pull requests could not be measured`),
+          partialFailure(failures, 'pull requests could not be measured'),
           now,
         );
       }
