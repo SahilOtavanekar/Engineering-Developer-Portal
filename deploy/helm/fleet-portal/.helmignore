@@ -1,0 +1,7 @@
+.DS_Store
+.git/
+*.swp
+*.bak
+*.tmp
+# Credentials never belong in a packaged chart.
+secrets*.yaml

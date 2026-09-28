@@ -1,0 +1,45 @@
+# PROD -- NOT WIRED YET. A ready-to-fill template; nothing deploys here until
+# every REPLACE is filled and deploy/environments/prod/secrets.yaml exists.
+#
+# BEFORE PROD: CLAUDE.md open decision 6 is still open. The portal runs
+# allow-all-policy and serves per-person productivity figures, so it should not
+# be shown outside the team until Entra ID + RBAC land.
+
+environment: prod
+
+image:
+  repository: REPLACE_ACCOUNT_ID.dkr.ecr.REPLACE_REGION.amazonaws.com/fleet-portal
+  # Promote the exact tag that passed staging.
+  tag: REPLACE_WITH_TAG
+
+ecr:
+  pullSecret:
+    enabled: true
+
+portal:
+  auth:
+    # The only sign-in method until Entra ID lands (GitHub removed
+    # 2026-09-27). Anyone reaching the host is signed in; see open decision 6.
+    allowGuestSignIn: true
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      memory: 2Gi
+
+ingress:
+  enabled: true
+  className: nginx
+  host: REPLACE.portal.example.com
+  annotations: {}
+  tls:
+    enabled: true
+    secretName: fleet-portal-prod-tls
+
+postgresql:
+  mode: external
+  external:
+    host: REPLACE.xxxxxx.REPLACE_REGION.rds.amazonaws.com
+    port: 5432
+    sslMode: no-verify

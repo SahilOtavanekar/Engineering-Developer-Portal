@@ -10,3 +10,4 @@ e2e-test-report
 # "SyntaxError: Invalid or unexpected token". Nothing in tsc, lint or
 # prettier:check catches it -- only an actual app build does.
 packages/app/public/index.html
+deploy/helm/fleet-portal/templates

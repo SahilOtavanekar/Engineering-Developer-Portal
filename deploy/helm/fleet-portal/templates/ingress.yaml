@@ -1,0 +1,35 @@
+{{- if .Values.ingress.enabled }}
+# The backend runs allow-all-policy and /api/fleet/productivity serves
+# per-person figures, so this publishes them to anyone who can reach the host
+# and sign in (CLAUDE.md open decision 6).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "fleet-portal.fullname" . }}
+  labels:
+    {{- include "fleet-portal.labels" . | nindent 4 }}
+    app.kubernetes.io/component: portal
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ .Values.ingress.host | quote }}
+      secretName: {{ required "ingress.tls.secretName is required when ingress.tls.enabled" .Values.ingress.tls.secretName }}
+  {{- end }}
+  rules:
+    - host: {{ required "ingress.host is required when ingress.enabled" .Values.ingress.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "fleet-portal.fullname" . }}
+                port:
+                  name: http
+{{- end }}

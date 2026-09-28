@@ -1,0 +1,168 @@
+# The portal: one container serving both the React app and the API on 7007.
+# The command, args and probes carry lessons from k8s/portal.yaml, where each
+# one was found on a real cluster -- read the comments before changing them.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "fleet-portal.fullname" . }}
+  labels:
+    {{- include "fleet-portal.labels" . | nindent 4 }}
+    app.kubernetes.io/component: portal
+spec:
+  replicas: {{ .Values.portal.replicas }}
+  selector:
+    matchLabels:
+      {{- include "fleet-portal.selectorLabels" (dict "root" . "component" "portal") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "fleet-portal.labels" . | nindent 8 }}
+        {{- include "fleet-portal.selectorLabels" (dict "root" . "component" "portal") | nindent 8 }}
+      annotations:
+        # Roll the pod when config or credentials change; a mounted file
+        # updating underneath a running Backstage is not re-read by every plugin.
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- with .Values.portal.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- if or .Values.ecr.pullSecret.enabled .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- if .Values.ecr.pullSecret.enabled }}
+        - name: {{ .Values.ecr.pullSecret.name }}
+        {{- end }}
+        {{- range .Values.imagePullSecrets }}
+        - name: {{ .name }}
+        {{- end }}
+      {{- end }}
+      securityContext:
+        # The image runs as the `node` user (uid 1000).
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        # Waits for Postgres to accept TCP. Without it, a portal that starts
+        # before its database fails plugin startup and hangs NotReady until the
+        # startupProbe gives up five minutes later. Uses the portal image, so
+        # it costs no extra pull.
+        - name: wait-for-postgres
+          image: {{ include "fleet-portal.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - node
+            - -e
+            - |
+              const net = require('net');
+              const host = process.env.POSTGRES_HOST, port = Number(process.env.POSTGRES_PORT);
+              (function attempt() {
+                const s = net.connect(port, host, () => { s.end(); console.log(`postgres reachable at ${host}:${port}`); process.exit(0); });
+                s.on('error', e => { console.log(`waiting for postgres at ${host}:${port}: ${e.code}`); setTimeout(attempt, 2000); });
+              })();
+          env:
+            - name: POSTGRES_HOST
+              value: {{ include "fleet-portal.postgresHost" . | quote }}
+            - name: POSTGRES_PORT
+              value: {{ include "fleet-portal.postgresPort" . | quote }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+      containers:
+        - name: backstage
+          image: {{ include "fleet-portal.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # `command` AND `args`, not args alone. The image inherits
+          # ENTRYPOINT ["docker-entrypoint.sh"] and supplies the program via
+          # CMD; `args` replaces CMD only, so without `command` the container
+          # dies with `node: bad option: --config` before any plugin loads.
+          command: ['node', 'packages/backend']
+          # The image's two configs, then ours. Last one wins.
+          args:
+            - --config
+            - app-config.yaml
+            - --config
+            - app-config.production.yaml
+            - --config
+            - /etc/backstage/app-config.k8s.yaml
+            - --config
+            - /etc/backstage/app-config.secrets.yaml
+          ports:
+            - name: http
+              containerPort: 7007
+              protocol: TCP
+          env:
+            - name: POSTGRES_HOST
+              value: {{ include "fleet-portal.postgresHost" . | quote }}
+            - name: POSTGRES_PORT
+              value: {{ include "fleet-portal.postgresPort" . | quote }}
+            {{- if and (eq .Values.postgresql.mode "external") .Values.postgresql.external.sslMode }}
+            - name: PGSSLMODE
+              value: {{ .Values.postgresql.external.sslMode | quote }}
+            {{- end }}
+            {{- with .Values.portal.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          envFrom:
+            # POSTGRES_USER, POSTGRES_PASSWORD
+            - secretRef:
+                name: {{ include "fleet-portal.fullname" . }}-env
+          volumeMounts:
+            - name: portal-config
+              mountPath: /etc/backstage
+              readOnly: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          # WHY A startupProbe, AND WHY EVERY PROBE POINTS AT readiness.
+          # Measured 2026-09-23: with a plugin failing at startup the process
+          # NEVER EXITS -- Running, exit 0, zero restarts, indefinitely.
+          # /.backstage/health/v1/liveness returns 200 unconditionally, so a
+          # livenessProbe there could never restart that pod. Readiness only
+          # flips to 200 once every plugin has started, so the startupProbe
+          # turns the silent hang into an honest CrashLoopBackOff.
+          # 30 x 10s = 5 minutes, which covers a first boot creating a database
+          # per plugin and applying the fleet migrations. A healthy image is
+          # ready in ~5-25 seconds.
+          startupProbe:
+            httpGet:
+              path: /.backstage/health/v1/readiness
+              port: http
+            periodSeconds: 10
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /.backstage/health/v1/readiness
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /.backstage/health/v1/readiness
+              port: http
+            periodSeconds: 20
+            failureThreshold: 6
+          resources:
+            {{- toYaml .Values.portal.resources | nindent 12 }}
+      volumes:
+        - name: portal-config
+          projected:
+            sources:
+              - configMap:
+                  name: {{ include "fleet-portal.fullname" . }}-app-config
+              - secret:
+                  name: {{ include "fleet-portal.fullname" . }}-app-config
+      {{- with .Values.portal.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.portal.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.portal.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

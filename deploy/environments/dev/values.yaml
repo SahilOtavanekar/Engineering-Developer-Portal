@@ -1,0 +1,61 @@
+# DEV -- non-secret settings. Committed.
+# Credentials go in deploy/environments/dev/secrets.yaml (gitignored; copy
+# deploy/environments/secrets.example.yaml).
+#
+# Every REPLACE below must be filled before the first deploy.
+
+environment: dev
+
+image:
+  # REPLACE: <account-id>.dkr.ecr.<region>.amazonaws.com/fleet-portal
+  repository: 724772056297.dkr.ecr.REPLACE_REGION.amazonaws.com/dai-engineering-portal
+  # Printed by deploy/scripts/build-push.sh. deploy.sh can also override it:
+  #   deploy/scripts/deploy.sh dev <tag>
+  tag: REPLACE_WITH_TAG
+
+ecr:
+  pullSecret:
+    enabled: true
+
+portal:
+  auth:
+    # Guest is the only sign-in method (GitHub removed 2026-09-27), so this
+    # must stay true -- the chart refuses to render otherwise. It signs anyone
+    # who reaches the host in as user:default/guest, which with
+    # allow-all-policy includes every engineer's productivity figures
+    # (CLAUDE.md open decision 6). Keep the host internal.
+    allowGuestSignIn: true
+
+ingress:
+  enabled: true
+  className: nginx
+  # REPLACE: DNS name pointing at the cluster's ingress-nginx.
+  host: REPLACE.portal-dev.example.com
+  annotations:
+    {}
+    # cert-manager, if the cluster has it:
+    # cert-manager.io/cluster-issuer: letsencrypt-prod
+  tls:
+    # HTTPS IS REQUIRED, not optional -- measured 2026-09-27 through a real
+    # ingress-nginx. Over plain http on a real host name the browser does not
+    # treat the page as a secure context, so crypto.randomUUID is missing and
+    # Search returns nothing (the chart drops upgrade-insecure-requests for
+    # http so the app at least boots, but that is all it fixes). localhost is
+    # exempt, which is why a port-forward never shows either problem.
+    # Needs a kubernetes.io/tls Secret with this name in the namespace -- a
+    # corporate certificate, or let cert-manager issue it (annotation above).
+    enabled: true
+    secretName: fleet-portal-dev-tls
+    # No certificate from IT yet, so the chart generates a self-signed one:
+    # HTTPS still works (which Search needs), but each browser warns once.
+    # For a real certificate: set false and create the Secret above yourself.
+    selfSigned: true
+
+postgresql:
+  mode: internal
+  internal:
+    persistence:
+      # REPLACE if needed: `kubectl get storageclass` on the dev cluster.
+      # K3s ships local-path; RKE2 ships none; Longhorn clusters have longhorn.
+      storageClass: local-path
+      size: 8Gi
