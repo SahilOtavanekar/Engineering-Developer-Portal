@@ -7,8 +7,8 @@
 environment: dev
 
 image:
-  # REPLACE: <account-id>.dkr.ecr.<region>.amazonaws.com/fleet-portal
-  repository: 724772056297.dkr.ecr.REPLACE_REGION.amazonaws.com/dai-engineering-portal
+  # The ECR repository, created by the AWS team (region us-east-1).
+  repository: 724772056297.dkr.ecr.us-east-1.amazonaws.com/dai-engineering-portal
   # Printed by deploy/scripts/build-push.sh. deploy.sh can also override it:
   #   deploy/scripts/deploy.sh dev <tag>
   tag: REPLACE_WITH_TAG

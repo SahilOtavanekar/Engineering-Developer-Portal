@@ -1,0 +1,21 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "BitbucketPipelinesOfThisRepositoryOnly",
+      "Effect": "Allow",
+      "Principal": {
+        "Federated": "arn:aws:iam::724772056297:oidc-provider/api.bitbucket.org/2.0/workspaces/demandai/pipelines-config/identity/oidc"
+      },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "api.bitbucket.org/2.0/workspaces/demandai/pipelines-config/identity/oidc:aud": "REPLACE_AUDIENCE"
+        },
+        "StringLike": {
+          "api.bitbucket.org/2.0/workspaces/demandai/pipelines-config/identity/oidc:sub": "{REPLACE_REPOSITORY_UUID}*"
+        }
+      }
+    }
+  ]
+}

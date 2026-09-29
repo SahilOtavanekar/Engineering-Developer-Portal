@@ -2231,6 +2231,20 @@ true`, and NOTES warns on plain HTTP with a real host.
   `integrations.github[0].host` from `app-config.local.yaml`. Only
   frontend-visible keys, never secrets, and `app-backend` re-injects the
   runtime config when serving; still, build images from a clean local config.
+- **Bitbucket Pipelines deploys with no stored credentials.** Both AWS steps
+  use `oidc: true` and assume `AWS_ROLE_ARN`; the deploy step
+  (`deploy/scripts/ci-deploy.sh`) reads every application credential -- the
+  portal's Bitbucket username/password/token first among them -- from AWS
+  Secrets Manager (`engineering-portal/dev`), writes a values file under
+  `umask 077` in a mode-700 temp dir, runs `deploy.sh`, and removes it on exit.
+  It names missing keys, never values; `set -x` would leak them, so it is
+  absent. The IAM policies are `deploy/aws/`. The deploy runs on a
+  **self-hosted runner**, because the Bitbucket cloud cannot reach
+  `rancher-dev.demandai.local`. Verified 2026-09-29 in the deploy step's own
+  Alpine image against a stand-in secret and a server-side dry run: zero
+  secret values in the log. Never run on real Bitbucket, OIDC or Secrets
+  Manager. **Rotation needs a redeploy**: the value is copied into the
+  cluster at deploy time.
 - **ECR on non-EKS needs a refresher**: tokens last 12 hours. A pre-install/
   pre-upgrade hook Job writes the pull secret before the first pull, a CronJob
   rewrites it every 6 hours. Its SA/Role/AWS-key Secret are hooks too, so

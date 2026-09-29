@@ -6,7 +6,9 @@
 # Uses the current kubectl context (the kubeconfig downloaded from Rancher),
 # unless KUBE_CONTEXT is set. Namespace defaults to fleet-<env>; override with
 # NAMESPACE. DRY_RUN=1 renders and validates against the cluster without
-# changing anything.
+# changing anything. SECRETS_FILE points at a credentials file other than
+# deploy/environments/<env>/secrets.yaml -- the pipeline writes one to a
+# temporary directory from AWS Secrets Manager (see ci-deploy.sh).
 set -euo pipefail
 
 ENV="${1:?usage: deploy.sh <dev|staging|prod> [image-tag]}"
@@ -17,10 +19,11 @@ CHART="$ROOT/deploy/helm/fleet-portal"
 ENV_DIR="$ROOT/deploy/environments/$ENV"
 NAMESPACE="${NAMESPACE:-fleet-$ENV}"
 RELEASE="${RELEASE:-fleet-portal}"
+SECRETS_FILE="${SECRETS_FILE:-$ENV_DIR/secrets.yaml}"
 
 [ -f "$ENV_DIR/values.yaml" ] || { echo "no such environment: $ENV_DIR/values.yaml"; exit 1; }
-[ -f "$ENV_DIR/secrets.yaml" ] || {
-  echo "missing $ENV_DIR/secrets.yaml"
+[ -f "$SECRETS_FILE" ] || {
+  echo "missing $SECRETS_FILE"
   echo "  cp deploy/environments/secrets.example.yaml deploy/environments/$ENV/secrets.yaml  # then fill it"
   exit 1
 }
@@ -37,7 +40,9 @@ fi
 
 CTX_ARGS=()
 if [ -n "${KUBE_CONTEXT:-}" ]; then CTX_ARGS=(--kube-context "$KUBE_CONTEXT"); fi
-CURRENT_CTX="${KUBE_CONTEXT:-$(kubectl config current-context)}"
+# A runner inside the cluster uses its service account and has no kubeconfig,
+# so no current context: report that rather than failing on it.
+CURRENT_CTX="${KUBE_CONTEXT:-$(kubectl config current-context 2>/dev/null || echo 'in-cluster service account')}"
 
 SET_ARGS=()
 if [ -n "$TAG" ]; then SET_ARGS=(--set-string "image.tag=$TAG"); fi
@@ -51,7 +56,7 @@ echo "Image tag   : ${TAG:-(from values.yaml)}"
 if [ "${DRY_RUN:-}" = "1" ]; then
   helm upgrade --install "$RELEASE" "$CHART" "${CTX_ARGS[@]}" \
     --namespace "$NAMESPACE" --create-namespace \
-    -f "$ENV_DIR/values.yaml" -f "$ENV_DIR/secrets.yaml" "${SET_ARGS[@]}" \
+    -f "$ENV_DIR/values.yaml" -f "$SECRETS_FILE" "${SET_ARGS[@]}" \
     --dry-run=server >/dev/null
   echo "Dry run OK -- the chart renders and the cluster accepts every object."
   exit 0
@@ -67,5 +72,5 @@ fi
 # release stays in place to be inspected rather than being rolled away.
 helm upgrade --install "$RELEASE" "$CHART" "${CTX_ARGS[@]}" \
   --namespace "$NAMESPACE" --create-namespace \
-  -f "$ENV_DIR/values.yaml" -f "$ENV_DIR/secrets.yaml" "${SET_ARGS[@]}" \
+  -f "$ENV_DIR/values.yaml" -f "$SECRETS_FILE" "${SET_ARGS[@]}" \
   --wait --timeout 10m

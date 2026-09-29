@@ -140,6 +140,78 @@ deployed in `dev/values.yaml` so the file records what is running.
 **Promotion:** deploy the **same tag** to staging and then prod. Never rebuild
 for a later environment.
 
+## Deploying with Bitbucket Pipelines
+
+`bitbucket-pipelines.yml` does the same as the two scripts above, on every push
+to `main`: it tests, builds and pushes the image to ECR, then deploys dev.
+**No credential is stored in Bitbucket or in the repository.** The pipeline
+signs in to AWS through Bitbucket's OIDC, and the deploy step reads every
+application credential (the portal's Bitbucket username and password or token,
+the Postgres password, the ECR pull key) from **AWS Secrets Manager** while it
+runs (`deploy/scripts/ci-deploy.sh`). The credentials exist only in a private
+temporary folder during the deploy and are deleted afterwards; they never appear in
+the build log.
+
+| Trigger                       | What runs                                              |
+| ----------------------------- | ------------------------------------------------------ |
+| Any pull request              | typecheck, lint, tests                                 |
+| Push to `main`                | tests → build and push to ECR → **deploy dev**         |
+| Run pipeline → `redeploy-dev` | deploy an existing `IMAGE_TAG` (redeploy or roll back) |
+
+### One-time setup, in this order
+
+1. **Bitbucket:** the repository must live in the `demandai` workspace. Enable
+   Pipelines (Repository settings → Pipelines → Settings), then note the
+   **Identity provider URL**, **Audience** and **Repository UUID** under
+   Repository settings → Pipelines → **OpenID Connect**.
+2. **AWS IAM (admin):**
+   - Add an **OpenID Connect identity provider** with that provider URL and
+     audience.
+   - Create a role, e.g. `bitbucket-engineering-portal`, with
+     `deploy/aws/pipeline-trust-policy.json` as its trust policy (replace
+     `REPLACE_AUDIENCE` and `REPLACE_REPOSITORY_UUID`, keeping the braces).
+   - Attach `deploy/aws/pipeline-permissions-policy.json`: ECR push to
+     `dai-engineering-portal`, plus read access to **only** the secret below.
+3. **AWS Secrets Manager (us-east-1):** create a secret named
+   **`engineering-portal/dev`**, type _Other_, with the JSON keys in
+   `deploy/aws/portal-secret.example.json`. The Bitbucket credential must be
+   in it; the deploy fails and names any missing key (never a value).
+   If the secret uses a customer-managed KMS key, the role also needs
+   `kms:Decrypt` on that key.
+4. **Runner (Rancher admin):** Bitbucket's cloud cannot reach
+   `rancher-dev.demandai.local`, so the deploy step runs on a **self-hosted
+   runner inside the network** (Repository settings → Runners → Add runner →
+   Linux Docker, or the Kubernetes runner). Give it a label and put that label
+   in place of `REPLACE_RUNNER_LABEL` in `bitbucket-pipelines.yml`. For cluster
+   access, either give the runner's pods a service account allowed to manage
+   the `fleet-dev` namespace, or add `kubeconfig_b64` (a kubeconfig limited to
+   that namespace, base64-encoded) to the secret.
+5. **Variables (not secret):**
+   - Repository settings → **Repository variables:** `AWS_ROLE_ARN` (the role
+     from step 2) and `AWS_REGION` = `us-east-1`. The build step reads them.
+   - Repository settings → **Deployments → dev:** `PORTAL_SECRET_ID` =
+     `engineering-portal/dev`.
+6. **`deploy/environments/dev/values.yaml`:** set `ingress.host`. A
+   `REPLACE` left there makes the deploy stop, deliberately.
+
+### Rotating a credential
+
+Change it in Secrets Manager, then run the pipeline (`redeploy-dev` with the
+current tag is enough). The value is copied into the cluster at deploy time,
+so a change in Secrets Manager alone does **not** reach a running portal.
+
+### Verified, and not
+
+`ci-deploy.sh` was run on 2026-09-29 in the same Alpine image and with the
+same packages as the deploy step, with a stand-in for Secrets Manager, and a
+server-side dry run against a Kubernetes API. It named missing keys without
+printing values, refused a leftover placeholder, rendered and validated the
+chart, left no temporary files, and printed **none** of the five secret values.
+The pinned helm and kubectl downloads passed their checksums.
+**Not verified:** a real Bitbucket run, the OIDC exchange, a real Secrets
+Manager read, and BuildKit's cache mounts on Bitbucket's Docker service
+(the Dockerfile uses them; check the first build's log).
+
 ## Checking it
 
 Follow the NOTES that `helm` prints after the install, then:
