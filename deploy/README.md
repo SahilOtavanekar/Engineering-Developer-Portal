@@ -40,8 +40,16 @@ refresher created the pull secret and then updated it.
 Found by that run, and fixed: plain HTTP on a real host name rendered a blank
 page and then broke Search (see the TLS item under step 4).
 
+**The real Rancher dev cluster was tested read-only on 2026-09-29**, with
+nothing deployed: it is reachable through Cloudflare WARP, the saved
+kubeconfig authenticates (as Rancher's `admin`), and every permission the chart
+needs is granted. The dev values now carry what the cluster reported -- storage
+class `longhorn` and the host `engineering-portal.10.100.128.11.sslip.io`, which
+needs no DNS record.
+
 **Not verified:** a real ECR login and pull, a trusted certificate,
-external/RDS mode, and anything on a real Rancher cluster.
+external/RDS mode, and any install on the Rancher cluster -- including a dry
+run. The remaining blockers are on AWS: ECR push rights and the pull-only keys.
 
 ## One-time setup
 

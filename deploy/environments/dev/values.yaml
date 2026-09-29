@@ -29,8 +29,11 @@ portal:
 ingress:
   enabled: true
   className: nginx
-  # REPLACE: DNS name pointing at the cluster's ingress-nginx.
-  host: REPLACE.portal-dev.example.com
+  # sslip.io resolves <anything>.<ip>.sslip.io to <ip>, so no DNS record is
+  # needed. It is this cluster's own convention: its other apps are served as
+  # <name>.10.100.128.11.sslip.io. Verified 2026-09-29: this name resolves to
+  # 10.100.128.11 and the cluster's ingress-nginx answers on it.
+  host: engineering-portal.10.100.128.11.sslip.io
   annotations:
     {}
     # cert-manager, if the cluster has it:
@@ -55,7 +58,9 @@ postgresql:
   mode: internal
   internal:
     persistence:
-      # REPLACE if needed: `kubectl get storageclass` on the dev cluster.
-      # K3s ships local-path; RKE2 ships none; Longhorn clusters have longhorn.
-      storageClass: local-path
+      # From `kubectl get storageclass` on the dev cluster, 2026-09-29:
+      # `longhorn` is its default (reclaim Retain, so the volume outlives the
+      # PVC). It has no local-path class -- the earlier value here would have
+      # left the PVC Pending for ever, with no error naming the cause.
+      storageClass: longhorn
       size: 8Gi

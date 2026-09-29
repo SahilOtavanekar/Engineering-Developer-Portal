@@ -2257,6 +2257,34 @@ true`, and NOTES warns on plain HTTP with a real host.
   reload. ECR refresher create + update simulated with a fake token (2026-09-25).
   **Never run against a real Rancher cluster, a real ECR login, RDS, or a
   trusted certificate.**
+- **The real Rancher dev cluster is reachable, tested read-only 2026-09-29;
+  nothing is deployed there yet.** `rancher-dev.demandai.local` resolves only
+  through **Cloudflare WARP** (to 10.100.128.10) -- with WARP off, expect a DNS
+  failure, not a credential one. RKE2 v1.34.3, 3 control-plane and 6 worker
+  nodes. What it settled:
+
+  - **The saved kubeconfig is Rancher's `admin` user**, so every verb the
+    chart needs is allowed, `fleet-dev` included (it does not exist yet; the
+    first deploy creates it). Fine for a person's machine; the pipeline must
+    get a namespace-scoped token instead, never this one in `kubeconfig_b64`.
+  - **Storage is `longhorn`, not `local-path`**, which dev/values.yaml had
+    assumed; that would have left Postgres Pending with no error. Fixed.
+  - **No DNS request is needed.** The cluster's apps are served as
+    `<name>.10.100.128.11.sslip.io`; `engineering-portal.10.100.128.11.sslip.io`
+    resolves and ingress-nginx answers it. Dev uses that host now.
+  - Also present: ingress class `nginx`, cert-manager with a
+    `selfsigned-internal` ClusterIssuer (the chart's own self-signed cert
+    stays; this is an alternative), and a **`bitbucket-runner` release** in
+    `bitbucket-runners` -- the likely self-hosted runner for the deploy step,
+    if its owner confirms its label. Other apps already pull from the same ECR
+    account through per-namespace pull secrets, so pulling from this cluster
+    works; only our own keys are missing.
+  - **kubectl skew:** the cluster is 1.34, the pipeline pins kubectl 1.31 --
+    outside the supported +/-1. Not yet changed.
+
+  **Still blocked, on AWS only:** ECR push rights for the building role, and
+  the pull-only keys in `secrets.yaml`. Next step once they exist:
+  `DRY_RUN=1 deploy/scripts/deploy.sh dev <tag>`.
 
 ## Commands
 
