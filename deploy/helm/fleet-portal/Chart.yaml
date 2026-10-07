@@ -1,0 +1,12 @@
+apiVersion: v2
+name: fleet-portal
+description: >-
+  Demand AI engineering portal (Backstage) -- one backend container serving the
+  React app and the API on 7007, optional in-cluster Postgres, and an ECR
+  pull-secret refresher for non-EKS clusters.
+type: application
+# Chart version. Bump when the templates change.
+version: 0.1.0
+# Informational only. The image that actually runs is image.tag in each
+# environment's values file.
+appVersion: '1.53.0'

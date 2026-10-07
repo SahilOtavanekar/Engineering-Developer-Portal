@@ -1,0 +1,50 @@
+# STAGING -- NOT WIRED YET. A ready-to-fill template; nothing deploys here
+# until every REPLACE is filled and deploy/environments/staging/secrets.yaml
+# exists.
+#
+# Differs from dev in the database (external, e.g. RDS) and TLS (on).
+
+environment: staging
+
+image:
+  repository: REPLACE_ACCOUNT_ID.dkr.ecr.REPLACE_REGION.amazonaws.com/fleet-portal
+  # Promote a tag that has already run in dev -- do not build a new one.
+  tag: REPLACE_WITH_TAG
+
+ecr:
+  pullSecret:
+    enabled: true
+
+portal:
+  auth:
+    # The only sign-in method until Entra ID lands (GitHub removed
+    # 2026-09-27). Anyone reaching the host is signed in; see open decision 6.
+    allowGuestSignIn: true
+  # Uncomment for RDS with full certificate verification (see
+  # postgresql.external.sslMode below for the simpler option).
+  # extraAppConfig:
+  #   backend:
+  #     database:
+  #       connection:
+  #         ssl:
+  #           ca: |
+  #             -----BEGIN CERTIFICATE-----
+  #             (RDS global bundle)
+  #             -----END CERTIFICATE-----
+
+ingress:
+  enabled: true
+  className: nginx
+  host: REPLACE.portal-staging.example.com
+  annotations: {}
+  tls:
+    enabled: true
+    secretName: fleet-portal-staging-tls
+
+postgresql:
+  mode: external
+  external:
+    host: REPLACE.xxxxxx.REPLACE_REGION.rds.amazonaws.com
+    port: 5432
+    # RDS on Postgres 15+ forces SSL. no-verify = encrypted, cert unverified.
+    sslMode: no-verify

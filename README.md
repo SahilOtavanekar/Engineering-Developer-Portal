@@ -20,10 +20,10 @@ synthesizes a Component per repository and a System per Bitbucket project.
 | `catalog/`              | Ownership and identity registers, read through config          |
 | `examples/`             | `org.yaml` only. **Not** example data — see below              |
 
-Despite its name, `examples/` is production data: `org.yaml` carries the User
-entity the GitHub sign-in resolver matches a login against, and the `unowned`
-group every repository without a confirmed owner is counted against. Deleting
-it breaks sign-in.
+Despite its name, `examples/` is production data: `org.yaml` carries the
+`unowned` group every repository without a confirmed owner is counted against,
+and the User entities Entra ID sign-in will match. Deleting it orphans those
+repositories.
 
 Metrics are **not** stored in the catalog. Bitbucket facts, rollups and scores
 live in the fleet plugin's own database, keyed by entity ref; scores are

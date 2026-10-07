@@ -1,0 +1,179 @@
+# Chart defaults. Do not edit per environment here -- override in
+# deploy/environments/<env>/values.yaml (non-secret, committed) and
+# deploy/environments/<env>/secrets.yaml (credentials, gitignored).
+
+nameOverride: ''
+fullnameOverride: ''
+
+# Free-form label stamped on every resource, so `kubectl get all -l
+# app.kubernetes.io/environment=dev` answers for one environment.
+environment: ''
+
+image:
+  # REQUIRED. <account>.dkr.ecr.<region>.amazonaws.com/<repository>
+  repository: ''
+  # REQUIRED. A dated or git-sha tag, never `latest`: the image carries
+  # compiled output, so with a moving tag nothing in the cluster can tell you
+  # which build is running.
+  tag: ''
+  pullPolicy: IfNotPresent
+
+# Extra, already-existing pull secrets. The ECR one below is added
+# automatically when ecr.pullSecret.enabled is true.
+imagePullSecrets: []
+
+# ---------------------------------------------------------------------------
+# ECR pull credentials for NON-EKS clusters (RKE2 / K3s).
+#
+# An ECR login token lasts 12 hours, so a static pull secret stops working
+# half a day after it is created. This creates the pull secret before the first
+# install/upgrade (a pre-install/pre-upgrade hook Job -- `helm install` fails
+# fast if the AWS credentials are wrong) and refreshes it on a CronJob.
+#
+# Needs an IAM user whose policy allows ecr:GetAuthorizationToken,
+# ecr:BatchGetImage, ecr:GetDownloadUrlForLayer and
+# ecr:BatchCheckLayerAvailability. Keys go in secrets.yaml.
+# ---------------------------------------------------------------------------
+ecr:
+  pullSecret:
+    enabled: true
+    # Name of the kubernetes.io/dockerconfigjson Secret the job writes.
+    name: ecr-pull-secret
+    # Derived from image.repository when empty.
+    region: ''
+    registry: ''
+    # Every 6 hours: two refreshes inside each 12-hour token lifetime.
+    schedule: '0 */6 * * *'
+    awsCliImage: amazon/aws-cli:2.17.0
+    kubectlImage: registry.k8s.io/kubectl:v1.31.0
+    aws:
+      # From secrets.yaml. Alternatively name an existing Secret holding
+      # AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY.
+      accessKeyId: ''
+      secretAccessKey: ''
+      existingSecret: ''
+
+# ---------------------------------------------------------------------------
+# The portal container.
+# ---------------------------------------------------------------------------
+portal:
+  # One. The scheduler coordinates through the database, so a second replica
+  # would not double-run ingestion -- but nothing needs the availability and
+  # one pod makes `kubectl logs` answer for the whole system.
+  replicas: 1
+
+  # The URL browsers use. Empty means: https://<ingress.host> when the Ingress
+  # is enabled, otherwise http://localhost:7007 (port-forward). The frontend is
+  # served with this baked in as its API address, so a wrong value loads the
+  # page and fails every request from it.
+  baseUrl: ''
+
+  auth:
+    # The guest "Enter" button -- the ONLY sign-in method since GitHub was
+    # removed (2026-09-27). A production image refuses guest sign-in unless
+    # this is true (auth.providers.guest.dangerouslyAllowOutsideDevelopment),
+    # so the chart refuses to render with it false: that would deploy a portal
+    # nobody can enter. Anyone who can reach the URL is signed in, and the
+    # portal runs allow-all-policy, so that includes per-person productivity
+    # figures (CLAUDE.md open decision 6). Entra ID is the planned replacement.
+    allowGuestSignIn: true
+
+  # Deep-merged into the generated app-config (last --config wins over the
+  # image's own app-config.yaml and app-config.production.yaml). Non-secret
+  # config only -- e.g. backend.database.connection.ssl for RDS.
+  extraAppConfig: {}
+
+  extraEnv: []
+
+  resources:
+    requests:
+      cpu: 250m
+      memory: 768Mi
+    limits:
+      memory: 2Gi
+
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+service:
+  type: ClusterIP
+  port: 7007
+
+# ---------------------------------------------------------------------------
+# Ingress (ingress-nginx is the RKE2 default; check `kubectl get ingressclass`).
+# READ BEFORE ENABLING: the backend runs allow-all-policy and
+# /api/fleet/productivity serves per-person figures (CLAUDE.md open decision 6).
+# ---------------------------------------------------------------------------
+ingress:
+  enabled: false
+  className: nginx
+  host: ''
+  annotations: {}
+  tls:
+    enabled: false
+    # An existing kubernetes.io/tls Secret, or the one cert-manager should
+    # create (add its cluster-issuer annotation above), or -- with selfSigned
+    # -- the one this chart generates.
+    secretName: ''
+    # Generate a self-signed certificate for ingress.host instead of needing
+    # one from IT. Keeps the page HTTPS, which the portal requires (plain http
+    # breaks Search), at the cost of a one-time browser warning per person.
+    # The chart then OWNS secretName: do not also create it by hand. Generated
+    # once and reused on every upgrade, so the warning does not come back.
+    selfSigned: false
+
+# ---------------------------------------------------------------------------
+# Bitbucket credential. Mandatory: without it the fleet plugin throws during
+# startup and the pod hangs Running-but-never-Ready (the startupProbe then
+# restarts it). Supply it in secrets.yaml.
+# ---------------------------------------------------------------------------
+
+bitbucket:
+  # EITHER token (sent as Bearer -- a workspace/repository access token)
+  token: ''
+  # OR username + appPassword (sent as Basic). For an Atlassian API token use
+  # your Atlassian account email as username and the token as appPassword.
+  username: ''
+  appPassword: ''
+
+# ---------------------------------------------------------------------------
+# Database. The portal creates ONE DATABASE PER PLUGIN, so the user needs
+# CREATEDB (the postgres image's superuser and an RDS master user both have it).
+# ---------------------------------------------------------------------------
+postgresql:
+  # internal: run Postgres in this release (StatefulSet + PVC).
+  # external: connect to an existing server, e.g. RDS.
+  mode: internal
+
+  auth:
+    username: backstage
+    # REQUIRED, in secrets.yaml. For internal mode it is applied only when the
+    # volume is first initialised; changing it later does not change the
+    # database's password.
+    password: ''
+
+  internal:
+    image: postgres:16
+    persistence:
+      # SET THIS per cluster (`kubectl get storageclass`). Empty uses the
+      # cluster default; if the cluster has none the PVC stays Pending for ever
+      # with no error naming the cause.
+      storageClass: ''
+      size: 8Gi
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        memory: 1Gi
+
+  external:
+    host: ''
+    port: 5432
+    # Sets PGSSLMODE for node-postgres: disable | require | no-verify ...
+    # `require` verifies the certificate against Node's CA store, which does
+    # not contain the RDS CA; use `no-verify` (encrypted, unverified) or put
+    # the CA in portal.extraAppConfig.backend.database.connection.ssl.ca.
+    sslMode: ''

@@ -1,0 +1,34 @@
+{{- if and .Values.ingress.enabled .Values.ingress.tls.enabled .Values.ingress.tls.selfSigned }}
+{{- /*
+A self-signed certificate for ingress.host, for when no real one is available.
+
+Generated ONCE and then reused: genSelfSignedCert makes a new key on every
+render, so without the lookup each `helm upgrade` would swap the certificate
+and every browser would show its warning again. `lookup` reads the Secret this
+release already stored. It returns nothing under `helm template` and a
+client-side dry run, which only means those print a fresh one; install and
+upgrade see the real cluster.
+*/ -}}
+{{- $name := required "ingress.tls.secretName is required when ingress.tls.selfSigned" .Values.ingress.tls.secretName -}}
+{{- $host := required "ingress.host is required for a self-signed certificate" .Values.ingress.host -}}
+{{- $existing := lookup "v1" "Secret" .Release.Namespace $name -}}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "fleet-portal.labels" . | nindent 4 }}
+    app.kubernetes.io/component: tls
+  annotations:
+    fleet.backstage.io/certificate: self-signed
+type: kubernetes.io/tls
+data:
+{{- if and $existing $existing.data (index $existing.data "tls.crt") }}
+  tls.crt: {{ index $existing.data "tls.crt" }}
+  tls.key: {{ index $existing.data "tls.key" }}
+{{- else }}
+{{- $cert := genSelfSignedCert $host nil (list $host) 825 }}
+  tls.crt: {{ $cert.Cert | b64enc }}
+  tls.key: {{ $cert.Key | b64enc }}
+{{- end }}
+{{- end }}

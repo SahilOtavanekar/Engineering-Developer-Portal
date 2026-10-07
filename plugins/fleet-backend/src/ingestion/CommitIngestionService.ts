@@ -3,6 +3,8 @@ import type { BitbucketClient } from '../bitbucket/types';
 import type { CommitStore } from '../database/CommitStore';
 import type { RepositoryStore } from '../database/RepositoryStore';
 import type { SyncStateStore } from '../database/SyncStateStore';
+import { partialFailure } from '../sync/readiness';
+import { BitbucketRateLimitError } from '../bitbucket/errors';
 
 export interface CommitIngestionServiceOptions {
   client: BitbucketClient;
@@ -116,6 +118,9 @@ export class CommitIngestionService {
             await this.repositories.setLastCommitAt(repository.id, known);
           }
         } catch (error) {
+          // The quota belongs to the credential, so every remaining
+          // repository would get the same 429: stop the pass instead.
+          if (error instanceof BitbucketRateLimitError) throw error;
           // One unreachable repository must not abandon the other 94.
           failures++;
           this.logger.warn(
@@ -142,7 +147,7 @@ export class CommitIngestionService {
       } else {
         await this.syncState.recordFailure(
           resource,
-          new Error(`${failures} repositories failed`),
+          partialFailure(failures),
           now,
         );
       }

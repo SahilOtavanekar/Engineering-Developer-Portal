@@ -1,5 +1,12 @@
 # Deploying the portal to Kubernetes
 
+> **Superseded for Rancher by the Helm chart in `deploy/`** -- see
+> `deploy/README.md`. These manifests are kept as the record of how each probe
+> and flag was found; the chart carries the same lessons. They predate the
+> removal of GitHub sign-in (2026-09-27): the `github-oauth` secret and the
+> `AUTH_GITHUB_*` variables below are no longer read by the image, and guest
+> sign-in there would also need `dangerouslyAllowOutsideDevelopment`.
+
 One backend container serves both the React app and the API on port 7007, plus
 Postgres. Written for a Rancher-managed cluster; the manifests are plain
 Kubernetes and carry nothing Rancher-specific.

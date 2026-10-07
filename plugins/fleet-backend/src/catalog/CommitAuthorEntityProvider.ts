@@ -13,6 +13,11 @@ import type {
 } from '@backstage/plugin-catalog-node';
 import type { OwnershipStore } from '../database/OwnershipStore';
 import { toUserEntityName } from './userEntityName';
+import {
+  refreshWithOwnershipCatchUp,
+  type OwnershipCatchUpOptions,
+  type OwnershipReady,
+} from './ownershipCatchUp';
 
 /** Namespace shared with the repository provider. */
 const ANNOTATION_NS = 'fleet.backstage.io';
@@ -28,6 +33,9 @@ export interface CommitAuthorEntityProviderOptions {
   ownership: OwnershipStore;
   taskRunner: SchedulerServiceTaskRunner;
   logger: LoggerService;
+  /** When given, a first boot re-registers as soon as ownership resolves. */
+  ownershipReady?: OwnershipReady;
+  ownershipCatchUp?: OwnershipCatchUpOptions;
 }
 
 /**
@@ -53,6 +61,8 @@ export class CommitAuthorEntityProvider implements EntityProvider {
   private readonly ownership: OwnershipStore;
   private readonly taskRunner: SchedulerServiceTaskRunner;
   private readonly logger: LoggerService;
+  private readonly ownershipReady?: OwnershipReady;
+  private readonly ownershipCatchUp?: OwnershipCatchUpOptions;
   private connection?: EntityProviderConnection;
 
   constructor(options: CommitAuthorEntityProviderOptions) {
@@ -60,6 +70,8 @@ export class CommitAuthorEntityProvider implements EntityProvider {
     this.ownership = options.ownership;
     this.taskRunner = options.taskRunner;
     this.logger = options.logger;
+    this.ownershipReady = options.ownershipReady;
+    this.ownershipCatchUp = options.ownershipCatchUp;
   }
 
   getProviderName(): string {
@@ -72,7 +84,14 @@ export class CommitAuthorEntityProvider implements EntityProvider {
       id: this.getProviderName(),
       fn: async () => {
         try {
-          await this.refresh();
+          await refreshWithOwnershipCatchUp({
+            workspace: this.workspace,
+            label: 'Commit author ingestion',
+            refresh: () => this.refresh(),
+            ready: this.ownershipReady,
+            logger: this.logger,
+            catchUp: this.ownershipCatchUp,
+          });
         } catch (error) {
           // Throwing here would kill the scheduled task for good; the catalog
           // keeps whatever was last applied and we try again next tick.

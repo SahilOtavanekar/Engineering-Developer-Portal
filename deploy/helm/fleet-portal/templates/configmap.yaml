@@ -1,0 +1,34 @@
+{{- /*
+Non-secret config, loaded as the third --config. Last one wins, so this is
+what points the image (built with localhost:7007) at the real URL.
+*/ -}}
+{{- $base := include "fleet-portal.baseUrl" . -}}
+{{- $cfg := dict
+  "app" (dict "baseUrl" $base)
+  "backend" (dict "baseUrl" $base "cors" (dict "origin" $base "credentials" true))
+-}}
+{{- /*
+Helmet's default CSP carries upgrade-insecure-requests, which makes the browser
+fetch every script and stylesheet over https:// even when the page came over
+http://. Behind an Ingress without TLS that hits nginx's self-signed default
+certificate and the app never boots: a blank page, ERR_CERT_AUTHORITY_INVALID
+on every asset. Browsers exempt localhost, so a port-forward never shows it --
+found only by testing through the real Ingress (2026-09-27). Dropped only when
+the portal's own URL is http; with TLS on it stays.
+*/ -}}
+{{- if hasPrefix "http://" $base -}}
+{{- $_ := set $cfg.backend "csp" (dict "upgrade-insecure-requests" false) -}}
+{{- end -}}
+{{- if .Values.portal.auth.allowGuestSignIn -}}
+{{- $_ := set $cfg "auth" (dict "providers" (dict "guest" (dict "dangerouslyAllowOutsideDevelopment" true))) -}}
+{{- end -}}
+{{- $cfg = mustMergeOverwrite $cfg (deepCopy .Values.portal.extraAppConfig) -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "fleet-portal.fullname" . }}-app-config
+  labels:
+    {{- include "fleet-portal.labels" . | nindent 4 }}
+data:
+  app-config.k8s.yaml: |
+    {{- toYaml $cfg | nindent 4 }}

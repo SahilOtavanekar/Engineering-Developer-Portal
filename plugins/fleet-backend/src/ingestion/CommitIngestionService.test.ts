@@ -10,6 +10,7 @@ import {
 } from '../__testUtils__/database';
 import { stubBitbucketClient } from '../__testUtils__/bitbucket';
 import { CommitIngestionService } from './CommitIngestionService';
+import { BitbucketRateLimitError } from '../bitbucket/errors';
 
 const NOW = new Date('2026-08-21T12:00:00.000Z');
 const LATER = new Date('2026-08-21T18:00:00.000Z');
@@ -190,6 +191,28 @@ describe('CommitIngestionService', () => {
 
     const state = await syncState.get('commits:demandai');
     expect(Number(state!.consecutive_failures)).toBe(1);
+    expect(state!.last_success_at).toBeNull();
+  });
+
+  it('stops the pass on a rate limit instead of failing every repository', async () => {
+    await seedRepositories('alpha', 'beta');
+    let calls = 0;
+    const limited = stubBitbucketClient({
+      listCommits: async () => {
+        calls++;
+        throw new BitbucketRateLimitError('https://api.bitbucket.org/x', '');
+      },
+    });
+
+    await expect(build(limited).ingest('demandai', NOW)).rejects.toThrow(
+      BitbucketRateLimitError,
+    );
+
+    expect(calls).toBe(1);
+    // A pass stopped this way has not finished, so scoring must not treat it
+    // as a partial success (see sync/readiness.ts).
+    const state = await syncState.get('commits:demandai');
+    expect(state!.last_error).not.toMatch(/repositories failed/);
     expect(state!.last_success_at).toBeNull();
   });
 

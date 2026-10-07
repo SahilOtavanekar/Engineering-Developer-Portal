@@ -1,6 +1,6 @@
 import type { LoggerService } from '@backstage/backend-plugin-api';
 import type { BitbucketCloudIntegrationConfig } from '@backstage/integration';
-import { BitbucketApiError } from './errors';
+import { BitbucketApiError, BitbucketRateLimitError } from './errors';
 import type {
   BitbucketBranch,
   BitbucketClient,
@@ -194,6 +194,69 @@ export interface BitbucketCloudClientOptions {
   logger?: LoggerService;
   /** Injected by tests. Defaults to the global fetch. */
   fetchImpl?: typeof fetch;
+  /** How 429 and 5xx responses are retried. */
+  retry?: RetryOptions;
+  /** Injected by tests so retries do not really wait. */
+  sleep?: (ms: number) => Promise<void>;
+}
+
+export interface RetryOptions {
+  /**
+   * Further attempts after the first, for a 429. Defaults to 3. A 5xx gets at
+   * most one: it is usually a blip, and when it is an outage, retrying every
+   * repository three times would hold a pass past its timeout for nothing.
+   */
+  maxRetries?: number;
+  /** Wait before the first retry; doubles each time. Defaults to 2 seconds. */
+  baseDelayMs?: number;
+  /**
+   * The longest single wait. A `Retry-After` beyond it is not waited out: a
+   * quota that resets in an hour is the scheduler's backoff to handle, not a
+   * reason to hold a pass open. Defaults to 60 seconds.
+   */
+  maxDelayMs?: number;
+}
+
+const DEFAULT_RETRY: Required<RetryOptions> = {
+  maxRetries: 3,
+  baseDelayMs: 2_000,
+  maxDelayMs: 60_000,
+};
+
+/**
+ * 429 and 5xx, except 555. Bitbucket answers 555 when it gave up generating a
+ * diff; asking again gets the same timeout and spends a request each time, and
+ * the diffstat reader already treats it as a permanent answer.
+ */
+function isRetryableStatus(status: number): boolean {
+  return status === 429 || (status >= 500 && status !== 555);
+}
+
+/**
+ * How long to wait before the next attempt, or undefined to stop now.
+ *
+ * `Retry-After` is honoured when Bitbucket sends one, in either of its forms
+ * (seconds, or an HTTP date). CLAUDE.md records that Bitbucket sends no
+ * X-RateLimit-* headers; whether it sends Retry-After on a 429 has not been
+ * observed, so the exponential fallback is what normally applies.
+ */
+function retryDelayMs(
+  response: Response,
+  attempt: number,
+  retry: Required<RetryOptions>,
+  now: number = Date.now(),
+): number | undefined {
+  const header = response.headers?.get?.('retry-after') ?? null;
+  if (header !== null) {
+    const seconds = Number(header);
+    const ms = Number.isFinite(seconds)
+      ? seconds * 1000
+      : new Date(header).getTime() - now;
+    if (Number.isFinite(ms)) {
+      return ms > retry.maxDelayMs ? undefined : Math.max(0, ms);
+    }
+  }
+  return Math.min(retry.baseDelayMs * 2 ** attempt, retry.maxDelayMs);
 }
 
 /** Shape of a Bitbucket paginated response, narrowed to what we read. */
@@ -281,6 +344,8 @@ export class BitbucketCloudClient implements BitbucketClient {
   private readonly apiBaseUrl: string;
   private readonly fetchImpl: typeof fetch;
   private readonly logger?: LoggerService;
+  private readonly retry: Required<RetryOptions>;
+  private readonly sleep: (ms: number) => Promise<void>;
   private requests = 0;
 
   constructor(options: BitbucketCloudClientOptions) {
@@ -291,6 +356,9 @@ export class BitbucketCloudClient implements BitbucketClient {
     );
     this.fetchImpl = options.fetchImpl ?? globalThis.fetch;
     this.logger = options.logger;
+    this.retry = { ...DEFAULT_RETRY, ...options.retry };
+    this.sleep =
+      options.sleep ?? (ms => new Promise(resolve => setTimeout(resolve, ms)));
   }
 
   /**
@@ -840,35 +908,62 @@ export class BitbucketCloudClient implements BitbucketClient {
    * wrong for raw file contents regardless of what the file happens to hold.
    */
   private async requestText(url: string): Promise<string> {
-    this.requests++;
-
-    const response = await this.fetchImpl(url, {
-      headers: { Authorization: this.authorization },
+    const response = await this.send(url, {
+      Authorization: this.authorization,
     });
-
-    if (!response.ok) {
-      const body = await response.text().catch(() => '');
-      throw new BitbucketApiError(response.status, url, body);
-    }
-
     return response.text();
   }
 
   private async request(url: string): Promise<any> {
-    this.requests++;
-
-    const response = await this.fetchImpl(url, {
-      headers: {
-        Authorization: this.authorization,
-        Accept: 'application/json',
-      },
+    const response = await this.send(url, {
+      Authorization: this.authorization,
+      Accept: 'application/json',
     });
-
-    if (!response.ok) {
-      const body = await response.text().catch(() => '');
-      throw new BitbucketApiError(response.status, url, body);
-    }
-
     return response.json();
+  }
+
+  /**
+   * One logical request, retried on 429 and 5xx.
+   *
+   * Every attempt counts towards `requestCount`, retries included: Bitbucket
+   * sends no rate-limit headers, so this count is the portal's only view of
+   * the quota it is spending, and hiding retries from it would understate
+   * exactly the cost that matters when the quota is short.
+   */
+  private async send(
+    url: string,
+    headers: Record<string, string>,
+  ): Promise<Response> {
+    for (let attempt = 0; ; attempt++) {
+      this.requests++;
+      const response = await this.fetchImpl(url, { headers });
+      if (response.ok) return response;
+
+      const limit =
+        response.status === 429
+          ? this.retry.maxRetries
+          : Math.min(1, this.retry.maxRetries);
+      const delay =
+        isRetryableStatus(response.status) && attempt < limit
+          ? retryDelayMs(response, attempt, this.retry)
+          : undefined;
+
+      if (delay === undefined) {
+        const body = await response.text().catch(() => '');
+        if (response.status === 429) {
+          throw new BitbucketRateLimitError(url, body);
+        }
+        throw new BitbucketApiError(response.status, url, body);
+      }
+
+      // Drain the body so the connection can be reused while we wait.
+      await response.text().catch(() => '');
+      this.logger?.info(
+        `Bitbucket answered ${response.status} for ${url}; retrying in ` +
+          `${Math.round(delay / 1000)}s (retry ${attempt + 1} of ` +
+          `${this.retry.maxRetries})`,
+      );
+      await this.sleep(delay);
+    }
   }
 }

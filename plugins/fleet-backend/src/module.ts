@@ -14,6 +14,10 @@ import { BitbucketRepositoryEntityProvider } from './catalog/BitbucketRepository
 import { CommitAuthorEntityProvider } from './catalog/CommitAuthorEntityProvider';
 import { OwnershipStore } from './database/OwnershipStore';
 import { RepositoryStore } from './database/RepositoryStore';
+import { SyncStateStore } from './database/SyncStateStore';
+import { OwnershipService } from './ownership/OwnershipService';
+import { hasCompletedOnce } from './sync/readiness';
+import type { OwnershipReady } from './catalog/ownershipCatchUp';
 
 /**
  * How often derived Users are refreshed, and how far ahead of the repository
@@ -26,7 +30,9 @@ import { RepositoryStore } from './database/RepositoryStore';
  */
 const USER_SCHEDULE = {
   frequency: { minutes: 30 },
-  timeout: { minutes: 5 },
+  // Ten, not five: on a first boot the task waits up to eight minutes for the
+  // ownership pass before re-registering (see ownershipCatchUp.ts).
+  timeout: { minutes: 10 },
   initialDelay: { seconds: 10 },
 };
 
@@ -54,6 +60,22 @@ export const catalogModuleBitbucketRepositories = createBackendModule({
         const client = await fleetDatabaseClient(config, { logger, lifecycle });
         const ownership = new OwnershipStore(client);
         const repositories = new RepositoryStore(client);
+        const syncState = new SyncStateStore(client);
+
+        // Read-only, like everything this module reads from fleet's database,
+        // and it must tolerate the tables not existing yet: on a first boot
+        // the fleet plugin may not have migrated when this first asks.
+        const ownershipReady: OwnershipReady = async workspace => {
+          try {
+            const live = await repositories.listLive(workspace);
+            return hasCompletedOnce(
+              await syncState.get(OwnershipService.resourceKey(workspace)),
+              live.length,
+            );
+          } catch {
+            return false;
+          }
+        };
 
         addCommitAuthorProviders({
           catalog,
@@ -61,6 +83,7 @@ export const catalogModuleBitbucketRepositories = createBackendModule({
           logger,
           scheduler,
           ownership,
+          ownershipReady,
         });
 
         const providers = BitbucketRepositoryEntityProvider.fromConfig(config, {
@@ -68,6 +91,7 @@ export const catalogModuleBitbucketRepositories = createBackendModule({
           scheduler,
           owners: ownership,
           classifications: repositories,
+          ownershipReady,
         });
         for (const provider of providers) {
           catalog.addEntityProvider(provider);
@@ -83,6 +107,7 @@ function addCommitAuthorProviders(options: {
   logger: LoggerService;
   scheduler: SchedulerService;
   ownership: OwnershipStore;
+  ownershipReady: OwnershipReady;
 }): void {
   const workspaces =
     options.config
@@ -94,6 +119,7 @@ function addCommitAuthorProviders(options: {
       new CommitAuthorEntityProvider({
         workspace,
         ownership: options.ownership,
+        ownershipReady: options.ownershipReady,
         logger: options.logger,
         taskRunner: options.scheduler.createScheduledTaskRunner(USER_SCHEDULE),
       }),

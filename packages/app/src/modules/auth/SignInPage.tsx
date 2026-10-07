@@ -1,23 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { Progress, SignInPage } from '@backstage/core-components';
-import {
-  discoveryApiRef,
-  githubAuthApiRef,
-  useApi,
-} from '@backstage/core-plugin-api';
+import { discoveryApiRef, useApi } from '@backstage/core-plugin-api';
 import {
   SignInPageBlueprint,
   type SignInPageProps,
 } from '@backstage/plugin-app-react';
 import { ensureSignInPageOnNewSession } from './signInMemory';
 import { waitForBackend } from './waitForBackend';
-
-const githubProvider = {
-  id: 'github-auth-provider',
-  title: 'GitHub',
-  message: 'Sign in using GitHub',
-  apiRef: githubAuthApiRef,
-};
 
 /**
  * Shown while the backend is still coming up.
@@ -134,7 +123,9 @@ function GatedSignInPage(props: SignInPageProps) {
     return <StartingUp />;
   }
 
-  return <SignInPage {...props} providers={['guest', githubProvider]} />;
+  // Guest only. GitHub sign-in was removed 2026-09-27 at the product owner's
+  // direction; Entra ID is the planned replacement and goes in this list.
+  return <SignInPage {...props} providers={['guest']} />;
 }
 
 /**

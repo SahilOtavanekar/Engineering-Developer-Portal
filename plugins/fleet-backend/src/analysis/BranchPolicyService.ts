@@ -4,6 +4,7 @@ import type { PullRequestStore } from '../database/PullRequestStore';
 import type { RepositoryStore } from '../database/RepositoryStore';
 import type { SyncStateStore } from '../database/SyncStateStore';
 import { classifyArrivals } from './branchPolicy';
+import { partialFailure } from '../sync/readiness';
 
 export interface BranchPolicyServiceOptions {
   repositories: RepositoryStore;
@@ -144,7 +145,7 @@ export class BranchPolicyService {
       } else {
         await this.syncState.recordFailure(
           resource,
-          new Error(`${failures} repositories failed`),
+          partialFailure(failures),
           now,
         );
       }

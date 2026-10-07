@@ -1,0 +1,89 @@
+{{- if eq .Values.postgresql.mode "internal" }}
+# In-cluster Postgres: one replica, one volume. A portal for ~100 repositories,
+# not a system that needs failover. For staging/prod prefer mode: external.
+#
+# The PVC comes from volumeClaimTemplates and SURVIVES `helm uninstall` -- on
+# purpose, so an uninstall cannot delete score history (which is append-only
+# and cannot be backfilled). Delete the PVC by hand to reclaim it.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "fleet-portal.postgresFullname" . }}
+  labels:
+    {{- include "fleet-portal.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+spec:
+  # Headless: nothing load-balances a single member; a stable DNS name is all
+  # the portal needs.
+  clusterIP: None
+  selector:
+    {{- include "fleet-portal.selectorLabels" (dict "root" . "component" "postgres") | nindent 4 }}
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "fleet-portal.postgresFullname" . }}
+  labels:
+    {{- include "fleet-portal.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+spec:
+  serviceName: {{ include "fleet-portal.postgresFullname" . }}
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "fleet-portal.selectorLabels" (dict "root" . "component" "postgres") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "fleet-portal.labels" . | nindent 8 }}
+        {{- include "fleet-portal.selectorLabels" (dict "root" . "component" "postgres") | nindent 8 }}
+    spec:
+      containers:
+        - name: postgres
+          image: {{ .Values.postgresql.internal.image }}
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "fleet-portal.fullname" . }}-env
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "fleet-portal.fullname" . }}-env
+                  key: POSTGRES_PASSWORD
+            - name: POSTGRES_DB
+              value: backstage
+            # The image refuses to initialise a non-empty directory, and a
+            # mounted volume is never empty (lost+found).
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command: ['sh', '-c', 'pg_isready -U "$POSTGRES_USER"']
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.postgresql.internal.resources | nindent 12 }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ['ReadWriteOnce']
+        {{- with .Values.postgresql.internal.persistence.storageClass }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.postgresql.internal.persistence.size }}
+{{- end }}

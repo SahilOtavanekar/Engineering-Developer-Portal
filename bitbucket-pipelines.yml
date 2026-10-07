@@ -1,0 +1,112 @@
+# Build, push and deploy the Engineering Portal.
+#
+# NO CREDENTIALS ARE STORED IN BITBUCKET. Both steps that touch AWS sign in
+# through Bitbucket's OIDC (`oidc: true`) and assume AWS_ROLE_ARN; the deploy
+# step then reads every application credential -- the portal's Bitbucket
+# username/password/token included -- from AWS Secrets Manager at run time
+# (deploy/scripts/ci-deploy.sh). The AWS side is in deploy/aws/.
+#
+# Deployment variables (Repository settings -> Deployments -> dev), none secret:
+#   AWS_REGION        us-east-1
+#   AWS_ROLE_ARN      the role created from deploy/aws/pipeline-*-policy.json
+#   PORTAL_SECRET_ID  engineering-portal/dev
+# Repository variable (Repository settings -> Repository variables):
+#   AWS_ROLE_ARN, AWS_REGION  also needed by the build step, which has no deployment
+
+image: node:24-bookworm
+
+definitions:
+  caches:
+    yarn-berry: ~/.yarn/berry/cache
+  services:
+    docker:
+      memory: 3072
+
+  steps:
+    - step: &verify
+        name: Typecheck, lint and test
+        size: 2x
+        caches:
+          - yarn-berry
+        script:
+          - corepack enable
+          - yarn install --immutable
+          - yarn tsc
+          - yarn lint:all
+          # Two database-backed suites are known to time out under heavy
+          # contention (CLAUDE.md); a failure there is worth one re-run before
+          # it is read as a regression.
+          - CI=true yarn test
+
+    - step: &build-and-push
+        name: Build and push the image to ECR
+        size: 2x
+        oidc: true
+        caches:
+          - yarn-berry
+          - docker
+        services:
+          - docker
+        script:
+          - corepack enable
+          - export NODE_OPTIONS=--max-old-space-size=4096
+          # AWS CLI v2, then OIDC: the CLI exchanges the step's token for
+          # credentials of AWS_ROLE_ARN by itself when these are set.
+          - apt-get update -qq && apt-get install -y -qq unzip > /dev/null
+          - curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o /tmp/awscli.zip
+          - unzip -q /tmp/awscli.zip -d /tmp && /tmp/aws/install > /dev/null
+          - printf '%s' "$BITBUCKET_STEP_OIDC_TOKEN" > /tmp/oidc-token
+          - export AWS_WEB_IDENTITY_TOKEN_FILE=/tmp/oidc-token
+          - export AWS_ROLE_SESSION_NAME="bitbucket-build-$BITBUCKET_BUILD_NUMBER"
+          - aws sts get-caller-identity --query Arn --output text
+          # One tag per build: traceable to the build number and the commit.
+          - export TAG="$BITBUCKET_BUILD_NUMBER-${BITBUCKET_COMMIT:0:7}"
+          - AWS_ACCOUNT_ID=724772056297 ECR_REPOSITORY=dai-engineering-portal deploy/scripts/build-push.sh
+          - printf '%s' "$TAG" > image-tag.txt
+        artifacts:
+          - image-tag.txt
+
+    - step: &deploy-dev
+        name: Deploy to dev
+        deployment: dev
+        oidc: true
+        # The cloud cannot reach rancher-dev.demandai.local, so this step runs
+        # on a self-hosted runner inside the network. REPLACE the last label
+        # with the one given to the runner when it was registered.
+        runs-on:
+          - self.hosted
+          - linux
+          - REPLACE_RUNNER_LABEL
+        image: alpine:3.20
+        script:
+          - apk add --no-cache bash curl jq aws-cli grep coreutils ca-certificates > /dev/null
+          # helm and kubectl pinned to the versions this chart was tested with,
+          # and checked against their published checksums.
+          - cd /tmp
+          - curl -fsSLO https://get.helm.sh/helm-v3.16.2-linux-amd64.tar.gz
+          - curl -fsSL https://get.helm.sh/helm-v3.16.2-linux-amd64.tar.gz.sha256sum | sha256sum -c -
+          - tar xzf helm-v3.16.2-linux-amd64.tar.gz && mv linux-amd64/helm /usr/local/bin/helm
+          - curl -fsSLO https://dl.k8s.io/release/v1.31.0/bin/linux/amd64/kubectl
+          - echo "$(curl -fsSL https://dl.k8s.io/release/v1.31.0/bin/linux/amd64/kubectl.sha256)  kubectl" | sha256sum -c -
+          - install -m 0755 kubectl /usr/local/bin/kubectl
+          - cd "$BITBUCKET_CLONE_DIR"
+          - deploy/scripts/ci-deploy.sh dev
+
+pipelines:
+  pull-requests:
+    '**':
+      - step: *verify
+
+  branches:
+    main:
+      - step: *verify
+      - step: *build-and-push
+      - step: *deploy-dev
+
+  custom:
+    # Redeploy (or roll back to) any image already in ECR, without building.
+    redeploy-dev:
+      - variables:
+          - name: IMAGE_TAG
+            description: An image tag already in ECR, e.g. 42-1c55e1e
+      - step: *deploy-dev

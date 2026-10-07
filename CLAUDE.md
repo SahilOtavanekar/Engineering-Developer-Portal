@@ -21,13 +21,13 @@ Target is the organization's **real Bitbucket estate**, not a sandbox.
 | Backend system  | **New** — `createBackend()`                                           |
 | Node / Yarn     | 24.x / 4.13.0                                                         |
 | Dev database    | PostgreSQL 16 via `docker-compose.yml`                                |
-| Auth            | GitHub OAuth + guest (**placeholder** — Entra ID comes last)          |
+| Auth            | **Guest only** (GitHub removed 2026-09-27) — Entra ID comes last      |
 | Permissions     | `allow-all-policy` — nothing is enforced yet                          |
 | Custom plugins  | `fleet-common`, `fleet-backend`, `fleet` (frontend)                   |
 | Scorecard       | **7 metrics — the requirement's own set.** All measurable, 100 of 100 |
 | Bands           | **4** — Excellent 90+, Healthy 75+, Needs Attention 60+, At Risk      |
 | Branches        | Divergence measured on its own 6h pass, **not scored**                |
-| Progress        | 1,147 tests, 60 suites, 4 e2e                                         |
+| Progress        | 1,180 tests, 62 suites, 4 e2e                                         |
 | Theme           | Custom, token-driven — `packages/app/src/modules/theme`               |
 
 ### The scorecard, as it stands 2026-09-10
@@ -2138,6 +2138,198 @@ id = '<task>'` -- which is the scheduler's own next action, just sooner, and
   `fleetRepositoryReadPermission`. This is per-person performance data; treat the
   gap as blocking before anyone outside the team sees the page.
 
+## Deployment
+
+**Helm chart in `deploy/`, for Rancher on non-EKS clusters (RKE2/K3s), images
+in ECR.** `deploy/README.md` is the runbook. One values file per environment
+(`deploy/environments/<env>/values.yaml`, committed) plus a gitignored
+`secrets.yaml` beside it; only **dev** is wired, staging and prod are
+templates defaulting to external Postgres (RDS). `k8s/` is the older plain
+manifests, kept for its comments.
+
+- **The chart refuses to render without a credential** -- Postgres password,
+  GitHub OAuth, Bitbucket, ECR keys -- because a missing one otherwise yields a
+  pod that hangs `0/1 Running` for ever (see `k8s/portal.yaml`).
+- **Guest is the only sign-in, in every environment.** GitHub sign-in was
+  removed 2026-09-27 at the product owner's direction: the provider list in
+  `SignInPage.tsx`, the backend module and its dependency, and
+  `auth.providers.github` in `app-config.yaml` (and in the local file, which
+  otherwise re-adds it). Everyone is one shared identity,
+  `user:default/guest`, the User in `examples/org.yaml`, selected by
+  `auth.providers.guest.userEntityRef`. **Left at its default the provider
+  signs in as `user:development/guest`**, which matches no entity: the
+  resolver then issues a token anyway, so sign-in works, but the header,
+  settings and every entity page 404 on the profile lookup -- found in a
+  browser walkthrough, invisible to every API check. `examples/org.yaml`'s
+  `sahilotavanekar` stays, for Entra ID to match. **Entra ID goes into that
+  same provider list.**
+- **A production image refuses guest sign-in** unless
+  `auth.providers.guest.dangerouslyAllowOutsideDevelopment` is set; verified in
+  the guest provider's source. `portal.auth.allowGuestSignIn` sets it and now
+  defaults on, and the chart **fails to render with it off** -- with guest the
+  only provider, off means a portal nobody can enter. Anyone reaching a host
+  can read every engineer's figures (open decision 6); keep hosts internal.
+- **The portal must be served over HTTPS on any real host name, and a
+  port-forward cannot show why.** Two failures, both found only by testing
+  through a real ingress-nginx on 2026-09-27, both invisible on `localhost`
+  because browsers treat localhost as a secure context:
+  - Helmet's default CSP carries `upgrade-insecure-requests`, so a page served
+    over `http://` fetched every script over `https://`, hit nginx's
+    self-signed default certificate, and rendered **blank** with
+    `ERR_CERT_AUTHORITY_INVALID` on each asset. The chart now sets
+    `backend.csp.upgrade-insecure-requests: false` whenever its base URL is
+    `http://`, and leaves the default alone under TLS.
+  - That makes plain HTTP boot, but not work: outside a secure context
+    `crypto.randomUUID` does not exist, and **Search returned 0 results** with
+    `globalThis.crypto.randomUUID is not a function` in the console. Over HTTPS
+    the same page returned 8 for "oxp". So dev defaults to `ingress.tls.enabled:
+true`, and NOTES warns on plain HTTP with a real host.
+    The general lesson: **verify a deployment on its real host name, not a
+    port-forward.** Every earlier check here passed on localhost.
+    **No certificate from IT is needed:** `ingress.tls.selfSigned` makes the
+    chart generate one with `genSelfSignedCert`, and `lookup` reuses the stored
+    Secret so an upgrade does not replace it -- verified 2026-09-28, same SHA-256
+    fingerprint after an install and two upgrades. Dev has it on. The cost is a
+    one-time browser warning per person; the page is still a secure context.
+- **A first boot used to write wrong scores into permanent history, and now
+  waits instead.** Passes were ordered only by `initialDelay`, so scoring fired
+  at 150s while commits, pull requests, detail and the 16-minute size sweep
+  were still running -- and missing detail is not "unmeasured" but wrong: no
+  branches stored means zero stale branches, full marks. Fixed 2026-09-27:
+  `guard(..., { after: [...] })` in `plugin.ts` holds a pass until each named
+  prerequisite has **finished once** (`sync/readiness.ts`), scoring gives no
+  row to a repository whose `root_files` is null, and branch policy waits for
+  commits and pull requests too (its first run otherwise classified every
+  commit as direct, since no pull requests were stored yet).
+  **"Finished" includes a run with per-repository failures** -- every pass
+  marks itself failed if one repository fails, so "has it succeeded" would
+  let one broken repository block scoring for ever. The partial-failure
+  message is built by `partialFailure()` beside the regex that parses it; a
+  pass where every repository failed does not count. Only a first boot waits:
+  `last_success_at` is never cleared. Verified live on a fresh install: both
+  deferrals logged, `repo_score` stayed empty until the prerequisites were in.
+  Cost: first scores appear ~30 minutes after a fresh install, not 2.5.
+- **A 429 used to fail one repository and move on to the next, which got the
+  same 429.** The quota is the credential's. `BitbucketCloudClient.send`
+  now retries 429 three times (2/4/8s, honouring `Retry-After` up to 60s)
+  and 5xx once -- more would hold a pass past its timeout in an outage -- and
+  never 555, Bitbucket's permanent "gave up on this diff". A persistent 429
+  throws `BitbucketRateLimitError`, which every per-repository catch rethrows
+  so the pass **stops**; a stopped pass is a crash, not a partial failure, so
+  readiness does not count it. The size sweep flushes its batch first. Ownership
+  instead skips the rate-limited source for the rest of the pass. Retries
+  count in `requestCount`, the only view of quota there is.
+- **Owners no longer read "unowned" for 30 minutes after a first install.**
+  Both catalog providers run 10-15s after boot, the ownership pass at ~145s.
+  `catalog/ownershipCatchUp.ts` registers immediately, then polls every 30s
+  and re-registers the moment ownership has finished once (up to 8 minutes,
+  hence the commit-author task's timeout rising 5 to 10). Verified live: 106
+  unowned and 0 derived Users at boot, 105 owned and 18 Users about three
+  minutes later, with no manual trigger.
+- **A `yarn build` bakes the local config's frontend-visible values into
+  `packages/app/dist/index.html`** -- the built image carried
+  `integrations.github[0].host` from `app-config.local.yaml`. Only
+  frontend-visible keys, never secrets, and `app-backend` re-injects the
+  runtime config when serving; still, build images from a clean local config.
+- **Bitbucket Pipelines deploys with no stored credentials.** Both AWS steps
+  use `oidc: true` and assume `AWS_ROLE_ARN`; the deploy step
+  (`deploy/scripts/ci-deploy.sh`) reads every application credential -- the
+  portal's Bitbucket username/password/token first among them -- from AWS
+  Secrets Manager (`engineering-portal/dev`), writes a values file under
+  `umask 077` in a mode-700 temp dir, runs `deploy.sh`, and removes it on exit.
+  It names missing keys, never values; `set -x` would leak them, so it is
+  absent. The IAM policies are `deploy/aws/`. The deploy runs on a
+  **self-hosted runner**, because the Bitbucket cloud cannot reach
+  `rancher-dev.demandai.local`. Verified 2026-09-29 in the deploy step's own
+  Alpine image against a stand-in secret and a server-side dry run: zero
+  secret values in the log. Never run on real Bitbucket, OIDC or Secrets
+  Manager. **Rotation needs a redeploy**: the value is copied into the
+  cluster at deploy time.
+- **ECR on non-EKS needs a refresher**: tokens last 12 hours. A pre-install/
+  pre-upgrade hook Job writes the pull secret before the first pull, a CronJob
+  rewrites it every 6 hours. Its SA/Role/AWS-key Secret are hooks too, so
+  `helm uninstall` leaves them behind.
+- Verified 2026-09-27 on docker-desktop **through ingress-nginx on a real
+  host name, over HTTPS**, deployed with `deploy.sh`: Ready in 34s, zero
+  error-level log lines, ten plugins, `guest` the only auth provider, GitHub's
+  auth routes 404, and a browser walkthrough of sign-in, catalog (106), entity
+  page, Health Dashboard, Productivity, Search, Settings, theme switch and
+  reload. ECR refresher create + update simulated with a fake token (2026-09-25).
+  **Never run against a real Rancher cluster, a real ECR login, RDS, or a
+  trusted certificate.**
+- **The real Rancher dev cluster is reachable, tested read-only 2026-09-29.** `rancher-dev.demandai.local` resolves only
+  through **Cloudflare WARP** (to 10.100.128.10) -- with WARP off, expect a DNS
+  failure, not a credential one. RKE2 v1.34.3, 3 control-plane and 6 worker
+  nodes. What it settled:
+
+  - **The saved kubeconfig is Rancher's `admin` user**, so every verb the
+    chart needs is allowed, `fleet-dev` included (it does not exist yet; the
+    first deploy creates it). Fine for a person's machine; the pipeline must
+    get a namespace-scoped token instead, never this one in `kubeconfig_b64`.
+  - **Storage is `longhorn`, not `local-path`**, which dev/values.yaml had
+    assumed; that would have left Postgres Pending with no error. Fixed.
+  - **No DNS request is needed.** The cluster's apps are served as
+    `<name>.10.100.128.11.sslip.io`; `engineering-portal.10.100.128.11.sslip.io`
+    resolves and ingress-nginx answers it. Dev uses that host now.
+  - Also present: ingress class `nginx`, cert-manager with a
+    `selfsigned-internal` ClusterIssuer (the chart's own self-signed cert
+    stays; this is an alternative), and a **`bitbucket-runner` release** in
+    `bitbucket-runners` -- the likely self-hosted runner for the deploy step,
+    if its owner confirms its label. Other apps already pull from the same ECR
+    account through per-namespace pull secrets, so pulling from this cluster
+    works; only our own keys are missing.
+  - **kubectl skew:** the cluster is 1.34, the pipeline pins kubectl 1.31 --
+    outside the supported +/-1. Not yet changed.
+
+  **Superseded 2026-10-05 -- see the next note: it is deployed.**
+
+- **Deployed to Rancher dev 2026-10-05, by hand rather than the pipeline.**
+  Nobody on this side has ECR push rights, so a colleague who does built
+  and pushed from a fresh clone of the GitHub `rancher-deploy` branch:
+  `724772056297.dkr.ecr.us-east-1.amazonaws.com/dai-engineering-portal:20261005-1057-b45e4e0`.
+  The Bitbucket Pipelines route is parked, not abandoned. Its blockers still
+  stand: runner label, a namespace-scoped token, push rights for the
+  pipeline role, and the kubectl pin.
+  - **Verified:** the pull-only keys in dev `secrets.yaml` read the tag
+    (`aws ecr batch-get-image`), the first real ECR pull this repo has made.
+    `helm template` rendered clean. The server dry run passed against
+    context `local`: 9 nodes Ready, `longhorn (default)` with reclaim
+    `Retain`, ingress class `nginx`. `deploy.sh dev <tag>` ran, and the
+    user reports `https://engineering-portal.10.100.128.11.sslip.io` opens.
+  - **Scores landed, checked in a headless browser 2026-10-07** on the real
+    host: 108 of 108 scored (0 excellent / 8 healthy / 27 needs attention /
+    73 at risk), problem chips rendered, Productivity showed 18 engineers
+    across 59 repositories, and pages loaded in about 4s over WARP.
+  - **But the first scores took hours, not the 30 minutes promised below,
+    and the cause is a gap in the readiness guard.** On 2026-10-05 the live
+    page showed every repository "Not scored" two hours in, while commits,
+    pull requests and branch policy had all demonstrably finished, which
+    leaves only `pull-request-size`. A deferred pass just `return`s
+    (`guard` in `plugin.ts`), and its next attempt comes at its own
+    frequency, which for the size sweep is **360 minutes**. If pull request
+    ingestion has not finished by the sweep's 210s initial delay, the sweep
+    and therefore scoring wait about 6 hours. This was not confirmed from
+    the logs: the user never pasted them, and the scores were there two
+    days later. **Unfixed.** The fix is for a deferral to retry within
+    minutes. Until it lands, setting `next_run_start_at = now()` for
+    `pull-request-size:demandai` in `backstage_plugin_fleet` is the
+    workaround.
+  - **Not yet verified:** pod, job and log output (the pod and job listing,
+    the `ecr-refresh-init` logs, the portal logs); the 6-hourly CronJob
+    refresh.
+  - **The default kubectl context on this machine is `docker-desktop`.**
+    The first dry run went there, said "OK" and proved nothing. Always run
+    `export KUBECONFIG="$HOME/.kube/rancher-dev.yaml"` first; the context is
+    then `local`. Check the `Context :` line `deploy.sh` prints.
+  - **Claude cannot run kubectl against this cluster.** The auto-mode
+    classifier denies commands that use the admin kubeconfig, so the user
+    runs them and pastes the output.
+  - **Bitbucket quota competitors:** `portal-demo` (:7010) was stopped
+    2026-10-05. The older docker-desktop deployment
+    (`fleet-portal` in namespace `fleet`, 12 days old) is **still running**
+    on the same credential; pausing it with `--replicas=0` is the user's
+    call and still open.
+
 ## Commands
 
 Measure the page-load requirement (needs a production build; the backend
@@ -2325,7 +2517,7 @@ blocking before anyone outside the team sees per-person figures.
   spec outside the package is "No tests found" -- use `chromium.launch()`
   directly. And a scratchpad script cannot resolve `@playwright/test`, so
   require it by absolute path out of the repo's `node_modules`.
-- Test coverage is no longer thin -- 1,147 tests across 60 suites -- but it is
+- Test coverage is no longer thin -- 1,180 tests across 62 suites -- but it is
   uneven: `ProductivityStore` still has no test file (see below), and nothing in
   the suite loads a real `app-config`. New modules ship with tests.
   **`BranchStore` was the same kind of gap and is now closed**: it had no test
@@ -2335,6 +2527,12 @@ blocking before anyone outside the team sees per-person figures.
   service is tested by accident, not on purpose.
 - The Bitbucket credential in use belongs to an individual, not a service
   account. Synchronization will break if that person's access changes.
+  **It is also a shared quota.** On 2026-09-27 a fresh deployment's first
+  sweep, its 391-request pull-request-size pass and the older deployment in the
+  local `fleet` namespace together exhausted it: `repository-detail` failed 4,
+  then 19 repositories with `429 Rate limit for this resource has been
+exceeded` on `/src/`. Each environment should get its own credential, and a
+  local `yarn dev` left running competes with every deployment.
 
 ## Working agreement
 

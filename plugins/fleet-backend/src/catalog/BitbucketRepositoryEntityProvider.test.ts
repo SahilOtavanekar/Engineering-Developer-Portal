@@ -529,6 +529,57 @@ describe('proposed owners on the entity', () => {
     expect(entity.metadata.tags).toEqual(['typescript', TAG_UNCONFIRMED_OWNER]);
   });
 
+  // Measured on a fresh install 2026-09-27: the provider ran 15s after boot,
+  // the ownership pass at ~145s, and every component stayed
+  // group:default/unowned until the next 30-minute cycle.
+  it('re-registers with owners once a first-boot ownership pass resolves', async () => {
+    let resolved = false;
+    const owners = ownerSource({
+      'oxp-backend': {
+        name: 'Brijesh Gupta',
+        email: 'brijesh.gupta@demandai.co',
+      },
+    });
+    const mutations: EntityProviderMutation[] = [];
+    const provider = new BitbucketRepositoryEntityProvider({
+      workspace: 'demandai',
+      client: new FakeBitbucketClient([repository()]),
+      // Empty until the pass has run, exactly as the store reads on a first boot.
+      owners: {
+        proposedForWorkspace: async workspace =>
+          resolved ? owners.proposedForWorkspace(workspace) : new Map(),
+      },
+      ownershipReady: async () => resolved,
+      ownershipCatchUp: {
+        intervalMs: 1,
+        sleep: async () => {
+          resolved = true;
+        },
+      },
+      logger: mockServices.logger.mock(),
+      taskRunner: {
+        run: async task => {
+          await task.fn(new AbortController().signal);
+        },
+      },
+    });
+
+    await provider.connect({
+      applyMutation: async mutation => {
+        mutations.push(mutation);
+      },
+      refresh: async () => {},
+    });
+
+    const ownerIn = (m: EntityProviderMutation) =>
+      (m as any).entities
+        .map((e: any) => e.entity)
+        .find((e: any) => e.kind === 'Component').spec.owner;
+    expect(mutations).toHaveLength(2);
+    expect(ownerIn(mutations[0])).toBe('group:default/unowned');
+    expect(ownerIn(mutations[1])).toBe('user:default/brijesh.gupta');
+  });
+
   it('registers the estate anyway when ownership cannot be read', async () => {
     // Ownership is a derived hint. Losing it must degrade the catalog to
     // placeholder owners, not stop 95 repositories being registered.

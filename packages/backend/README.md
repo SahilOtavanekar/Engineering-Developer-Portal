@@ -6,7 +6,7 @@ through `backend.add()`.
 
 ## What it runs
 
-Stock Backstage plugins: app, proxy, auth (GitHub + guest), catalog, permission
+Stock Backstage plugins: app, proxy, auth (guest only), catalog, permission
 (`allow-all-policy`), search (Postgres engine, catalog collator), user settings,
 signals and MCP actions.
 

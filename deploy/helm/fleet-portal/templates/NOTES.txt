@@ -1,0 +1,51 @@
+Fleet portal {{ .Values.image.tag }} -> namespace {{ .Release.Namespace }}{{ with .Values.environment }} ({{ . }}){{ end }}
+URL the app is configured for: {{ include "fleet-portal.baseUrl" . }}
+
+1. READY must read 1/1. "0/1 Running" with 0 restarts is a plugin that failed
+   at startup -- the process does not exit on its own:
+
+     kubectl -n {{ .Release.Namespace }} get pods -l app.kubernetes.io/instance={{ .Release.Name }}
+
+2. No plugin may have failed (expect NO output):
+
+     kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "fleet-portal.fullname" . }} | grep -i "threw an error during startup"
+
+{{- if .Values.ingress.enabled }}
+
+3. Open {{ include "fleet-portal.baseUrl" . }}
+   Sign in with the guest "Enter" button.
+{{- else }}
+
+3. No Ingress. Reach it with a port-forward:
+
+     kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "fleet-portal.fullname" . }} 7007:{{ .Values.service.port }}
+     # http://localhost:7007
+{{- end }}
+{{- $base := include "fleet-portal.baseUrl" . }}
+{{- if and (hasPrefix "http://" $base) (not (contains "://localhost" $base)) }}
+
+WARNING: {{ $base }} is plain http on a real host name.
+The portal boots, but the browser will not treat it as a secure context:
+Search returns nothing and some pages log crypto.randomUUID errors.
+Enable ingress.tls.
+{{- end }}
+{{- if and .Values.ingress.enabled .Values.ingress.tls.enabled .Values.ingress.tls.selfSigned }}
+
+NOTE: the certificate is self-signed. Each browser warns once ("Your
+connection is not private"): choose Advanced -> Proceed. To switch to a real
+certificate, set ingress.tls.selfSigned=false and create the Secret
+"{{ .Values.ingress.tls.secretName }}" from it (delete the generated one first).
+{{- end }}
+{{- if .Values.portal.auth.allowGuestSignIn }}
+
+WARNING: guest is the only sign-in, and it is open. Anyone who can reach the
+URL can read every engineer's productivity figures (allow-all-policy, open
+decision 6).
+{{- end }}
+{{- if .Values.ecr.pullSecret.enabled }}
+
+ECR pull secret "{{ .Values.ecr.pullSecret.name }}" is refreshed on "{{ .Values.ecr.pullSecret.schedule }}".
+If pods show ImagePullBackOff, check the latest refresh job:
+
+     kubectl -n {{ .Release.Namespace }} logs job/{{ include "fleet-portal.fullname" . }}-ecr-refresh-init -c fetch-token
+{{- end }}

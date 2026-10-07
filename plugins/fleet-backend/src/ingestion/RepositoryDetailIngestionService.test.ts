@@ -12,6 +12,7 @@ import {
   type FleetTestDatabase,
 } from '../__testUtils__/database';
 import { RepositoryDetailIngestionService } from './RepositoryDetailIngestionService';
+import { BitbucketRateLimitError } from '../bitbucket/errors';
 
 const NOW = new Date('2026-08-21T12:00:00.000Z');
 const WINDOW_START = new Date('2026-05-23T12:00:00.000Z');
@@ -263,6 +264,33 @@ describe('RepositoryDetailIngestionService', () => {
 
     const state = await syncState.get('repository-detail:demandai');
     expect(Number(state!.consecutive_failures)).toBe(1);
+    expect(state!.last_success_at).toBeNull();
+  });
+
+  // Measured 2026-09-27: carrying on after a 429 turned 4 failed repositories
+  // into 19 and spent the quota it was waiting for. The quota belongs to the
+  // credential, so the next repository would get the same answer.
+  it('stops the pass on a rate limit instead of failing every repository', async () => {
+    await repositories.syncWorkspace(
+      'demandai',
+      [repository('alpha'), repository('beta')],
+      NOW,
+    );
+    let calls = 0;
+    const limited = stubBitbucketClient({
+      listBranches: async () => {
+        calls++;
+        throw new BitbucketRateLimitError('https://api.bitbucket.org/x', '');
+      },
+    });
+
+    await expect(build(limited).ingest('demandai', NOW)).rejects.toThrow(
+      BitbucketRateLimitError,
+    );
+
+    expect(calls).toBe(1);
+    const state = await syncState.get('repository-detail:demandai');
+    expect(state!.last_error).toContain('429');
     expect(state!.last_success_at).toBeNull();
   });
 
