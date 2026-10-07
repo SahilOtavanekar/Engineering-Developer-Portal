@@ -2282,6 +2282,7 @@ true`, and NOTES warns on plain HTTP with a real host.
     outside the supported +/-1. Not yet changed.
 
   **Superseded 2026-10-05 -- see the next note: it is deployed.**
+
 - **Deployed to Rancher dev 2026-10-05, by hand rather than the pipeline.**
   Nobody on this side has ECR push rights, so a colleague who does built
   and pushed from a fresh clone of the GitHub `rancher-deploy` branch:
@@ -2313,9 +2314,9 @@ true`, and NOTES warns on plain HTTP with a real host.
     minutes. Until it lands, setting `next_run_start_at = now()` for
     `pull-request-size:demandai` in `backstage_plugin_fleet` is the
     workaround.
-  - **Not yet verified:** pod, job and log output (`get
-    pods,jobs,cronjobs,pvc,ingress`, the `ecr-refresh-init` logs, the
-    portal logs); the 6-hourly CronJob refresh.
+  - **Not yet verified:** pod, job and log output (the pod and job listing,
+    the `ecr-refresh-init` logs, the portal logs); the 6-hourly CronJob
+    refresh.
   - **The default kubectl context on this machine is `docker-desktop`.**
     The first dry run went there, said "OK" and proved nothing. Always run
     `export KUBECONFIG="$HOME/.kube/rancher-dev.yaml"` first; the context is
