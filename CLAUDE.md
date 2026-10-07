@@ -2257,8 +2257,7 @@ true`, and NOTES warns on plain HTTP with a real host.
   reload. ECR refresher create + update simulated with a fake token (2026-09-25).
   **Never run against a real Rancher cluster, a real ECR login, RDS, or a
   trusted certificate.**
-- **The real Rancher dev cluster is reachable, tested read-only 2026-09-29;
-  nothing is deployed there yet.** `rancher-dev.demandai.local` resolves only
+- **The real Rancher dev cluster is reachable, tested read-only 2026-09-29.** `rancher-dev.demandai.local` resolves only
   through **Cloudflare WARP** (to 10.100.128.10) -- with WARP off, expect a DNS
   failure, not a credential one. RKE2 v1.34.3, 3 control-plane and 6 worker
   nodes. What it settled:
@@ -2282,9 +2281,53 @@ true`, and NOTES warns on plain HTTP with a real host.
   - **kubectl skew:** the cluster is 1.34, the pipeline pins kubectl 1.31 --
     outside the supported +/-1. Not yet changed.
 
-  **Still blocked, on AWS only:** ECR push rights for the building role, and
-  the pull-only keys in `secrets.yaml`. Next step once they exist:
-  `DRY_RUN=1 deploy/scripts/deploy.sh dev <tag>`.
+  **Superseded 2026-10-05 -- see the next note: it is deployed.**
+- **Deployed to Rancher dev 2026-10-05, by hand rather than the pipeline.**
+  Nobody on this side has ECR push rights, so a colleague who does built
+  and pushed from a fresh clone of the GitHub `rancher-deploy` branch:
+  `724772056297.dkr.ecr.us-east-1.amazonaws.com/dai-engineering-portal:20261005-1057-b45e4e0`.
+  The Bitbucket Pipelines route is parked, not abandoned. Its blockers still
+  stand: runner label, a namespace-scoped token, push rights for the
+  pipeline role, and the kubectl pin.
+  - **Verified:** the pull-only keys in dev `secrets.yaml` read the tag
+    (`aws ecr batch-get-image`), the first real ECR pull this repo has made.
+    `helm template` rendered clean. The server dry run passed against
+    context `local`: 9 nodes Ready, `longhorn (default)` with reclaim
+    `Retain`, ingress class `nginx`. `deploy.sh dev <tag>` ran, and the
+    user reports `https://engineering-portal.10.100.128.11.sslip.io` opens.
+  - **Scores landed, checked in a headless browser 2026-10-07** on the real
+    host: 108 of 108 scored (0 excellent / 8 healthy / 27 needs attention /
+    73 at risk), problem chips rendered, Productivity showed 18 engineers
+    across 59 repositories, and pages loaded in about 4s over WARP.
+  - **But the first scores took hours, not the 30 minutes promised below,
+    and the cause is a gap in the readiness guard.** On 2026-10-05 the live
+    page showed every repository "Not scored" two hours in, while commits,
+    pull requests and branch policy had all demonstrably finished, which
+    leaves only `pull-request-size`. A deferred pass just `return`s
+    (`guard` in `plugin.ts`), and its next attempt comes at its own
+    frequency, which for the size sweep is **360 minutes**. If pull request
+    ingestion has not finished by the sweep's 210s initial delay, the sweep
+    and therefore scoring wait about 6 hours. This was not confirmed from
+    the logs: the user never pasted them, and the scores were there two
+    days later. **Unfixed.** The fix is for a deferral to retry within
+    minutes. Until it lands, setting `next_run_start_at = now()` for
+    `pull-request-size:demandai` in `backstage_plugin_fleet` is the
+    workaround.
+  - **Not yet verified:** pod, job and log output (`get
+    pods,jobs,cronjobs,pvc,ingress`, the `ecr-refresh-init` logs, the
+    portal logs); the 6-hourly CronJob refresh.
+  - **The default kubectl context on this machine is `docker-desktop`.**
+    The first dry run went there, said "OK" and proved nothing. Always run
+    `export KUBECONFIG="$HOME/.kube/rancher-dev.yaml"` first; the context is
+    then `local`. Check the `Context :` line `deploy.sh` prints.
+  - **Claude cannot run kubectl against this cluster.** The auto-mode
+    classifier denies commands that use the admin kubeconfig, so the user
+    runs them and pastes the output.
+  - **Bitbucket quota competitors:** `portal-demo` (:7010) was stopped
+    2026-10-05. The older docker-desktop deployment
+    (`fleet-portal` in namespace `fleet`, 12 days old) is **still running**
+    on the same credential; pausing it with `--replicas=0` is the user's
+    call and still open.
 
 ## Commands
 
