@@ -217,9 +217,9 @@ test.describe('page load', () => {
   });
 
   test('the catalog loads', async () => {
-    // The catalog is mounted at the root here, not at /catalog -- see the
-    // `page:catalog` extension config in app-config.yaml.
-    await measure(page, 'catalog', '/', async () => {
+    // At /catalog directly: `/` now redirects to the Health Dashboard, and
+    // timing through a redirect would measure the wrong page.
+    await measure(page, 'catalog', '/catalog', async () => {
       await expect(firstRepositoryRow(page)).toBeVisible();
     });
   });

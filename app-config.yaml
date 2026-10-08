@@ -6,10 +6,15 @@ app:
   packages: all
 
   extensions:
-    # Configure the catalog index page to be the root page, this is normally mounted on /catalog
-    - page:catalog:
+    # The Health Dashboard is the landing page. `/` redirects to it rather than
+    # mounting it there, so existing /fleet links keep working; the catalog is
+    # back at its standard /catalog. The redirect matches `/` exactly, so an
+    # unknown address still shows Not Found instead of the dashboard.
+    - app/routes:
         config:
-          path: /
+          redirects:
+            - from: /
+              to: /fleet
 
     # Relation cards with no data source, disabled rather than left empty.
     #
