@@ -188,9 +188,10 @@ export function FleetFiltersBar({
           />
         </div>
 
-        {/* Any listed owner matches, so co-owners see shared repositories.
-            "Owned by me" waits on real sign-in: everyone is the shared guest
-            today, who owns nothing. The empty value means every owner. */}
+        {/* Matches the Owner column exactly, so every result shows the
+            person picked. "Owned by me" waits on real sign-in: everyone is
+            the shared guest today, who owns nothing. The empty value means
+            every owner. */}
         {owners.length > 0 && (
           <Flex gap="2" align="center">
             <label htmlFor="fleet-owner">

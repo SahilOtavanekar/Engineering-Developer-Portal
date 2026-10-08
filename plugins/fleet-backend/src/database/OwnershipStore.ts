@@ -1,9 +1,5 @@
 import type { DatabaseService } from '@backstage/backend-plugin-api';
-import {
-  OWNERSHIP_SOURCE_REGISTER,
-  type OwnershipCandidate,
-  type OwnershipProposal,
-} from '../ownership/types';
+import type { OwnershipCandidate, OwnershipProposal } from '../ownership/types';
 
 type DatabaseClient = Awaited<ReturnType<DatabaseService['getClient']>>;
 
@@ -130,39 +126,6 @@ export class OwnershipStore {
       )) as Array<Record<string, any>>;
 
     return new Map(rows.map(row => [row.slug as string, hydrate(row)]));
-  }
-
-  /**
-   * Everyone who owns each repository, keyed by repository id, for the
-   * dashboard's Owner filter.
-   *
-   * A register entry lists owners, and every one of them is an owner:
-   * `oxp-backend` names Brijesh, Sanjay and Vivek, and only Brijesh, the first,
-   * is the proposal the Owner column shows. A derived answer is different --
-   * its other candidates are merely commit authors -- so there only the
-   * proposal counts. One query for the estate, ordered so the shown owner
-   * comes first.
-   */
-  async ownersForRepositories(
-    repositoryIds: number[],
-  ): Promise<Map<number, StoredOwnershipCandidate[]>> {
-    const owners = new Map<number, StoredOwnershipCandidate[]>();
-    if (repositoryIds.length === 0) return owners;
-
-    const rows = (await this.db('ownership_candidate')
-      .whereIn('repository_id', repositoryIds)
-      .orderBy([{ column: 'repository_id' }, { column: 'rank' }])) as Array<
-      Record<string, any>
-    >;
-
-    for (const row of rows) {
-      const candidate = hydrate(row);
-      const listed = candidate.source === OWNERSHIP_SOURCE_REGISTER;
-      if (!listed && !candidate.isProposed) continue;
-      const id = Number(row.repository_id);
-      owners.set(id, [...(owners.get(id) ?? []), candidate]);
-    }
-    return owners;
   }
 
   /** Confident proposals for a set of repositories, keyed by repository id. */

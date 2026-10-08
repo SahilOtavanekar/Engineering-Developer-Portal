@@ -17,8 +17,10 @@ export interface FleetFilters {
    */
   problem?: string;
   /**
-   * Show only repositories this person owns, by `ownerKey`. Any listed owner
-   * matches, not only the one the Owner column shows.
+   * Show only repositories whose shown owner is this person, by `ownerKey` --
+   * exactly the name in the Owner column. A co-owner listed second in the
+   * register does not match: chosen 2026-10-08, so every result reads as the
+   * person picked.
    *
    * Stands in for "Owned by me" until sign-in knows who "me" is: everyone
    * signs in as the shared guest, who owns nothing. Once Entra ID provides a
@@ -44,23 +46,13 @@ export function ownerKey(owner: Owner): string | undefined {
   return name ? `name:${name}` : undefined;
 }
 
-/**
- * Everyone who owns a repository, the shown owner first. Falls back to the
- * proposed owner for a response from a backend that predates `owners`.
- */
-function listedOwners(repository: FleetRepositorySummary): Owner[] {
-  return (
-    repository.owners ??
-    (repository.proposedOwner ? [repository.proposedOwner] : [])
-  );
-}
-
-/** The `ownerKey` of everyone who owns a repository, the shown owner first. */
-export function ownersOf(repository: FleetRepositorySummary): string[] {
-  return listedOwners(repository).flatMap(owner => {
-    const key = ownerKey(owner);
-    return key ? [key] : [];
-  });
+/** The `ownerKey` of the owner the Owner column shows, if any. */
+export function shownOwnerOf(
+  repository: FleetRepositorySummary,
+): string | undefined {
+  return repository.proposedOwner
+    ? ownerKey(repository.proposedOwner)
+    : undefined;
 }
 
 export interface OwnerOption {
@@ -68,11 +60,11 @@ export interface OwnerOption {
   key: string;
   /** The person's most common spelling across the estate. */
   name: string;
-  /** How many repositories they own, counting shared ownership for each owner. */
+  /** How many repositories show them as the owner. */
   count: number;
 }
 
-/** Every owner on the estate, one entry per person, for the Owner dropdown. */
+/** Every shown owner on the estate, one entry per person, for the dropdown. */
 export function ownerOptions(
   repositories: FleetRepositorySummary[],
 ): OwnerOption[] {
@@ -81,18 +73,14 @@ export function ownerOptions(
     { count: number; spellings: Map<string, number> }
   >();
   for (const repository of repositories) {
-    const seen = new Set<string>();
-    for (const owner of listedOwners(repository)) {
-      const key = ownerKey(owner);
-      const name = owner.name?.trim();
-      if (!key || seen.has(key)) continue;
-      seen.add(key);
-      const person = people.get(key) ?? { count: 0, spellings: new Map() };
-      person.count += 1;
-      if (name)
-        person.spellings.set(name, (person.spellings.get(name) ?? 0) + 1);
-      people.set(key, person);
-    }
+    const owner = repository.proposedOwner;
+    const key = owner ? ownerKey(owner) : undefined;
+    if (!owner || !key) continue;
+    const person = people.get(key) ?? { count: 0, spellings: new Map() };
+    person.count += 1;
+    const name = owner.name?.trim();
+    if (name) person.spellings.set(name, (person.spellings.get(name) ?? 0) + 1);
+    people.set(key, person);
   }
   return [...people]
     .map(([key, { count, spellings }]) => ({
@@ -135,7 +123,7 @@ export function filterRepositories(
       if (!carries) return false;
     }
 
-    if (filters.owner && !ownersOf(repository).includes(filters.owner)) {
+    if (filters.owner && shownOwnerOf(repository) !== filters.owner) {
       return false;
     }
 
