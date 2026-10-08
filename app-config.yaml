@@ -100,6 +100,16 @@ app:
     - entity-card:catalog/depends-on-resources: false
     - entity-card:catalog/has-subcomponents: false
 
+    # Card order on a repository's page: Repository activity first, then
+    # Relations beneath it, at the product owner's direction (2026-10-08).
+    # Extensions listed here are placed ahead of every unlisted one, in the
+    # order listed (resolveAppNodeSpecs in @backstage/frontend-app-api), which
+    # is the only lever there is: the overview has no order setting of its own.
+    # A bare id enables without other change. About is an `info` card in the
+    # side column and is unaffected.
+    - entity-card:fleet/repository-facts
+    - entity-card:catalog-graph/relations
+
     # The Feature Flags tab on Settings, removed at the product owner's
     # direction.
     #
