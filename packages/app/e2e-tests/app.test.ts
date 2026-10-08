@@ -73,3 +73,25 @@ test('lands on the Health Dashboard, with the menu in its set order', async ({
   await nav.getByRole('link', { name: 'Catalog', exact: true }).click();
   await expect(page).toHaveURL(/\/catalog$/);
 });
+
+test('search lives in the title bar, not the sidebar', async ({ page }) => {
+  await page.goto('/');
+  const enterButton = page.getByRole('button', { name: 'Enter' });
+  await expect(enterButton).toBeVisible();
+  await enterButton.click();
+  await expect(page).toHaveURL(/\/fleet$/);
+
+  const nav = page.getByRole('navigation', { name: 'sidebar nav' });
+  await expect(nav.getByText('Search', { exact: true })).toHaveCount(0);
+
+  const box = page.getByRole('button', { name: 'Search the portal' });
+  await expect(box).toBeVisible();
+  await box.click();
+  await expect(page.getByRole('dialog')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+
+  // The "/" shortcut opens it too.
+  await page.keyboard.press('/');
+  await expect(page.getByRole('dialog')).toBeVisible();
+});
