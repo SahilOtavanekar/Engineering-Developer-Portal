@@ -1329,6 +1329,67 @@ describe('createRouter', () => {
       expect(res.body.repositories[0].proposedOwner).toBeUndefined();
     });
 
+    it('names an owner by their canonical identity, not the alias they were found under', async () => {
+      // Measured: Prashant Chaudhari is a repository admin under one address
+      // and the register's owner under another, and the Owner filter listed
+      // him twice.
+      await repositories.syncWorkspace('demandai', [repository()], NOW);
+      const stored = await repositories.findByEntityRef(
+        'component:default/oxp-backend',
+      );
+      await db.client('ownership_candidate').insert({
+        repository_id: stored!.id,
+        rank: 1,
+        is_proposed: true,
+        author_name: 'ada l',
+        author_email: 'ada.l@gmail.com',
+        commits: 0,
+        window_commits: 0,
+        window_days: 90,
+        source: 'repository-admin',
+        resolved_at: NOW,
+      });
+
+      const res = await request(await app(AuthorizeResult.ALLOW, register()))
+        .get('/repositories')
+        .expect(200);
+
+      expect(res.body.repositories[0].proposedOwner).toEqual({
+        name: 'Ada Lovelace',
+        email: 'ada@demandai.co',
+        commits: 0,
+      });
+    });
+
+    it('keeps an owner the identity register does not know exactly as found', async () => {
+      await repositories.syncWorkspace('demandai', [repository()], NOW);
+      const stored = await repositories.findByEntityRef(
+        'component:default/oxp-backend',
+      );
+      await db.client('ownership_candidate').insert({
+        repository_id: stored!.id,
+        rank: 1,
+        is_proposed: true,
+        author_name: 'Grace Hopper',
+        author_email: 'grace@demandai.co',
+        commits: 4,
+        window_commits: 4,
+        window_days: 90,
+        source: 'commit-history',
+        resolved_at: NOW,
+      });
+
+      const res = await request(await app(AuthorizeResult.ALLOW, register()))
+        .get('/repositories')
+        .expect(200);
+
+      expect(res.body.repositories[0].proposedOwner).toEqual({
+        name: 'Grace Hopper',
+        email: 'grace@demandai.co',
+        commits: 4,
+      });
+    });
+
     it('reports the nominal weight so a partial score cannot be misread', async () => {
       await seedScored('alpha', 88, 'healthy', 85);
 

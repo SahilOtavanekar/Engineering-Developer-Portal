@@ -280,6 +280,36 @@ describe('FleetPage', () => {
   });
 });
 
+describe('owner filter', () => {
+  it('narrows the table to one owner, and Clear filters brings it all back', async () => {
+    await render(ok(overview));
+
+    const owner = await screen.findByLabelText('Owner');
+    await userEvent.selectOptions(owner, 'Brijesh Gupta (1)');
+
+    expect(screen.getByText('Showing 1 of 5 repositories')).toBeInTheDocument();
+    expect(screen.getByText('oxp-backend')).toBeInTheDocument();
+    expect(screen.queryByText('dead-repo')).not.toBeInTheDocument();
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Clear filters' }),
+    );
+    expect(screen.getByText('5 repositories')).toBeInTheDocument();
+    expect(owner).toHaveValue('');
+  });
+
+  it('offers each owner with how many repositories they own', async () => {
+    await render(ok(overview));
+
+    expect(
+      await screen.findByRole('option', { name: 'Brijesh Gupta (1)' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('option', { name: 'All owners' }),
+    ).toBeInTheDocument();
+  });
+});
+
 describe('proposed owner column', () => {
   it('shows the suggested owner for a repository that has one', async () => {
     await render(ok(overview));
@@ -294,7 +324,11 @@ describe('proposed owner column', () => {
     // remaining guesses are marked by the `unconfirmed-owner` tag instead.
     await render(ok(overview));
 
-    expect(await screen.findByText('Owner')).toBeInTheDocument();
+    // The column heading specifically: the Owner filter's label says "Owner"
+    // too.
+    expect(
+      await screen.findByRole('columnheader', { name: /^Owner$/ }),
+    ).toBeInTheDocument();
     expect(screen.queryByText('Owner?')).not.toBeInTheDocument();
   });
 

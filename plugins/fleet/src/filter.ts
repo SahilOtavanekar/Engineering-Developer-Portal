@@ -16,6 +16,84 @@ export interface FleetFilters {
    * turns a class of problem into one pass of work rather than 29 visits.
    */
   problem?: string;
+  /**
+   * Show only repositories whose shown owner is this person, by `ownerKey` --
+   * exactly the name in the Owner column. A co-owner listed second in the
+   * register does not match: chosen 2026-10-08, so every result reads as the
+   * person picked.
+   *
+   * Stands in for "Owned by me" until sign-in knows who "me" is: everyone
+   * signs in as the shared guest, who owns nothing. Once Entra ID provides a
+   * real identity, the same filter can be pre-set to the signed-in person.
+   */
+  owner?: string;
+}
+
+type Owner = { name?: string; email?: string };
+
+/**
+ * Who an owner is, for matching: the address when there is one, else the name.
+ *
+ * Not the name alone, because one person reaches here under several spellings:
+ * the register says "Gurudutt" and Bitbucket's admin listing "Gurudutt .", for
+ * the same gurudutt@demandai.co. Keyed by name, the dropdown offered him twice
+ * and each entry found only some of his repositories.
+ */
+export function ownerKey(owner: Owner): string | undefined {
+  const email = owner.email?.trim().toLowerCase();
+  if (email) return email;
+  const name = owner.name?.trim();
+  return name ? `name:${name}` : undefined;
+}
+
+/** The `ownerKey` of the owner the Owner column shows, if any. */
+export function shownOwnerOf(
+  repository: FleetRepositorySummary,
+): string | undefined {
+  return repository.proposedOwner
+    ? ownerKey(repository.proposedOwner)
+    : undefined;
+}
+
+export interface OwnerOption {
+  /** What `FleetFilters.owner` holds when this option is chosen. */
+  key: string;
+  /** The person's most common spelling across the estate. */
+  name: string;
+  /** How many repositories show them as the owner. */
+  count: number;
+}
+
+/** Every shown owner on the estate, one entry per person, for the dropdown. */
+export function ownerOptions(
+  repositories: FleetRepositorySummary[],
+): OwnerOption[] {
+  const people = new Map<
+    string,
+    { count: number; spellings: Map<string, number> }
+  >();
+  for (const repository of repositories) {
+    const owner = repository.proposedOwner;
+    const key = owner ? ownerKey(owner) : undefined;
+    if (!owner || !key) continue;
+    const person = people.get(key) ?? { count: 0, spellings: new Map() };
+    person.count += 1;
+    const name = owner.name?.trim();
+    if (name) person.spellings.set(name, (person.spellings.get(name) ?? 0) + 1);
+    people.set(key, person);
+  }
+  return [...people]
+    .map(([key, { count, spellings }]) => ({
+      key,
+      // Most used spelling; on a tie the shorter, which drops trailing
+      // punctuation like "Gurudutt ." in favour of "Gurudutt".
+      name:
+        [...spellings].sort(
+          ([a, an], [b, bn]) => bn - an || a.length - b.length,
+        )[0]?.[0] ?? key,
+      count,
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 /**
@@ -43,6 +121,10 @@ export function filterRepositories(
         p => p.id === filters.problem,
       );
       if (!carries) return false;
+    }
+
+    if (filters.owner && shownOwnerOf(repository) !== filters.owner) {
+      return false;
     }
 
     if (query) {

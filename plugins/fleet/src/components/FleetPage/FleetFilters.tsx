@@ -5,10 +5,11 @@ import { bandFill, bandLabel } from '../../bands';
 import {
   bandCounts,
   dormancyCounts,
+  ownerOptions,
   problemCounts,
   type FleetFilters,
 } from '../../filter';
-import { chip, input } from '../../surfaces';
+import { chip, input, select } from '../../surfaces';
 
 export interface FleetFiltersBarProps {
   /** Every repository, before filtering -- the counts describe the whole estate. */
@@ -39,6 +40,7 @@ export function FleetFiltersBar({
   const counts = bandCounts(repositories);
   const problems = problemCounts(repositories);
   const dormancy = dormancyCounts(repositories);
+  const owners = ownerOptions(repositories);
   const total = repositories.length;
 
   // Worst on the left, so the bar reads as a severity scale rather than as an
@@ -56,7 +58,8 @@ export function FleetFiltersBar({
       [key]: filters[key] === value ? undefined : value,
     });
 
-  const filtered = filters.band || filters.problem || filters.query?.trim();
+  const filtered =
+    filters.band || filters.problem || filters.owner || filters.query?.trim();
 
   return (
     <Flex direction="column" gap="3">
@@ -184,6 +187,35 @@ export function FleetFiltersBar({
             style={input}
           />
         </div>
+
+        {/* Matches the Owner column exactly, so every result shows the
+            person picked. "Owned by me" waits on real sign-in: everyone is
+            the shared guest today, who owns nothing. The empty value means
+            every owner. */}
+        {owners.length > 0 && (
+          <Flex gap="2" align="center">
+            <label htmlFor="fleet-owner">
+              <Text variant="body-small" color="secondary">
+                Owner
+              </Text>
+            </label>
+            <select
+              id="fleet-owner"
+              value={filters.owner ?? ''}
+              onChange={event =>
+                onChange({ ...filters, owner: event.target.value || undefined })
+              }
+              style={select}
+            >
+              <option value="">All owners</option>
+              {owners.map(owner => (
+                <option key={owner.key} value={owner.key}>
+                  {owner.name} ({owner.count})
+                </option>
+              ))}
+            </select>
+          </Flex>
+        )}
 
         {counts.unscored > 0 && (
           <button
