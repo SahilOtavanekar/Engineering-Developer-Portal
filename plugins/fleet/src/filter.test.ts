@@ -359,16 +359,16 @@ describe('owner filter', () => {
     // Measured on this estate: the register says "Gurudutt", Bitbucket's admin
     // listing "Gurudutt .", for the same address.
     const guru = (spelling: string) => person(spelling, 'gurudutt@demandai.co');
-    const estate = [
+    const gurudutt = [
       repo('dai-delivery', { owners: [guru('Gurudutt')] }),
       repo('mailwizz-sync', { owners: [guru('Gurudutt')] }),
       repo('crm-opportunity-sync', { owners: [guru('Gurudutt .')] }),
     ];
-    expect(ownerOptions(estate)).toEqual([
+    expect(ownerOptions(gurudutt)).toEqual([
       { key: 'gurudutt@demandai.co', name: 'Gurudutt', count: 3 },
     ]);
     expect(
-      filterRepositories(estate, { owner: 'gurudutt@demandai.co' }),
+      filterRepositories(gurudutt, { owner: 'gurudutt@demandai.co' }),
     ).toHaveLength(3);
   });
 
