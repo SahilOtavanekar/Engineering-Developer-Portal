@@ -12,6 +12,26 @@ import MenuIcon from '@material-ui/icons/Menu';
 import SearchIcon from '@material-ui/icons/Search';
 import { SidebarSearchModal } from '@backstage/plugin-search';
 import { UserSettingsSignInAvatar } from '@backstage/plugin-user-settings';
+import { Fragment, type ReactNode } from 'react';
+
+/**
+ * Page extension ids in the order the Menu group shows them.
+ *
+ * `take` returns nothing for an id it does not know, silently, and the page
+ * then falls through to the alphabetical rest -- so a mistyped id here does
+ * not fail, it just puts the item back where it was. Only the running app can
+ * show that, so `e2e-tests/app.test.ts` pins the rendered order.
+ */
+export const MENU_ORDER = [
+  'page:fleet',
+  'page:catalog',
+  'page:fleet/productivity',
+] as const;
+
+/** Takes the ordered menu items out of `nav`, leaving the rest behind. */
+export function takeMenuItems(nav: { take(id: string): ReactNode }) {
+  return MENU_ORDER.map(id => <Fragment key={id}>{nav.take(id)}</Fragment>);
+}
 
 export const SidebarContent = NavContentBlueprint.make({
   params: {
@@ -52,12 +72,14 @@ export const SidebarContent = NavContentBlueprint.make({
               Settings is kept: it follows `SidebarSpace`, so it marks off the
               pinned bottom group across a gap rather than doubling anything. */}
           <SidebarGroup label="Menu" icon={<MenuIcon />}>
-            {nav.take('page:catalog')}
-            {/* No divider here any more.
-                Every nav item carries its own bottom rule from the theme's
-                `BackstageSidebarItem` override, so this one only doubled the
-                line under Catalog -- which is what made Catalog look boxed
-                while Health Dashboard and Productivity ran together. */}
+            {/* An explicit order, not alphabetical: the Health Dashboard is
+                the landing page (`/` redirects to it in app-config.yaml), so
+                it leads, with the catalog beneath and Productivity last.
+                Anything a future plugin adds follows, sorted by title.
+                No divider between these: every nav item carries its own
+                bottom rule from the theme's `BackstageSidebarItem` override,
+                so a divider only doubles the line under the item above it. */}
+            {takeMenuItems(nav)}
             <SidebarScrollWrapper>
               {nav.rest({ sortBy: 'title' })}
             </SidebarScrollWrapper>

@@ -44,3 +44,32 @@ test('App should render the welcome page', async ({ page }) => {
     nav.getByRole('link', { name: 'Health Dashboard', exact: true }),
   ).toBeVisible();
 });
+
+test('lands on the Health Dashboard, with the menu in its set order', async ({
+  page,
+}) => {
+  await page.goto('/');
+  const enterButton = page.getByRole('button', { name: 'Enter' });
+  await expect(enterButton).toBeVisible();
+  await enterButton.click();
+
+  // `/` redirects through app-config.yaml's `app/routes` redirects.
+  await expect(page).toHaveURL(/\/fleet$/);
+
+  // `Sidebar.tsx` takes these by extension id, and a wrong id fails silently:
+  // the page drops back into the alphabetical rest, which would put Catalog
+  // first again. Only the rendered order shows that.
+  const nav = page.getByRole('navigation', { name: 'sidebar nav' });
+  const menu = ['Health Dashboard', 'Catalog', 'Productivity'];
+  const tops: number[] = [];
+  for (const name of menu) {
+    const link = nav.getByRole('link', { name, exact: true });
+    await expect(link).toBeVisible();
+    tops.push((await link.boundingBox())!.y);
+  }
+  expect([...tops].sort((a, b) => a - b)).toEqual(tops);
+
+  // The catalog is back at its standard address.
+  await nav.getByRole('link', { name: 'Catalog', exact: true }).click();
+  await expect(page).toHaveURL(/\/catalog$/);
+});
