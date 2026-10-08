@@ -1,6 +1,7 @@
 import type { PageLayoutProps } from '@backstage/frontend-plugin-api';
 import { makeStyles } from '@material-ui/core/styles';
 import { Link } from '@backstage/core-components';
+import { HeaderSearch } from './HeaderSearch';
 
 /**
  * The shell every routed page is rendered inside: its title bar, tab row and
@@ -104,13 +105,19 @@ const useStyles = makeStyles(
       textOverflow: 'ellipsis',
       whiteSpace: 'nowrap',
     },
-    actions: {
+    // Search, then any plugin header actions, pushed to the right edge.
+    trailing: {
       marginLeft: 'auto',
       display: 'flex',
       alignItems: 'center',
       gap: theme.spacing(1),
-      // Never let a long title squeeze the actions to nothing.
+      // Never let a long title squeeze the search box to nothing.
       flexShrink: 0,
+    },
+    actions: {
+      display: 'flex',
+      alignItems: 'center',
+      gap: theme.spacing(1),
     },
 
     tabs: {
@@ -171,9 +178,12 @@ export function PortalPageLayout(props: PageLayoutProps) {
             <div className={classes.titleRow}>
               {icon && <span className={classes.icon}>{icon}</span>}
               <h1 className={classes.title}>{title}</h1>
-              {headerActions && headerActions.length > 0 && (
-                <div className={classes.actions}>{headerActions}</div>
-              )}
+              <div className={classes.trailing}>
+                <HeaderSearch />
+                {headerActions && headerActions.length > 0 && (
+                  <div className={classes.actions}>{headerActions}</div>
+                )}
+              </div>
             </div>
           )}
 

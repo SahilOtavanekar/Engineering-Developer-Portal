@@ -9,8 +9,6 @@ import {
 import { NavContentBlueprint } from '@backstage/plugin-app-react';
 import { SidebarLogo } from './SidebarLogo';
 import MenuIcon from '@material-ui/icons/Menu';
-import SearchIcon from '@material-ui/icons/Search';
-import { SidebarSearchModal } from '@backstage/plugin-search';
 import { UserSettingsSignInAvatar } from '@backstage/plugin-user-settings';
 import { Fragment, type ReactNode } from 'react';
 
@@ -41,7 +39,7 @@ export const SidebarContent = NavContentBlueprint.make({
       ));
 
       // Skipped items
-      nav.take('page:search'); // Using search modal instead
+      nav.take('page:search'); // Opened from the title bar's search box
       // The relations graph is wanted on entity pages, but the standalone
       // graph browser is not. Taken and discarded rather than disabled in
       // config: `entity-card:catalog-graph/relations` resolves this page's
@@ -64,13 +62,11 @@ export const SidebarContent = NavContentBlueprint.make({
         // does not fit is truncated rather than overlapping the page.
         <Sidebar>
           <SidebarLogo />
-          <SidebarGroup label="Search" icon={<SearchIcon />} to="/search">
-            <SidebarSearchModal />
-          </SidebarGroup>
-          {/* Nor here -- the Search row carries its own rule too, and the
-              divider only sat 10px under it as a second line. The one before
-              Settings is kept: it follows `SidebarSpace`, so it marks off the
-              pinned bottom group across a gap rather than doubling anything. */}
+          {/* Search moved to the page title bar on 2026-10-08 (HeaderSearch
+              in the theme module), so the menu follows the logo directly.
+              No divider here: every item carries its own rule. The one
+              before Settings is kept: it follows `SidebarSpace`, so it marks
+              off the pinned bottom group across a gap. */}
           <SidebarGroup label="Menu" icon={<MenuIcon />}>
             {/* An explicit order, not alphabetical: the Health Dashboard is
                 the landing page (`/` redirects to it in app-config.yaml), so
