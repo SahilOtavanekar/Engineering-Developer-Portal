@@ -105,6 +105,29 @@ function optional(value: string | null | undefined): string | undefined {
 }
 
 /**
+ * An owner as one person, through the identity register.
+ *
+ * Owners reach here under whatever address their source held: the ownership
+ * register's canonical one, or a commit/admin address that is a known alias.
+ * Prashant Chaudhari commits as both prashant.chaudhari@ and
+ * prashantchaudhari@, the identity register says so, and the Created by and
+ * Contributors columns already resolve through it -- the Owner column did
+ * not, so he appeared as two people in the dashboard's Owner filter. Falls
+ * back to what the source said for anyone the register does not know.
+ */
+export function canonicalOwner(
+  owner: { name?: string; email?: string; commits: number },
+  identity: IdentityRegister,
+): { name?: string; email?: string; commits: number } {
+  const person = resolveEngineer(identity, owner.email);
+  return {
+    name: person?.name ?? owner.name,
+    email: person?.email ?? owner.email,
+    commits: owner.commits,
+  };
+}
+
+/**
  * A repository's creator, compacted for the estate listing.
  *
  * The name only. The evidence behind it -- first commit date, repository
@@ -319,13 +342,7 @@ export async function createRouter(
           contributorsByRepository.get(record.id),
           identity,
         ),
-        proposedOwner: owner
-          ? {
-              name: owner.name,
-              email: owner.email,
-              commits: owner.commits,
-            }
-          : undefined,
+        proposedOwner: owner ? canonicalOwner(owner, identity) : undefined,
         directCommits: branchPolicy
           ? {
               total: branchPolicy.direct + branchPolicy.directMerge,
@@ -677,11 +694,7 @@ export async function createRouter(
           ? {
               source: leader.source,
               proposed: proposedOwner
-                ? {
-                    name: proposedOwner.name,
-                    email: proposedOwner.email,
-                    commits: proposedOwner.commits,
-                  }
+                ? canonicalOwner(proposedOwner, identity)
                 : undefined,
               candidates: ownershipCandidates.map(candidate => ({
                 name: candidate.name,
