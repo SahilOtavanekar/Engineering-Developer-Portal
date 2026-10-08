@@ -254,6 +254,7 @@ export async function createRouter(
     const [
       latest,
       proposedOwners,
+      ownersByRepository,
       policy,
       lifetimeCommits,
       lastPipelineRuns,
@@ -262,6 +263,8 @@ export async function createRouter(
     ] = await Promise.all([
       scores.latestForRepositories(ids),
       ownership.proposedForRepositories(ids),
+      // Every listed owner, for the Owner filter. One query for the estate.
+      ownership.ownersForRepositories(ids),
       // One query for the estate, keyed by slug. A per-row lookup would be an
       // N+1 in the one endpoint the two-second page load depends on.
       commits.branchPolicyForWorkspace(
@@ -326,6 +329,10 @@ export async function createRouter(
               commits: owner.commits,
             }
           : undefined,
+        owners: ownersByRepository.get(record.id)?.map(o => ({
+          name: o.name,
+          email: o.email,
+        })),
         directCommits: branchPolicy
           ? {
               total: branchPolicy.direct + branchPolicy.directMerge,

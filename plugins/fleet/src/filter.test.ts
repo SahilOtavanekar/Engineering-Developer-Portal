@@ -3,6 +3,8 @@ import {
   bandCounts,
   dormancyCounts,
   filterRepositories,
+  ownerOptions,
+  ownersOf,
   problemCounts,
 } from './filter';
 
@@ -271,5 +273,109 @@ describe('bandCounts', () => {
       excellent: 0,
       unscored: 0,
     });
+  });
+});
+
+describe('owner filter', () => {
+  const person = (name: string, email?: string) => ({ name, email });
+  const brijesh = person('Brijesh Gupta', 'brijesh.gupta@demandai.co');
+  const sanjay = person('Sanjay Kumar', 'sanjay.kumar@demandai.co');
+  const vivek = person('Vivek Mangukiya', 'vivek.mangukiya@demandai.co');
+  const owned = [
+    // Three register owners; Brijesh is the one the Owner column shows.
+    repo('oxp-backend', {
+      proposedOwner: { ...brijesh, commits: 0 },
+      owners: [brijesh, sanjay, vivek],
+    }),
+    repo('oxp-smtp', {
+      proposedOwner: { ...sanjay, commits: 0 },
+      owners: [sanjay, brijesh],
+    }),
+    repo('crm', {
+      proposedOwner: { name: 'Makarand Prabhu', commits: 0 },
+      // No address: keyed by name instead.
+      owners: [{ name: 'Makarand Prabhu' }],
+    }),
+    repo('unowned-repo'),
+  ];
+  const slugs = (rows: FleetRepositorySummary[]) => rows.map(r => r.slug);
+
+  it('matches any listed owner, not only the one shown', () => {
+    expect(
+      slugs(filterRepositories(owned, { owner: 'sanjay.kumar@demandai.co' })),
+    ).toEqual(['oxp-backend', 'oxp-smtp']);
+    expect(
+      slugs(
+        filterRepositories(owned, { owner: 'vivek.mangukiya@demandai.co' }),
+      ),
+    ).toEqual(['oxp-backend']);
+  });
+
+  it('matches an owner with no address by name', () => {
+    expect(
+      slugs(filterRepositories(owned, { owner: 'name:Makarand Prabhu' })),
+    ).toEqual(['crm']);
+  });
+
+  it('shows everything when no owner is chosen', () => {
+    expect(filterRepositories(owned, {})).toHaveLength(4);
+  });
+
+  it('combines with the other filters', () => {
+    expect(
+      slugs(
+        filterRepositories(owned, {
+          owner: 'sanjay.kumar@demandai.co',
+          query: 'smtp',
+        }),
+      ),
+    ).toEqual(['oxp-smtp']);
+  });
+
+  it('falls back to the shown owner when the backend sends no owner list', () => {
+    const older = repo('legacy', {
+      proposedOwner: {
+        name: 'Ada Lovelace',
+        email: 'ada@demandai.co',
+        commits: 3,
+      },
+    });
+    expect(ownersOf(older)).toEqual(['ada@demandai.co']);
+    expect(
+      slugs(filterRepositories([older], { owner: 'ada@demandai.co' })),
+    ).toEqual(['legacy']);
+  });
+
+  it('offers every owner once, alphabetically, with how many they own', () => {
+    expect(ownerOptions(owned)).toEqual([
+      { key: 'brijesh.gupta@demandai.co', name: 'Brijesh Gupta', count: 2 },
+      { key: 'name:Makarand Prabhu', name: 'Makarand Prabhu', count: 1 },
+      { key: 'sanjay.kumar@demandai.co', name: 'Sanjay Kumar', count: 2 },
+      { key: 'vivek.mangukiya@demandai.co', name: 'Vivek Mangukiya', count: 1 },
+    ]);
+  });
+
+  it('treats two spellings of one address as one person, under the usual spelling', () => {
+    // Measured on this estate: the register says "Gurudutt", Bitbucket's admin
+    // listing "Gurudutt .", for the same address.
+    const guru = (spelling: string) => person(spelling, 'gurudutt@demandai.co');
+    const estate = [
+      repo('dai-delivery', { owners: [guru('Gurudutt')] }),
+      repo('mailwizz-sync', { owners: [guru('Gurudutt')] }),
+      repo('crm-opportunity-sync', { owners: [guru('Gurudutt .')] }),
+    ];
+    expect(ownerOptions(estate)).toEqual([
+      { key: 'gurudutt@demandai.co', name: 'Gurudutt', count: 3 },
+    ]);
+    expect(
+      filterRepositories(estate, { owner: 'gurudutt@demandai.co' }),
+    ).toHaveLength(3);
+  });
+
+  it('does not double-count a person listed twice on one repository', () => {
+    const doubled = repo('doubled', { owners: [sanjay, sanjay] });
+    expect(ownerOptions([doubled])).toEqual([
+      { key: 'sanjay.kumar@demandai.co', name: 'Sanjay Kumar', count: 1 },
+    ]);
   });
 });

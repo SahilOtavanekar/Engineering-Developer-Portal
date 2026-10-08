@@ -16,6 +16,96 @@ export interface FleetFilters {
    * turns a class of problem into one pass of work rather than 29 visits.
    */
   problem?: string;
+  /**
+   * Show only repositories this person owns, by `ownerKey`. Any listed owner
+   * matches, not only the one the Owner column shows.
+   *
+   * Stands in for "Owned by me" until sign-in knows who "me" is: everyone
+   * signs in as the shared guest, who owns nothing. Once Entra ID provides a
+   * real identity, the same filter can be pre-set to the signed-in person.
+   */
+  owner?: string;
+}
+
+type Owner = { name?: string; email?: string };
+
+/**
+ * Who an owner is, for matching: the address when there is one, else the name.
+ *
+ * Not the name alone, because one person reaches here under several spellings:
+ * the register says "Gurudutt" and Bitbucket's admin listing "Gurudutt .", for
+ * the same gurudutt@demandai.co. Keyed by name, the dropdown offered him twice
+ * and each entry found only some of his repositories.
+ */
+export function ownerKey(owner: Owner): string | undefined {
+  const email = owner.email?.trim().toLowerCase();
+  if (email) return email;
+  const name = owner.name?.trim();
+  return name ? `name:${name}` : undefined;
+}
+
+/**
+ * Everyone who owns a repository, the shown owner first. Falls back to the
+ * proposed owner for a response from a backend that predates `owners`.
+ */
+function listedOwners(repository: FleetRepositorySummary): Owner[] {
+  return (
+    repository.owners ??
+    (repository.proposedOwner ? [repository.proposedOwner] : [])
+  );
+}
+
+/** The `ownerKey` of everyone who owns a repository, the shown owner first. */
+export function ownersOf(repository: FleetRepositorySummary): string[] {
+  return listedOwners(repository).flatMap(owner => {
+    const key = ownerKey(owner);
+    return key ? [key] : [];
+  });
+}
+
+export interface OwnerOption {
+  /** What `FleetFilters.owner` holds when this option is chosen. */
+  key: string;
+  /** The person's most common spelling across the estate. */
+  name: string;
+  /** How many repositories they own, counting shared ownership for each owner. */
+  count: number;
+}
+
+/** Every owner on the estate, one entry per person, for the Owner dropdown. */
+export function ownerOptions(
+  repositories: FleetRepositorySummary[],
+): OwnerOption[] {
+  const people = new Map<
+    string,
+    { count: number; spellings: Map<string, number> }
+  >();
+  for (const repository of repositories) {
+    const seen = new Set<string>();
+    for (const owner of listedOwners(repository)) {
+      const key = ownerKey(owner);
+      const name = owner.name?.trim();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      const person = people.get(key) ?? { count: 0, spellings: new Map() };
+      person.count += 1;
+      if (name)
+        person.spellings.set(name, (person.spellings.get(name) ?? 0) + 1);
+      people.set(key, person);
+    }
+  }
+  return [...people]
+    .map(([key, { count, spellings }]) => ({
+      key,
+      // Most used spelling; on a tie the shorter, which drops trailing
+      // punctuation like "Gurudutt ." in favour of "Gurudutt".
+      name:
+        [...spellings].sort(
+          ([a, an], [b, bn]) => bn - an || a.length - b.length,
+        )[0]?.[0] ?? key,
+      count,
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 /**
@@ -43,6 +133,10 @@ export function filterRepositories(
         p => p.id === filters.problem,
       );
       if (!carries) return false;
+    }
+
+    if (filters.owner && !ownersOf(repository).includes(filters.owner)) {
+      return false;
     }
 
     if (query) {

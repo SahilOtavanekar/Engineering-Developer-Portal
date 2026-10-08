@@ -446,6 +446,16 @@ export interface FleetRepositorySummary {
    */
   proposedOwner?: OwnershipCandidateView;
   /**
+   * Everyone who owns this repository, for the dashboard's Owner filter, with
+   * the shown owner (`proposedOwner`) first.
+   *
+   * Wider than `proposedOwner` only where the ownership register lists several
+   * people -- `oxp-backend` names three -- because every listed owner is an
+   * owner. For a derived owner it is that one person. Absent from an older
+   * backend, in which case the filter falls back to `proposedOwner`.
+   */
+  owners?: Array<{ name?: string; email?: string }>;
+  /**
    * Commits that reached the default branch without a pull request.
    *
    * Absent until the branch policy pass has covered the repository, which is

@@ -1329,6 +1329,104 @@ describe('createRouter', () => {
       expect(res.body.repositories[0].proposedOwner).toBeUndefined();
     });
 
+    describe('owners, for the Owner filter', () => {
+      const candidate = (
+        repositoryId: number,
+        rank: number,
+        name: string,
+        source: string,
+        isProposed: boolean,
+      ) => ({
+        repository_id: repositoryId,
+        rank,
+        is_proposed: isProposed,
+        author_name: name,
+        author_email: `${name.split(' ')[0].toLowerCase()}@demandai.co`,
+        commits: 0,
+        window_commits: 0,
+        window_days: 90,
+        source,
+        resolved_at: NOW,
+      });
+
+      it('lists every owner the register names, the shown owner first', async () => {
+        await repositories.syncWorkspace('demandai', [repository()], NOW);
+        const stored = await repositories.findByEntityRef(
+          'component:default/oxp-backend',
+        );
+        // Inserted out of rank order, to prove the order is the store's.
+        await db
+          .client('ownership_candidate')
+          .insert([
+            candidate(
+              stored!.id,
+              3,
+              'Vivek Mangukiya',
+              'ownership-register',
+              false,
+            ),
+            candidate(
+              stored!.id,
+              1,
+              'Brijesh Gupta',
+              'ownership-register',
+              true,
+            ),
+            candidate(
+              stored!.id,
+              2,
+              'Sanjay Kumar',
+              'ownership-register',
+              false,
+            ),
+          ]);
+
+        const res = await request(await app())
+          .get('/repositories')
+          .expect(200);
+
+        const [summary] = res.body.repositories;
+        expect(summary.proposedOwner.name).toBe('Brijesh Gupta');
+        expect(summary.owners.map((o: { name: string }) => o.name)).toEqual([
+          'Brijesh Gupta',
+          'Sanjay Kumar',
+          'Vivek Mangukiya',
+        ]);
+      });
+
+      it('counts only the proposal when the owner was derived', async () => {
+        await repositories.syncWorkspace('demandai', [repository()], NOW);
+        const stored = await repositories.findByEntityRef(
+          'component:default/oxp-backend',
+        );
+        // A derived answer's other candidates are commit authors, not owners.
+        await db
+          .client('ownership_candidate')
+          .insert([
+            candidate(stored!.id, 1, 'Brijesh Gupta', 'commit-history', true),
+            candidate(stored!.id, 2, 'Avinash More', 'commit-history', false),
+          ]);
+
+        const res = await request(await app())
+          .get('/repositories')
+          .expect(200);
+
+        expect(
+          res.body.repositories[0].owners.map((o: { name: string }) => o.name),
+        ).toEqual(['Brijesh Gupta']);
+      });
+
+      it('omits owners for a repository nobody owns', async () => {
+        await repositories.syncWorkspace('demandai', [repository()], NOW);
+
+        const res = await request(await app())
+          .get('/repositories')
+          .expect(200);
+
+        expect(res.body.repositories[0].owners).toBeUndefined();
+      });
+    });
+
     it('reports the nominal weight so a partial score cannot be misread', async () => {
       await seedScored('alpha', 88, 'healthy', 85);
 
