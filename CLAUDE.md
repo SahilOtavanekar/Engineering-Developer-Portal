@@ -2310,10 +2310,42 @@ true`, and NOTES warns on plain HTTP with a real host.
     ingestion has not finished by the sweep's 210s initial delay, the sweep
     and therefore scoring wait about 6 hours. This was not confirmed from
     the logs: the user never pasted them, and the scores were there two
-    days later. **Unfixed.** The fix is for a deferral to retry within
-    minutes. Until it lands, setting `next_run_start_at = now()` for
-    `pull-request-size:demandai` in `backstage_plugin_fleet` is the
-    workaround.
+    days later. **Fixed 2026-10-08** (see the refresh-cycle note below): a
+    pass that finishes now wakes everything waiting on it, so a deferral
+    lasts as long as its prerequisite takes rather than until its own next
+    tick.
+- **The portal refreshes every 6 hours, not 30 minutes, and each cycle runs
+  in dependency order.** Chosen 2026-10-08 because the portal is read about
+  once a day. `fleet.bitbucket.schedule` in `app-config.yaml` -- **not**
+  `fleet.schedule`, which `config:check --strict` rejects and the code would
+  silently ignore (`plugin.ts` reads the schedule from `fleet.bitbucket`).
+  Pull request size and branch divergence keep their own 360-minute settings;
+  the catalog's repository listing keeps its hardcoded 30 minutes (one
+  request a run, so new repositories still appear quickly).
+  **Why ordering had to come with it:** measured on the local backend that
+  day, the per-task timers had drifted so that scoring ran _before_ the
+  commit and pull request passes in every cycle -- harmless at 30 minutes,
+  but at 6 hours it would put scores a whole cycle behind their facts.
+  `sync/cycle.ts` (`PassCycle`) and `guard`'s `inputs` option fix it: a pass
+  that finishes wakes its dependents through `scheduler.triggerTask`, and a
+  dependent runs only once every input has finished since it last started.
+  Branch policy reads commits and pull requests; scoring reads branch policy
+  and repository detail; ownership reads commits. Pull request size is not
+  waited on -- it moves little and can take 15 minutes.
+  **Three behaviours that are deliberate:**
+  - **Finish times live in memory**, because `sync_state` cannot record
+    them: `recordSuccess`/`recordFailure` write the _start_ time back as
+    `last_attempt_at`. One replica, so that is sound; after a restart a
+    dependent counts as having started at boot and waits for the next
+    inputs, rather than running at once on stale facts (which the first
+    version did: commits finishing woke scoring before branch policy ran).
+  - **A pass skipped by backoff counts as finished for the cycle.** Found
+    live: repository detail backing off on 429s never finished, and scoring
+    sat waiting for it. It now scores on what is stored, as it always did.
+  - **Nothing starves:** a dependent runs anyway after two cycles (12 h).
+    To refresh sooner: set `next_run_start_at = now()` for `commits`,
+    `pull-requests` and `repository-detail`; branch policy and scoring follow
+    by themselves. The command is in the Word guide's Part 3.
   - **Not yet verified:** pod, job and log output (the pod and job listing,
     the `ecr-refresh-init` logs, the portal logs); the 6-hourly CronJob
     refresh.

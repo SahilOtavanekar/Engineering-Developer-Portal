@@ -13,8 +13,10 @@ export interface Config {
       workspaces: string[];
 
       /**
-       * How often repositories are re-read from Bitbucket.
-       * Defaults to every 30 minutes.
+       * How often the portal refreshes: every Bitbucket sync pass, ownership,
+       * branch policy and scoring share this schedule. Pull request size and
+       * branch divergence have their own frequencies. Defaults to every 30
+       * minutes; this estate sets 6 hours in app-config.yaml.
        */
       schedule?: SchedulerServiceTaskScheduleDefinitionConfig;
 

@@ -261,6 +261,21 @@ fleet:
     # endpoints (CHANGE-2770), so they must be listed explicitly.
     workspaces:
       - demandai
+    # How often the portal refreshes from Bitbucket and rescores: every 6 hours,
+    # chosen 2026-10-08 because the portal is read about once a day. It was 30
+    # minutes. Covers every sync pass and scoring; pull request size and branch
+    # divergence already ran every 6 hours on their own settings, and the
+    # catalog's repository list keeps its own 30 minutes (one request a run).
+    # Within a cycle the passes run in dependency order -- see
+    # plugins/fleet-backend/src/sync/cycle.ts -- so scores always describe the
+    # same refresh. To refresh sooner, set next_run_start_at = now() for a task in
+    # backstage_backend_tasks__tasks (the Word guide's Part 3 has the command).
+    # Read as fleet.bitbucket.schedule -- a `fleet.schedule` key is rejected by
+    # config:check --strict and would otherwise be silently ignored.
+    schedule:
+      frequency: { hours: 6 }
+      timeout: { minutes: 10 }
+      initialDelay: { seconds: 20 }
   ownership:
     # Confirmed ownership, from the repository standardization document. This is
     # the only source the portal treats as authoritative; admin permission and

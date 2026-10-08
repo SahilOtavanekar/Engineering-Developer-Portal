@@ -47,6 +47,7 @@ import { ProductivityStore } from './database/ProductivityStore';
 import { ProductivityService } from './productivity/ProductivityService';
 import { readIdentityRegister } from './identity/identityRegister';
 import { RepositoryIngestionService } from './ingestion/RepositoryIngestionService';
+import { PassCycle, frequencyMs } from './sync/cycle';
 
 const migrationsDirectory = resolvePackagePath(
   '@internal/backstage-plugin-fleet-backend',
@@ -289,6 +290,16 @@ export const fleetPlugin = createBackendPlugin({
               fleetConfig.getConfig('schedule'),
             )
           : DEFAULT_SCHEDULE;
+        // How long a dependent pass waits for its inputs before running on
+        // whatever is stored: two cycles, so one slow or failed input costs a
+        // cycle rather than stalling scoring for good. A cron schedule has no
+        // fixed interval; a day is the conservative reading of one.
+        const maxWaitMs =
+          2 *
+          frequencyMs(
+            schedule.frequency as Parameters<typeof frequencyMs>[0],
+            12 * 3_600_000,
+          );
 
         const newClient = () =>
           BitbucketCloudClient.fromIntegration(integration.config, { logger });
@@ -310,17 +321,50 @@ export const fleetPlugin = createBackendPlugin({
             windowDays,
           });
 
+          // Which passes to wake when a pass finishes: everything that waits
+          // on it, through `after` (first boot) or `inputs` (every cycle). See
+          // sync/cycle.ts for why a cycle has to be ordered at all.
+          const cycle = new PassCycle();
+          const dependents = new Map<string, Set<string>>();
+          const wake = (finished: string) => {
+            for (const dependent of dependents.get(finished) ?? []) {
+              // Fire and forget. A dependent already running rejects with a
+              // conflict, and a pass still waiting on other inputs declines to
+              // run when woken; neither is an error.
+              scheduler
+                .triggerTask(dependent)
+                .catch(error =>
+                  logger.debug(
+                    `Did not wake ${dependent} after ${finished}: ${error}`,
+                  ),
+                );
+            }
+          };
+
           // Rethrowing from a scheduled task retires it permanently. Failures
           // are already recorded in sync_state, so we log and wait for the
           // next tick instead.
-          const guard =
-            (
-              label: string,
-              resource: string,
-              run: () => Promise<unknown>,
-              options: { after?: string[] } = {},
-            ) =>
-            async () => {
+          const guard = (
+            label: string,
+            resource: string,
+            run: () => Promise<unknown>,
+            options: {
+              /** Must have finished once, ever, before this runs (first boot). */
+              after?: string[];
+              /** Must have finished since this last started (every cycle). */
+              inputs?: string[];
+            } = {},
+          ) => {
+            for (const prerequisite of [
+              ...(options.after ?? []),
+              ...(options.inputs ?? []),
+            ]) {
+              const set = dependents.get(prerequisite) ?? new Set<string>();
+              set.add(resource);
+              dependents.set(prerequisite, set);
+            }
+
+            return async () => {
               // Backoff lives here rather than in each service so every
               // scheduled task gets it: a resource that keeps failing should
               // stop spending quota on something that is not going to work.
@@ -331,6 +375,13 @@ export const fleetPlugin = createBackendPlugin({
                     state!,
                   )}`,
                 );
+                // Its turn this cycle is over, so it counts as finished for
+                // whatever waits on it. Measured 2026-10-08: repository detail
+                // backing off on rate limits never finished, and scoring then
+                // waited the full maxWaitMs for an input that was not going to
+                // run. It now scores on what is stored, as it did before.
+                cycle.finished(resource);
+                wake(resource);
                 return;
               }
 
@@ -349,6 +400,9 @@ export const fleetPlugin = createBackendPlugin({
                   live.length,
                 );
                 if (waiting.length > 0) {
+                  // No longer a wait until this pass's next tick -- which on a
+                  // 6-hour cycle held a first install's scores back by hours.
+                  // Each prerequisite wakes this pass when it finishes.
                   logger.info(
                     `${label} deferred for '${workspace}': waiting for the ` +
                       `first complete run of ${waiting.join(', ')}`,
@@ -357,6 +411,18 @@ export const fleetPlugin = createBackendPlugin({
                 }
               }
 
+              if (
+                options.inputs?.length &&
+                !cycle.due(resource, options.inputs, maxWaitMs)
+              ) {
+                logger.debug(
+                  `${label} waiting for this cycle's ` +
+                    `${cycle.pending(resource, options.inputs).join(', ')}`,
+                );
+                return;
+              }
+
+              cycle.started(resource);
               try {
                 await run();
               } catch (error) {
@@ -364,8 +430,12 @@ export const fleetPlugin = createBackendPlugin({
                   `${label} failed for workspace '${workspace}'`,
                   error as Error,
                 );
+              } finally {
+                cycle.finished(resource);
+                wake(resource);
               }
             };
+          };
 
           await scheduler.scheduleTask({
             id: RepositoryIngestionService.resourceKey(workspace),
@@ -502,6 +572,8 @@ export const fleetPlugin = createBackendPlugin({
               'Ownership resolution',
               OwnershipService.resourceKey(workspace),
               () => ownership.resolveAll(workspace),
+              // Derived owners come from stored commits, so read this cycle's.
+              { inputs: [CommitIngestionService.resourceKey(workspace)] },
             ),
           });
 
@@ -550,6 +622,10 @@ export const fleetPlugin = createBackendPlugin({
               // as pushed straight to main.
               {
                 after: [
+                  CommitIngestionService.resourceKey(workspace),
+                  PullRequestIngestionService.resourceKey(workspace),
+                ],
+                inputs: [
                   CommitIngestionService.resourceKey(workspace),
                   PullRequestIngestionService.resourceKey(workspace),
                 ],
@@ -658,6 +734,14 @@ export const fleetPlugin = createBackendPlugin({
                   PullRequestIngestionService.resourceKey(workspace),
                   BranchPolicyService.resourceKey(workspace),
                   PullRequestSizeService.resourceKey(workspace),
+                ],
+                // Every cycle: after branch policy (itself after commits and
+                // pull requests) and repository detail (README, branches,
+                // pipelines). Pull request size is not waited on: it moves
+                // little between cycles and its sweep can take 15 minutes.
+                inputs: [
+                  BranchPolicyService.resourceKey(workspace),
+                  RepositoryDetailIngestionService.resourceKey(workspace),
                 ],
               },
             ),
