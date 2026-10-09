@@ -2383,9 +2383,11 @@ during startup"` printed only kubectl's own "Defaulted container
     runs them and pastes the output.
   - **Bitbucket quota competitors:** `portal-demo` (:7010) was stopped
     2026-10-05. The older docker-desktop deployment
-    (`fleet-portal` in namespace `fleet`, 12 days old) is **still running**
-    on the same credential; pausing it with `--replicas=0` is the user's
-    call and still open.
+    (`fleet-portal` in namespace `fleet`) was **paused 2026-10-09** at the
+    user's request: `--replicas=0`, nothing deleted, its `postgres-0` still
+    running and harmless. The Rancher deployment is now the only portal on
+    the shared credential. Bring it back with
+    `kubectl --context docker-desktop -n fleet scale deploy/fleet-portal --replicas=1`.
 
 ## Commands
 
