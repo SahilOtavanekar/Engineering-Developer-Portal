@@ -2346,9 +2346,34 @@ true`, and NOTES warns on plain HTTP with a real host.
     To refresh sooner: set `next_run_start_at = now()` for `commits`,
     `pull-requests` and `repository-detail`; branch policy and scoring follow
     by themselves. The command is in the Word guide's Part 3.
-  - **Not yet verified:** pod, job and log output (the pod and job listing,
-    the `ecr-refresh-init` logs, the portal logs); the 6-hourly CronJob
-    refresh.
+  - **Second release, 2026-10-09: `20261009-0902-cdf2ce5`** (`main` at
+    `cdf2ce5`: PRs #4-#8 -- dashboard landing page, sidebar order, Owner
+    filter, search in the title bar, card order, 6-hour ordered refresh).
+    Helm revision 2. Rollback tag `20261005-1057-b45e4e0`. **Built and
+    pushed from the user's laptop, not by the colleague**, with the
+    `portal-pull` AWS CLI profile -- which is IAM user `mdlh-smartfix-dev`,
+    the same key as the cluster's pull secret. Measured read-only that day:
+    despite its role here it can **push** (`InitiateLayerUpload` allowed, and
+    the push succeeded), **read every ECR repository in the account**
+    (`describe-repositories`), and cannot read its own IAM policies. It is
+    shared with another project. A dedicated user scoped to
+    `dai-engineering-portal` is the recommended replacement, for the cluster
+    pull secret above all.
+    **Verified:** pod `Running 1/1` on the new image; the ECR refresh
+    CronJob had run 3h earlier (`Completed`), so the 6-hourly refresh works;
+    the live site, headless, lands on `/fleet`, shows the new sidebar order,
+    the title-bar search, the Owner filter (Prashant once, 3) and 107 of 107
+    scored. The Postgres pod restarted with the upgrade; data survived.
+    **The Windows trap that cost a round:** the build ran in PowerShell
+    (`$env:AWS_PROFILE`), but `deploy.sh` needs Git Bash, and Git Bash
+    sometimes prefixes a pasted line with `[200~` (bracketed paste) --
+    `command not found`. Re-paste or type the line.
+  - **Startup log check clean on the 2026-10-09 release:**
+    `kubectl -n fleet-dev logs deploy/fleet-portal | grep -i "threw an error
+during startup"` printed only kubectl's own "Defaulted container
+    backstage" notice, which is stderr and not a match -- no plugin failed.
+    Every item that was listed as not yet verified for this deployment has
+    now been checked.
   - **The default kubectl context on this machine is `docker-desktop`.**
     The first dry run went there, said "OK" and proved nothing. Always run
     `export KUBECONFIG="$HOME/.kube/rancher-dev.yaml"` first; the context is
