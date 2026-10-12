@@ -2382,6 +2382,18 @@ true`, and NOTES warns on plain HTTP with a real host.
     (`$env:AWS_PROFILE`), but `deploy.sh` needs Git Bash, and Git Bash
     sometimes prefixes a pasted line with `[200~` (bracketed paste) --
     `command not found`. Re-paste or type the line.
+  - **Third release, 2026-10-12: `20261012-0902-92e2a1f`** (`main` at
+    `92e2a1f`: PR #9, the initial commit no longer counts as a direct commit).
+    Rollback tag `20261009-0902-cdf2ce5`. Built and pushed by the user with
+    `portal-pull`, deployed with `deploy.sh`; startup log clean, pod `1/1`.
+    Refreshed by hand (`next_run_start_at = now()` on commits, pull requests
+    and repository detail) and **scores landed 2 minutes later**, verified
+    headless on the live host: crm-opportunity-sync 91, dxp-workers 85,
+    insyte-hub 66, billing-frontend and oxp-unsubscribe-service 82,
+    autodesk-dashboard 48 to 68, repositories flagged for direct commits 9 to
+    3 -- exactly the local projection. A repository created that day
+    (`sns-fanout`) waits for the next 6-hour cycle, because the manual trigger
+    does not include `repositories:demandai`.
   - **Startup log check clean on the 2026-10-09 release:**
     `kubectl -n fleet-dev logs deploy/fleet-portal | grep -i "threw an error
 during startup"` printed only kubectl's own "Defaulted container
