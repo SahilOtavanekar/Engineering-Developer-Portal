@@ -66,7 +66,9 @@ const BANDS: Array<{ atLeast: number; fraction: number }> = [
  * - the classification pass has not covered this repository yet
  * - nothing landed on the branch in the window, so there is nothing to judge --
  *   48 of 95 repositories here are dormant and are already penalised for that
- *   by the activity scorers
+ *   by the activity scorers. That includes a new repository holding only its
+ *   initial commit, which is not part of `mainline`: nothing in it has yet had
+ *   the chance to go through a pull request
  */
 export function pullRequestDisciplineScorer(
   options: PullRequestDisciplineOptions = {},
@@ -92,6 +94,11 @@ export function pullRequestDisciplineScorer(
       const directTotal = direct + directMerge;
       const share = viaPullRequest / mainline;
       const branch = branchPolicy.branch ?? 'the default branch';
+      // Said aloud because the count no longer matches the commit list a new
+      // repository's team would check it against.
+      const initialNote = branchPolicy.initial
+        ? ', not counting the initial commit, which no pull request could have produced'
+        : '';
 
       // Exact equality for the top band rather than `share >= 1`: the point of
       // the rule is that nothing bypassed a pull request, and an integer
@@ -106,7 +113,7 @@ export function pullRequestDisciplineScorer(
           fraction: 1,
           detail:
             `all ${mainline} commit${mainline === 1 ? '' : 's'} on ${branch} ` +
-            `came through a pull request in ${windowDays} days`,
+            `came through a pull request in ${windowDays} days${initialNote}`,
         };
       }
 
@@ -148,7 +155,7 @@ export function pullRequestDisciplineScorer(
           `95-99% earns just over a third of them and 80-94% earns a seventh.`,
         detail:
           `${mainline} commit${mainline === 1 ? '' : 's'} reached ${branch} ` +
-          `in ${windowDays} days: ${split}`,
+          `in ${windowDays} days: ${split}${initialNote}`,
       };
     },
   };

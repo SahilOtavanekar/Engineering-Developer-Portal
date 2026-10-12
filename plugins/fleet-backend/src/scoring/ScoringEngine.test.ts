@@ -1008,8 +1008,37 @@ describe('pullRequestDisciplineScorer', () => {
     direct: 0,
     directMerge: 0,
     mergedIn: 0,
+    initial: 0,
     branch: 'main',
     ...o,
+  });
+
+  describe('the initial commit', () => {
+    it('does not cost a new repository the metric', () => {
+      // The classifier keeps it out of the mainline, so three pull requests
+      // after it are three of three, not three of four.
+      const outcome = scorer.score(
+        withPolicy(policy({ mainline: 3, viaPullRequest: 3, initial: 1 })),
+      );
+
+      expect(outcome?.fraction).toBe(1);
+      expect(outcome?.detail).toContain('not counting the initial commit');
+    });
+
+    it('leaves a repository with only its initial commit unmeasured', () => {
+      // Nothing has had the chance to go through a pull request yet.
+      expect(
+        scorer.score(withPolicy(policy({ mainline: 0, initial: 1 }))),
+      ).toBeNull();
+    });
+
+    it('says nothing about it when it is outside the window', () => {
+      const outcome = scorer.score(
+        withPolicy(policy({ mainline: 2, viaPullRequest: 2 })),
+      );
+
+      expect(outcome?.detail).not.toContain('initial');
+    });
   });
 
   it('cannot measure before the classification pass has run', () => {

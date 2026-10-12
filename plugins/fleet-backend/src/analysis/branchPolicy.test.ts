@@ -16,7 +16,46 @@ describe('classifyArrivals', () => {
       pullRequestMerges: [],
     });
 
-    expect(result.map(r => r.arrival)).toEqual(['direct', 'direct', 'direct']);
+    expect(result.map(r => r.arrival)).toEqual(['direct', 'direct', 'initial']);
+  });
+
+  it('does not call the initial commit direct', () => {
+    // A pull request needs a branch to merge into, and an empty repository
+    // has none, so the first commit can only ever be pushed. Calling it direct
+    // cost every new repository the whole metric for its first 30 days -- 7
+    // of them on 2026-10-08, each with nothing else against it.
+    const result = classifyArrivals({
+      commits: chain(['pr2', 'pr1'], ['pr1', 'init'], ['init']),
+      pullRequestMerges: ['pr1', 'pr2'],
+    });
+
+    expect(result.find(r => r.hash === 'init')).toMatchObject({
+      onMainline: true,
+      arrival: 'initial',
+    });
+  });
+
+  it('leaves a root commit that a merge brought in as merged-in', () => {
+    // An unrelated history merged into the branch has its own root, but that
+    // one is not where the branch began.
+    const result = classifyArrivals({
+      commits: chain(['merge', 'base', 'other'], ['base'], ['other']),
+      pullRequestMerges: [],
+    });
+
+    expect(result.find(r => r.hash === 'base')?.arrival).toBe('initial');
+    expect(result.find(r => r.hash === 'other')?.arrival).toBe('merged-in');
+  });
+
+  it('does not take a commit whose parent is missing for the initial one', () => {
+    // Only a commit with no parents at all is where the branch began. One
+    // whose parent simply is not stored is an ordinary commit.
+    const result = classifyArrivals({
+      commits: chain(['b', 'a']),
+      pullRequestMerges: [],
+    });
+
+    expect(result[0].arrival).toBe('direct');
   });
 
   it('credits a pull request whose merge commit is on the branch', () => {
@@ -143,13 +182,14 @@ describe('summarise', () => {
     const s = summarise(classified);
 
     expect(s).toEqual({
-      mainline: 3,
+      mainline: 2,
       viaPullRequest: 1,
-      direct: 2,
+      direct: 1,
       directMerge: 0,
       mergedIn: 1,
+      initial: 1,
     });
-    expect(s.mainline + s.mergedIn).toBe(classified.length);
+    expect(s.mainline + s.mergedIn + s.initial).toBe(classified.length);
   });
 
   it('counts both kinds of direct arrival together', () => {
@@ -169,6 +209,17 @@ describe('summarise', () => {
       direct: 0,
       directMerge: 0,
       mergedIn: 0,
+      initial: 0,
     });
+  });
+
+  it('leaves the initial commit out of the mainline it is judged on', () => {
+    const s = summarise([
+      { hash: 'b', onMainline: true, arrival: 'pull-request' },
+      { hash: 'a', onMainline: true, arrival: 'initial' },
+    ]);
+
+    expect(s).toMatchObject({ mainline: 1, viaPullRequest: 1, initial: 1 });
+    expect(directTotal(s)).toBe(0);
   });
 });
