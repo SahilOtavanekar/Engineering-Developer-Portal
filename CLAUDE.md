@@ -222,6 +222,41 @@ Other findings:
 - **Main branch health, 30 days:** 7 repositories have work reaching main
   outside a pull request. `exp` is the worst at 12 direct commits of 13.
 
+### Measured 2026-10-12
+
+- **DAARWYN releases as a batch: `dev` to `stage` to `main`, all repositories
+  at once.** 11 live repositories (`daarwyn-billing-services` is gone from
+  Bitbucket), all owned by Mohit Sharma through the register, 8 At Risk and 3
+  Needs Attention, mean 52. Daily work is on `dev`; on **2026-08-24, 10 of the
+  11 merged "Promote stage to main" the same day**, and `main` has since taken
+  only Avinash More's online config edits. Pipelines fire in 6-8 repositories
+  inside the same ten minutes, and one feature branch
+  (`feature/entitlements-adapter`) spans 8 -- but each repository runs and
+  records its **own** pipeline, so no shared-pipeline mapping is needed.
+  The scores are the rules working, not a defect: "Main branch up to date" is
+  7/20 on every one because nothing has been promoted for 40-odd days;
+  "Changes through pull requests" is unmeasured on all (nothing reached
+  `main` in 30 days, and everything that ever did came by pull request);
+  **code review is 0/15 on all** (no peer approval on any merged pull
+  request, promotions included); and pull request size is 1/10 wherever the
+  promotion is the only pull request in 90 days, because with one pull
+  request the median _is_ the promotion. Only `daarwyn-data-sync-jobs`
+  records deployments, though every repository runs pipelines -- the
+  deployment-name mismatch again. A peer-reviewed promotion would take a
+  typical service from 54 to about 90. Whether a release branch should count
+  for "main up to date" is a product question, not a bug.
+- **A repository can be unownable, and `autodesk-dashboard` is one.** Not in
+  the register (created 2026-10-10, after the document), **no user holds any
+  direct permission on it** (access is via workspace or group, invisible to
+  this token), and its author has 2 commits against `minimumCommits` 3.
+  Nothing in the chain can name anyone until one of those changes.
+- **Admin as a confirmed owner was measured, and parked.** Option A (admin
+  replaces the register, then commits) would change 22 owners to different
+  people and leave 16 unowned; option B (register, then admin confirmed, then
+  commits unconfirmed) changes nobody and flips 19 tags to confirmed. B was
+  recommended; the user deferred the decision. The identity register names
+  Amey Sunil Khurdekar `AmeyK`, which no Bitbucket display name matches.
+
 ### Deprecated endpoints -- CHANGE-2770
 
 These all return **410 Gone** and cannot be used:
@@ -1217,6 +1252,24 @@ connection`, which took `/api/catalog` down to 404 and left every page in the
 id = '<task>'` -- which is the scheduler's own next action, just sooner, and
   it reschedules normally afterwards. Do that rather than polling; **do not**
   read "the code is deployed" as "the data has changed".
+- **After the backend has been down for more than one cadence, every pass
+  runs twice on start-up -- and that is Backstage, not this code.** Measured
+  2026-10-12 on the local backend, off since 2026-10-08: repository sync,
+  commits, pull requests, detail, divergence and ownership each ran a second
+  time within seconds of their first run ending, about **850 extra Bitbucket
+  requests**. The cause is `TaskWorker.computeNextRunStartAt` in
+  `@backstage/backend-defaults` 0.17.6: on release it sets
+  `greatest(next_run_start_at + cadence, now())`, anchored on when the run was
+  _due_. Due four days ago, "+6 h" is still past, so `now()` wins and the task
+  is due again at once; the second run anchors on today and lands correctly.
+  Confirmed from the table afterwards: every task's next run was exactly 6 h
+  after its **first** run ended. So it is always two runs, never more, and
+  only after missing a run by more than a full cadence -- a normal deploy
+  (about a minute down) and the manual `next_run_start_at = now()` trigger
+  both reschedule cleanly. On Rancher it would take an outage of over 6 hours.
+  Left as is, by decision pending: the fix on our side would be skipping a
+  pass that finished within the last few minutes, at the cost of ignoring a
+  manual refresh inside that window.
 - **"The backend is up" has three meanings and two of them are wrong.**
   Measured across a restart 2026-09-23, to the half-second: the **port** opens
   at 143s, every plugin route still 404s until **148s**, and
