@@ -160,7 +160,7 @@ export class CommitStore {
     if (classified.length === 0) return 0;
 
     // Group by the value being written so each distinct combination is one
-    // statement, not one per commit. There are only ever four.
+    // statement, not one per commit. There are only ever five.
     const groups = new Map<string, string[]>();
     for (const commit of classified) {
       const key = `${commit.onMainline ? 1 : 0}:${commit.arrival}`;
@@ -208,6 +208,7 @@ export class CommitStore {
     const direct = of('direct');
     const directMerge = of('direct-merge');
     const mergedIn = of('merged-in');
+    const initial = of('initial');
 
     return {
       mainline: viaPullRequest + direct + directMerge,
@@ -215,7 +216,8 @@ export class CommitStore {
       direct,
       directMerge,
       mergedIn,
-      classified: viaPullRequest + direct + directMerge + mergedIn,
+      initial,
+      classified: viaPullRequest + direct + directMerge + mergedIn + initial,
     };
   }
 
@@ -256,12 +258,14 @@ export class CommitStore {
           direct: 0,
           directMerge: 0,
           mergedIn: 0,
+          initial: 0,
         } as BranchPolicySummary);
       const n = Number(row.n);
       if (row.arrival === 'pull-request') current.viaPullRequest += n;
       else if (row.arrival === 'direct') current.direct += n;
       else if (row.arrival === 'direct-merge') current.directMerge += n;
       else if (row.arrival === 'merged-in') current.mergedIn += n;
+      else if (row.arrival === 'initial') current.initial += n;
       current.mainline =
         current.viaPullRequest + current.direct + current.directMerge;
       bySlug.set(row.slug, current);

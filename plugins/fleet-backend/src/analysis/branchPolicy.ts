@@ -7,7 +7,13 @@ export type CommitArrival =
   /** A merge onto the branch with no pull request behind it. */
   | 'direct-merge'
   /** Reached the branch as part of a merge, not on its own. */
-  | 'merged-in';
+  | 'merged-in'
+  /**
+   * The commit the branch began with. Pushed by necessity -- a pull request
+   * needs a branch to merge into, and an empty repository has none -- so it
+   * is neither a pull request nor a bypass of one, and is judged as neither.
+   */
+  | 'initial';
 
 export interface CommitNode {
   hash: string;
@@ -70,7 +76,16 @@ export interface ClassifyOptions {
  *   from a direct one)
  * - otherwise, two or more parents -> `direct-merge`, someone merged locally
  *   and pushed, or pulled with a merge
+ * - otherwise, no parents at all   -> `initial`, where the branch began
  * - otherwise                      -> `direct`
+ *
+ * **The initial commit is its own arrival, not a direct one.** It used to fall
+ * through to `direct`, which cost every new repository the whole pull-request
+ * metric for its first 30 days for a push nobody could have avoided: measured
+ * 2026-10-08, 7 repositories, and in every one of them it was the only commit
+ * against them. Only the mainline root qualifies -- a root a merge brought in
+ * stays `merged-in`, and a commit whose parent merely is not stored has
+ * parents, so it stays `direct`.
  */
 export function classifyArrivals(options: ClassifyOptions): ClassifiedCommit[] {
   const { commits, pullRequestMerges, since } = options;
@@ -110,26 +125,30 @@ export function classifyArrivals(options: ClassifyOptions): ClassifiedCommit[] {
           arrival: 'pull-request' as const,
         };
       }
-      return {
-        hash: commit.hash,
-        onMainline: true,
-        arrival:
-          commit.parents.length >= 2
-            ? ('direct-merge' as const)
-            : ('direct' as const),
-      };
+      let arrival: CommitArrival = 'direct';
+      if (commit.parents.length >= 2) arrival = 'direct-merge';
+      else if (commit.parents.length === 0) arrival = 'initial';
+      return { hash: commit.hash, onMainline: true, arrival };
     });
 }
 
 /** Counts for one repository over a window. */
 export interface BranchPolicySummary {
-  /** Commits on the branch's own history. */
+  /**
+   * Commits on the branch's own history that are judged: everything except
+   * the initial commit, which is counted separately.
+   */
   mainline: number;
   viaPullRequest: number;
   direct: number;
   directMerge: number;
   /** Reached the branch inside a merge. Reported so the total reconciles. */
   mergedIn: number;
+  /**
+   * The commit the branch began with, if it falls in the window: 0 or 1.
+   * Outside `mainline`, so it is neither credited nor held against anyone.
+   */
+  initial: number;
 }
 
 export function summarise(classified: ClassifiedCommit[]): BranchPolicySummary {
@@ -146,6 +165,7 @@ export function summarise(classified: ClassifiedCommit[]): BranchPolicySummary {
     direct,
     directMerge,
     mergedIn: count('merged-in'),
+    initial: count('initial'),
   };
 }
 

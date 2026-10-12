@@ -335,4 +335,47 @@ describe('CommitStore', () => {
     await expect(commits.count(repositoryId)).resolves.toBe(1);
     await expect(commits.count(other!.id)).resolves.toBe(1);
   });
+
+  describe('branch policy counts', () => {
+    beforeEach(async () => {
+      await commits.insertMany(repositoryId, [
+        commit({ hash: 'pr', parents: ['work'] }),
+        commit({ hash: 'work', parents: ['root'] }),
+        commit({ hash: 'root', parents: [], parentCount: 0 }),
+      ]);
+      await commits.recordArrivals(repositoryId, [
+        { hash: 'pr', onMainline: true, arrival: 'pull-request' },
+        { hash: 'work', onMainline: true, arrival: 'direct' },
+        { hash: 'root', onMainline: true, arrival: 'initial' },
+      ]);
+    });
+
+    it('keeps the initial commit out of the mainline for one repository', async () => {
+      // The scorer reads this, so it is where the initial commit has to stay
+      // out of the share for the fix to reach a score at all.
+      const since = new Date(NOW.getTime() - 30 * 86_400_000);
+
+      await expect(
+        commits.branchPolicySince(repositoryId, since),
+      ).resolves.toMatchObject({
+        mainline: 2,
+        viaPullRequest: 1,
+        direct: 1,
+        initial: 1,
+        classified: 3,
+      });
+    });
+
+    it('keeps the initial commit out of the mainline for the workspace', async () => {
+      // The dashboard's direct-commits chip and the catalog tag read this one.
+      const since = new Date(NOW.getTime() - 30 * 86_400_000);
+      const bySlug = await commits.branchPolicyForWorkspace('demandai', since);
+
+      expect(bySlug.get('oxp-backend')).toMatchObject({
+        mainline: 2,
+        direct: 1,
+        initial: 1,
+      });
+    });
+  });
 });

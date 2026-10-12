@@ -166,7 +166,7 @@ describe('BranchPolicyService', () => {
       arrival: 'merged-in',
       onMainline: false,
     });
-    expect(got.get('base')).toEqual({ arrival: 'direct', onMainline: true });
+    expect(got.get('base')).toEqual({ arrival: 'initial', onMainline: true });
   });
 
   it('skips a repository with merged pull requests but no merge hashes', async () => {
@@ -202,7 +202,10 @@ describe('BranchPolicyService', () => {
 
     expect(summary.skippedNoMergeHashes).toBe(0);
     expect(summary.classified).toBe(2);
-    expect([...got.values()].every(v => v.arrival === 'direct')).toBe(true);
+    // Everything except the commit the repository began with, which no pull
+    // request could have produced.
+    expect(got.get('a')?.arrival).toBe('direct');
+    expect(got.get('b')?.arrival).toBe('initial');
   });
 
   it('skips a repository whose commits are missing parent hashes', async () => {
@@ -239,7 +242,7 @@ describe('BranchPolicyService', () => {
 
     expect(summary.skippedNoParents).toBe(0);
     expect(summary.classified).toBe(2);
-    expect((await arrivals(id)).get('root')?.arrival).toBe('direct');
+    expect((await arrivals(id)).get('root')?.arrival).toBe('initial');
   });
 
   it('skips a repository with no default branch recorded', async () => {

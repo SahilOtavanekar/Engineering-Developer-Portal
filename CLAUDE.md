@@ -758,6 +758,20 @@ card rendered "undefined of 53".`yarn tsc` cannot catch this; only reading
   sampled commits: the portal reproduces it **exactly** -- 205 via pull request,
   365 direct, 15 direct merges, 33 repositories flagged over 90 days; 16 direct
   across 8 repositories over 30.
+- **The initial commit is its own arrival, `initial`, not `direct`.** Until
+  2026-10-12 a mainline root commit fell through to `direct`, so every new
+  repository lost the whole "Changes through pull requests" metric for its
+  first 30 days for a push nobody could avoid -- a pull request needs a branch
+  to merge into, and an empty repository has none. Measured on the 2026-10-08
+  local data: 7 repositories, the initial commit the **only** thing against
+  each, every one a band too low (`crm-opportunity-sync` 71 would be 91).
+  An existing test had pinned the root as `direct`, so it was a design gap,
+  not a slip. `initial` sits outside `mainline` in `BranchPolicySummary` and
+  is counted separately, so a repository holding only its initial commit is
+  unmeasured on that rule rather than given full marks. Only the **mainline**
+  root qualifies: a root a merge brought in stays `merged-in`, and a commit
+  whose parent is merely not stored has parents, so stays `direct`. No
+  migration -- `arrival` is a varchar the next branch-policy pass rewrites.
 - **`merge_commit.hash` is ABBREVIATED to 12 characters** while commit hashes are
   full 40-character SHAs. The join must be on a prefix. Matching them whole does
   not fail -- it reports **every** commit as direct, which is plausible enough to
