@@ -97,9 +97,10 @@ remains is judgement and one real risk, not construction.
 4. **Open decision 10** — the commit trend has no zero-fill, so bars that look
    adjacent may not be adjacent weeks. A real defect, small and unglamorous.
 
-**Nothing is committed.** The whole rule rewrite, the diffstat ingestion, the
-median switch and the MDLH table fix are all sitting in the working tree. 4. **Per-engineer lines added/deleted** is now nearly free; see requirement 8
-below.
+**All of it is committed and deployed.** An earlier note here said the rule
+rewrite was sitting uncommitted in the working tree; that stopped being true
+long ago. What is live, and the release history, are in the Deployment
+section below.
 
 ## Measured facts about the estate
 
@@ -256,6 +257,30 @@ Other findings:
   commits unconfirmed) changes nobody and flips 19 tags to confirmed. B was
   recommended; the user deferred the decision. The identity register names
   Amey Sunil Khurdekar `AmeyK`, which no Bitbucket display name matches.
+
+### Measured 2026-10-14
+
+- **The portal sees only what one person's account can see, and a private
+  project it is not on is invisible -- not empty.** The new project
+  "Digital Platforms Quality Engineering" (`DPQE`, created 2026-10-07) and
+  its repository `digital-platforms-qa-evidences` (2026-10-09) were absent
+  from both Bitbucket's listing and the portal; asked for directly, Bitbucket
+  answered **404 "you may not have access"** for both, while the same
+  credential read `DDS` normally. The local and live portals use **the same
+  account, Prashant Chaudhari's** (the live one from dev `secrets.yaml`). The
+  project admin granted it project **Read**, and Bitbucket listed both at
+  once -- no portal change, config or redeploy involved. So: a repository
+  "missing from the portal" is first an access question; probe
+  `/2.0/workspaces/demandai/projects/<KEY>` and read the status before
+  suspecting the provider. Bitbucket reports no access as 404, never 403.
+- **Two new repositories arrived the same day**: DPQE's, and
+  `daarwyn_website` in DAI-WEB (created 11:45 IST), taking Bitbucket to
+  **111**. Both waited for the 6-hourly catalog and fleet passes -- see the
+  refresh-cycle note under Deployment.
+- **The live 6-hour cycle runs scoring at about 02:52, 08:52, 14:53 and
+  20:53 IST** (read from score history), and the catalog's listing on its own
+  clock (next 15:04 IST that day). Both move whenever a pass is triggered by
+  hand or the pod restarts -- they were at :08 before 12 Oct.
 
 ### Deprecated endpoints -- CHANGE-2770
 
@@ -1204,6 +1229,12 @@ connection`, which took `/api/catalog` down to 404 and left every page in the
   is populated on every merged PR sampled; `first_approval_at` comes from
   `participants.participated_on`, present on all 122 of 177 sampled PRs that
   carried an approval.
+  **The scoring windows still filter on it, and that is an open defect.**
+  `PullRequestStore.reviewSummary` and `sizeSummary` select merged pull
+  requests with `updated_at >= since`, so one merged 120 days ago but
+  commented on last week still counts toward code review and pull request
+  size for 90 more days. `closed_at` is stored and is the right field.
+  Found reading the code 2026-10-12; not fixed, not measured.
 - **A cancelled pipeline run is not a failed one.** `STOPPED` and `EXPIRED`
   runs are counted separately and excluded from the success-rate denominator.
   Until step 23 they were lumped into `failed` and scored as failures, which
@@ -2386,9 +2417,19 @@ true`, and NOTES warns on plain HTTP with a real host.
   once a day. `fleet.bitbucket.schedule` in `app-config.yaml` -- **not**
   `fleet.schedule`, which `config:check --strict` rejects and the code would
   silently ignore (`plugin.ts` reads the schedule from `fleet.bitbucket`).
-  Pull request size and branch divergence keep their own 360-minute settings;
-  the catalog's repository listing keeps its hardcoded 30 minutes (one
-  request a run, so new repositories still appear quickly).
+  Pull request size and branch divergence keep their own 360-minute settings.
+  **The catalog's repository listing went to 6 hours too, and this note used
+  to say it had not.** `BitbucketRepositoryEntityProvider.fromConfig` reads
+  the same `fleet.bitbucket.schedule` key and falls back to its 30-minute
+  `DEFAULT_SCHEDULE` only when the key is absent -- so the moment PR #8 set
+  it, the catalog followed. Found live 2026-10-14: the DPQE project and
+  `daarwyn_website` were in Bitbucket's listing for hours and in neither the
+  catalog nor the dashboard, and `bitbucket-repositories:demandai` (in
+  `backstage_plugin_catalog`) showed its next run six hours out. So a new
+  repository or project reaches the **catalog** at that task's next run and
+  the **dashboard** at the fleet cycle's -- two separate 6-hour clocks, not
+  synchronised. To bring the catalog forward, set `next_run_start_at = now()`
+  on `bitbucket-repositories:demandai` in `backstage_plugin_catalog`.
   **Why ordering had to come with it:** measured on the local backend that
   day, the per-task timers had drifted so that scoring ran _before_ the
   commit and pull request passes in every cycle -- harmless at 30 minutes,
